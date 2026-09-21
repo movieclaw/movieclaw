@@ -126,7 +126,7 @@ export function AllCollectionsView() {
           : `${all.length} 个合集 · 按库分组`;
 
   const header = (
-    <div className="flex items-start justify-between gap-4 px-6 pt-7 max-md:px-4 max-md:pt-4">
+    <div className={`flex items-start justify-between gap-4 pt-7 page-inset max-md:pt-4`}>
       <div className="min-w-0">
         <h2 className="text-on-image text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[21px]">
           媒体库
@@ -145,7 +145,7 @@ export function AllCollectionsView() {
      右上角是**视角切换**的地盘，两者不是一回事；窄屏的全局顶栏也已经排着
      ☰ + 字标 + 首页/合集 + 搜索，再多一组必然挤出屏幕。正文顶部两个断点同一份实现。 */
   const filterBar = (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 px-6 pt-4 max-md:px-4 max-md:pt-3">
+    <div className={`flex flex-wrap items-center gap-x-5 gap-y-2 pt-4 page-inset max-md:pt-3`}>
       <ChipGroup
         label="类型"
         options={KIND_OPTIONS}
@@ -185,10 +185,10 @@ export function AllCollectionsView() {
             {cross.length > 0 && (
               <section>
                 {/* 页头现在有「媒体库」这个 h2，分区标题降一级，标题层级才是连着的 */}
-                <h3 className="px-6 pb-1 text-ui font-semibold text-[var(--text-strong)] max-md:px-4">
+                <h3 className={`pb-1 text-ui font-semibold text-[var(--text-strong)] page-inset`}>
                   跨库
                 </h3>
-                <p className="px-6 pb-3 text-sub text-[var(--text-faint)] max-md:px-4">
+                <p className={`pb-3 text-sub text-[var(--text-faint)] page-inset`}>
                   不属于任何一个库的手动名单
                 </p>
                 <LibraryCollectionsView collections={cross} libraryId={null} />
@@ -196,7 +196,7 @@ export function AllCollectionsView() {
             )}
             {ordered.map(({ library, items }) => (
               <section key={library.id}>
-                <h3 className="px-6 pb-3 text-ui font-semibold text-[var(--text-strong)] max-md:px-4">
+                <h3 className={`pb-3 text-ui font-semibold text-[var(--text-strong)] page-inset`}>
                   {library.name}
                 </h3>
                 <LibraryCollectionsView

@@ -2,12 +2,14 @@
 
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { Route } from "next";
+import { usePathname } from "next/navigation";
 
 import { ChevronLeftIcon, MenuIcon } from "@/components/icons";
 import { SearchCommand } from "@/components/search-command";
 import { useBackNavigation } from "@/lib/back-navigation";
-import { usePageChrome } from "@/lib/page-chrome";
+import { isHomeRoute, usePageChrome } from "@/lib/page-chrome";
 import { useTheme } from "@/lib/ui-prefs";
+import { useResolvedTheme } from "@/themes/registry";
 import { useIsMobile } from "@/lib/use-media-query";
 
 /** 没有可用站内历史时的结构父级；只作兜底，不覆盖真实来路。 */
@@ -37,8 +39,13 @@ const REVEAL_END = 82;
  * .nf-icon-btn 的同一结论，2026-09 移动端审查统一）。
  * 图标同比例缩放（约为键径的一半），改动时两档要一起看。
  */
+/** 尺寸档单拎出来导出：NetflixBackButton（裸键，不吃玻璃材质）与本类共享
+ *  同一份尺寸——两颗键同在 4vw 左基线上，键径不同就会有 2px 级的中心错位。 */
+export const PAGE_NAV_BUTTON_SIZE_CLASS = "size-9 pointer-coarse:size-11";
 export const PAGE_NAV_BUTTON_CLASS =
-  "grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] pointer-coarse:size-11";
+  // page-nav-btn：主题钩子——Netflix 主题在 globals.css 里压成实底深灰圆钮
+  // 并关掉毛玻璃（玻璃圆钮是银玻璃控件语言，见 docs/design/web-themes.md §5.5）
+  `page-nav-btn grid ${PAGE_NAV_BUTTON_SIZE_CLASS} shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94]`;
 
 /**
  * 找到本组件所在的滚动容器（全站页面都是「外壳固定 + 内层 overflow-y-auto」，
@@ -75,9 +82,9 @@ function scrollParentOf(node: HTMLElement | null): HTMLElement | null {
  * 注意这些属性一律不加 transition：变量驱动的属性加过渡会被 Chromium 卡住旧值。
  *
  * 位置约定：必须作为滚动容器的直接子节点（sticky 的定位参照就是它），
- * 组件自带 px-6 横向留白（移动端 px-4）；容器本身已经有 px-6 的页面，调用处补一个
- * -mx-6 max-md:-mx-4 让吸顶蒙版铺满整个宽度——两个断点的负边距必须与容器各自的
- * 内边距一一对应，否则窄屏会多探出 8px、把页面横向撑出滚动条。
+ * 组件自带 page-inset 横向留白（主题变量档）；页面正文同样挂 page-inset 时，
+ * 调用处给蒙版补 page-inset-bleed 反向抵消即可铺满整宽——两者取自同一变量，
+ * 天然成对，不存在窄屏多探出 8px 的错位。
  */
 export function PageNav({
   title,
@@ -103,8 +110,10 @@ export function PageNav({
   const rootRef = useRef<HTMLDivElement>(null);
   const chrome = usePageChrome();
   // ☰ 键只在银玻璃渲染（开抽屉）；Netflix 的导航在底部页签，详见下方控件组注释
-  const isNetflix = useTheme().id === "netflix";
+  const isNetflix = useTheme().structural;
   const isMobile = useIsMobile();
+  const pathname = usePathname();
+  const { slots } = useResolvedTheme();
 
   // 向外壳登记「本页自带顶栏」：移动端据此撤掉全局顶栏，两条顶栏不再摞在一起
   // （见 lib/page-chrome.tsx）。PageNav 只在子页面渲染，挂载即认领顶栏。
@@ -132,6 +141,21 @@ export function PageNav({
     return () => target.removeEventListener("scroll", sync);
   }, []);
 
+  // —— 防遮挡硬约束（渲染入口短路）——
+  // Netflix 桌面主题下，全出血（isHome）路由的主区不为顶栏让位，本组件
+  // （sticky z-30）会被 fixed z-40 的 Netflix 顶栏整个盖住——返回键看得见
+  // 却永远点不到。这些页面一律由页面自身渲染 NetflixBackButton（同 4vw 基线、
+  // 同尺寸档，见 netflix/back-button.tsx），本组件直接不渲染，把「isHome 页
+  // 不得渲染 PageNav」从各页的人工约定变成代码保证；判定与外壳 isHome 同源
+  // （lib/page-chrome.tsx 的 isHomeRoute），新增全出血路由自动继承。
+  // 只限桌面：Netflix 移动端没有 fixed 顶栏（全局顶栏已由本组件登记撤掉），
+  // 详情页的 PageNav 照常保留；银玻璃两端的顶栏都不是 fixed，同样不受限。
+  // 现状零行为变化：isHome 页面在 Netflix 桌面本就各自分支改用了
+  // NetflixBackButton，没有任何页面在会触发本短路的状态下向本组件要过渲染。
+  if (isNetflix && !isMobile && isHomeRoute(pathname, slots.libraryHero != null)) {
+    return null;
+  }
+
   const backClass = PAGE_NAV_BUTTON_CLASS;
   const backLabel = `返回上一页；无历史时返回${fallback.label}`;
 
@@ -142,7 +166,11 @@ export function PageNav({
        安全区以下。这正是原生 App 顶栏的层次，也与全局顶栏 .mobile-topbar 一致。 */
     <div
       ref={rootRef}
-      className={`sticky top-0 z-30 px-6 max-md:px-4 max-md:pt-[var(--safe-top)] ${className}`}
+      className={`sticky top-0 z-30 ${
+        // 左右留白走主题变量档（--page-inset：银玻璃 px-6、Netflix 4vw）。
+        // 调用方要吸顶蒙版铺满整宽时，用 page-inset-bleed 反向抵消，天然成对
+        "page-inset"
+      } max-md:pt-[var(--safe-top)] ${className}`}
     >
       {/* 吸顶蒙版：不是一条「header 色块」，而是一层向下渐隐的雾——顶边最浓、
           到底部完全化开，没有分隔线，因此看不出边界，只感觉标题那一块变干净了。

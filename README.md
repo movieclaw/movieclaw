@@ -157,7 +157,7 @@ respects the notch and home-indicator safe areas.
 The assistant needs an LLM connected under **Settings → AI Models** (any OpenAI-compatible
 endpoint). Skip it and everything else still works.
 
-- Talk to your library from WeChat — "subscribe to Three-Body season 2 as soon as it's out" — by text or voice. Telegram and Discord work too.
+- Talk to your library from WeChat — "subscribe to Three-Body season 2 as soon as it's out" — by text or voice. Telegram and Discord work too. Feishu groups can join as a push-only outlet — paste a custom-bot webhook URL and it's bound.
 - Under the hood, the assistant drives MovieClaw's own CLI rather than guessing at APIs. Ship a new backend endpoint and the assistant gains that ability automatically; long conversations compact their own context. The same CLI is [yours to install](#control-it-from-anywhere) — on any machine, for any agent.
 - Missing subtitles? It makes its own: when none exist in your target language, it finds subtitles in another language, translates them, and saves the result as an external SRT next to the video.
 - Teach it "skills" in plain Markdown: drop a directory with a `SKILL.md` into `data/agent-skills/` (a `description` in the frontmatter, instructions in the body, scripts welcome) and the assistant loads it on its own whenever a web-session task matches — changes take effect immediately, no restart. A skill sharing a name with a built-in one overrides it (the log says so). Details in [`docs/design/agent-skills.md`](docs/design/agent-skills.md).

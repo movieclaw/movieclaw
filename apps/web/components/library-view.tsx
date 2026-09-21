@@ -335,6 +335,16 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
     rows.some((row) => row.kind === "libraries" && !row.hidden) && visibleLibraries.length > 0;
   const collectionsEntryInHeader = collectionCount > 0 && !librariesRowVisible;
 
+  // 「我的收藏」的兜底入口：收藏行只有在**有收藏**时才渲染（没有事实不摆控件），
+  // 被用户隐藏时也整个不出现——于是「还没有收藏」与「行被隐藏」两种状态下，
+  // 全站都没有进 /library/favorites 的路（它没有第二个入口）。收藏数据跟着行
+  // 取数，行隐藏时连请求都不发，所以这里不能依赖收藏数据本身：行在场就让位给
+  // 行内的「查看全部」，行不在场（没收藏 / 被隐藏）时由页头动作区指路。
+  const favoritesRowVisible =
+    rows.some((row) => row.kind === "favorites" && !row.hidden) &&
+    (favorites?.items.length ?? 0) > 0;
+  const favoritesEntryInHeader = !favoritesRowVisible;
+
   // 「我的收藏」横滚行：与库行同一张海报卡、同一个行组件，只把 hover
   // 层换成收藏的层级说明；落点是服务端解析好的可见库里的条目详情
   const favoriteRow = useMemo(() => {
@@ -388,9 +398,14 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
       case "up-next":
         // 当前账号跨可见库聚合的播放状态；空列表时组件整段隐藏。
         // 清空观看记录的入口就在这一行的标题右侧，清完重新拉一次数据。
-        return (
-          <UpNextRow key={row.id} items={upNext} libraries={visibleLibraries} onCleared={reload} />
-        );
+          return (
+            <UpNextRow
+              key={row.id}
+              items={upNext}
+              libraries={visibleLibraries}
+              onCleared={reload}
+            />
+          );
       case "favorites":
         // 只横滚最近收藏的 20 部（网页与 Jellyfin 客户端点的心同一份），「查看全部」
         // 进与单库页同一套海报墙的 /library/favorites；没有收藏时整段隐藏
@@ -412,7 +427,7 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
         if (visibleLibraries.length === 0) return null;
         return (
           <section key={row.id} className="mt-8 max-md:mt-6" aria-labelledby="my-libraries-title">
-            <div className="flex items-center justify-between gap-4 px-6 max-md:px-4">
+            <div className={`flex items-center justify-between gap-4 page-inset`}>
               <h3
                 id="my-libraries-title"
                 className="text-on-image text-body-lg font-semibold tracking-[-0.01em] text-[var(--text)]"
@@ -431,7 +446,7 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
                 </Link>
               )}
             </div>
-            <HScroller className="mt-3 gap-5 px-6 pb-1 pt-1 max-md:gap-3.5 max-md:px-4">
+            <HScroller className={`mt-3 gap-5 pb-1 pt-1 page-inset max-md:gap-3.5`}>
               {visibleLibraries.map((library) => (
                 <div
                   key={library.id}
@@ -467,7 +482,7 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
       {/* 页头：标题 + 统计，右侧是页面级操作「自定义首页」「管理媒体库」（SaaS 惯例：
           页面动作放标题行右端；分区标题行只留分区自己的东西）。首页上没有任何
           排序细节与行菜单——调整全部收进自定义页，首页只负责看 */}
-      <div className="flex items-start justify-between gap-4 px-6 pt-7 max-md:px-4 max-md:pt-4">
+      <div className={`flex items-start justify-between gap-4 pt-7 page-inset max-md:pt-4`}>
         <div className="min-w-0">
           <h2 className="text-on-image text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[21px]">
             媒体库
@@ -480,6 +495,14 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
         </div>
         {/* 两个页面级动作都是图标钮：自定义首页（所有人）、管理媒体库（有权限的人） */}
         <div className="flex shrink-0 items-center gap-2">
+          {favoritesEntryInHeader && (
+            <Link
+              href={"/library/favorites" as Route}
+              className="shrink-0 text-ui text-[var(--text-faint)] transition hover:text-[var(--text)]"
+            >
+              我的收藏 ›
+            </Link>
+          )}
           {collectionsEntryInHeader && (
             <Link
               href={"/library/collections" as Route}
@@ -532,7 +555,7 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
       )}
 
       {failed && libraries !== null && (
-        <div className="mx-6 mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub text-amber-200 max-md:mx-4">
+        <div className={`page-inset-mx mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub text-amber-200`}>
           与后端通信失败，正在自动重试；下方显示的是最近一次成功加载的数据
         </div>
       )}
@@ -563,7 +586,7 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
       {/* 全部藏光时不出白页：给一个指回自定义页的空态 */}
       {libraries !== null && libraries.length > 0 && visibleRows.length === 0 && (
         <div
-          className="mx-6 mt-16 rounded-2xl border border-dashed border-white/15 px-6 py-8 text-center max-md:mx-4"
+          className={`page-inset-mx mt-16 rounded-2xl border border-dashed border-white/15 px-6 py-8 text-center`}
           data-testid="home-all-hidden"
         >
           <p className="text-ui font-semibold text-[var(--text)]">首页空空如也</p>

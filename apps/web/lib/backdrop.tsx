@@ -61,9 +61,22 @@ const BackdropContext = createContext<BackdropContextValue | null>(null);
 /**
  * 提取图床 URL 的「同一张图」标识：剥掉 TMDB 尺寸档前缀（/t/p/w1280/… 与
  * /t/p/original/… 是同一张图的两个分辨率）。供升清判断用——只比路径不比尺寸。
+ * 地址若包着图片代理（/images/proxy?url=<编码的远端地址>，所有远程图统一经
+ * cachedImageUrl 收口）要先拆开代理层再剥——否则正则打不穿外层，同一张图
+ * 换尺寸档（列表 w775 → 详情 w1280/original 的标准升清路径）会被判成两张图，
+ * 覆盖层走「换图」协议整层闪黑一次：Netflix 详情页的覆盖层 transition 被主题
+ * 层接管（tokens.css 的 nf-hero-live 规则），连渐变都没有，直接硬切——就是
+ * 详情页推镜约 1 秒处的「回退叠影」（2026-09-21 实测定位）。
  */
 function backdropPathOf(url: string): string {
-  return url.replace(/\/t\/p\/[^/]+\//, "/t/p/");
+  const proxied = url.match(/[?&]url=([^&]+)/);
+  let raw = proxied ? proxied[1] : url;
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    // 编码不完整就按原串参与比较，只会退回「不同图」的保守行为
+  }
+  return raw.replace(/\/t\/p\/[^/]+\//, "/t/p/");
 }
 
 /** 把 URL 同步到 <html> 的 CSS 变量，供 body::before 使用；传 null 则回退默认。

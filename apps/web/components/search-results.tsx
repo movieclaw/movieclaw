@@ -15,7 +15,7 @@ import Link from "next/link";
 import type { Route } from "next";
 
 import { useToast } from "@/components/feedback";
-import { LayersIcon, ListIcon, PhotoIcon, XIcon } from "@/components/icons";
+import { ChevronLeftIcon, LayersIcon, ListIcon, PhotoIcon, XIcon } from "@/components/icons";
 import { Modal } from "@/components/modal";
 import { useTileWindow } from "@/components/photo-wall";
 import { PosterImage } from "@/components/poster-image";
@@ -1066,18 +1066,23 @@ export function SearchResults({ query, onResearch, grabForSubscriptionId }: Sear
     <GrabContext.Provider value={grabTarget}>
     <DownloadTargetPrefContext.Provider value={downloadTargetPrefs}>
     <div className="relative flex h-full flex-col">
-      {/* 手动选种横幅：从订阅详情页跳来时说明当前模式与退出方式 */}
+      {/* 手动选种横幅：从订阅详情页跳来时说明当前模式与退出方式。
+          信息蓝走 --info-soft 系 token：银玻璃值 = 原 #6aa7ff 字面量（零变化），
+          Netflix 主题整组收敛为白/灰（双主题拆色，见 globals.css token 注释） */}
       {grabTarget && (
-        <div className="mx-6 mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-[#6aa7ff]/30 bg-[#6aa7ff]/12 px-4 py-2.5 text-sub text-[#b9d4ff] backdrop-blur-sm max-md:mx-4">
+        <div className={`page-inset-mx mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-[var(--info-soft)]/30 bg-[var(--info-soft)]/12 px-4 py-2.5 text-sub text-[var(--info-text)] backdrop-blur-sm`}>
           <span className="min-w-0">
             正在为《{grabTarget.title}》手动选种——点资源上的「投给订阅」直接下载并计入该订阅
             （跳过规则组限制）
           </span>
+          {/* 「返回订阅」是回到来路的返回语义，箭头却在文字右侧指向前方——
+              方向配错。统一为 ChevronLeft 置于文字前，与全站返回语言一致 */}
           <Link
             href={`/subscriptions/${grabTarget.id}` as Route}
-            className="ml-auto shrink-0 font-medium text-white/85 hover:underline"
+            className="ml-auto flex shrink-0 items-center gap-0.5 font-medium text-white/85 hover:underline"
           >
-            返回订阅 ›
+            <ChevronLeftIcon className="size-3.5" />
+            返回订阅
           </Link>
         </div>
       )}
@@ -1086,7 +1091,7 @@ export function SearchResults({ query, onResearch, grabForSubscriptionId }: Sear
           工具栏 = 类型分段/分辨率（左）+ 筛选/排序/视图（右）
           条件回显行只在筛选激活时出现；流式期间再加一条 2px 进度线 */}
       {/* pt-4：上方还有 /search 页的垂直选项卡行（影视 | 站点资源），间距略收 */}
-      <header className="relative z-20 shrink-0 px-6 pb-3 pt-4 max-md:px-4 max-md:pt-3">
+      <header className={`relative z-20 shrink-0 pb-3 pt-4 page-inset max-md:pt-3`}>
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
           <h1 className="text-on-image text-title-lg font-semibold tracking-[-0.01em] text-white">
             {/* 浏览模式（无关键词）标题落在动作上，具体范围由右边的分类药丸交代 */}
@@ -1117,7 +1122,7 @@ export function SearchResults({ query, onResearch, grabForSubscriptionId }: Sear
               <>
                 <span
                   title="这是历史留存的结果快照，站点数据（做种数/促销/链接）可能已变化"
-                  className="flex items-center gap-1.5 rounded-full border border-[#6aa7ff]/30 bg-[#6aa7ff]/12 px-2.5 py-1 text-caption text-[#b9d4ff] backdrop-blur-sm"
+                  className="flex items-center gap-1.5 rounded-full border border-[var(--info-soft)]/30 bg-[var(--info-soft)]/12 px-2.5 py-1 text-caption text-[var(--info-text)] backdrop-blur-sm"
                 >
                   <svg
                     viewBox="0 0 24 24"
@@ -1186,7 +1191,7 @@ export function SearchResults({ query, onResearch, grabForSubscriptionId }: Sear
       {/* 主体：结果随 site_result 事件渐进出现，首批结果到达前保持骨架屏 */}
       <div
         ref={scrollRef}
-        className="scroll-thin scroll-safe relative z-0 min-h-0 flex-1 overflow-y-auto px-6 pb-6 max-md:px-4"
+        className={`scroll-thin scroll-safe relative z-0 min-h-0 flex-1 overflow-y-auto pb-6 page-inset`}
       >
         {streaming && items.length === 0 && (
           <SkeletonList siteCount={siteProgress.length} />
@@ -1412,11 +1417,13 @@ function GroupHeader({
         .filter(Boolean)
         .join(" · ");
   const header = (
+    // solid-card：Netflix 换皮钩子接管描边/实底/投影/blur（银玻璃零变化），
+    // 行卡圆角与 hover 形态照旧留给调用点
     <button
       type="button"
       onClick={onToggle}
       aria-expanded={open}
-      className="flex w-full items-center gap-3 rounded-2xl border border-white/[0.09] bg-white/[0.045] px-4 py-2.5 text-left backdrop-blur-xl transition-colors hover:border-white/[0.16] hover:bg-white/[0.07]"
+      className="solid-card flex w-full items-center gap-3 rounded-2xl border border-white/[0.09] bg-white/[0.045] px-4 py-2.5 text-left backdrop-blur-xl transition-colors hover:border-white/[0.16] hover:bg-white/[0.07]"
     >
       <span
         className={`shrink-0 text-micro text-[var(--text-faint)] transition-transform ${open ? "rotate-90" : ""}`}
@@ -1523,7 +1530,9 @@ function FilterToolbar({
   );
 
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-3 rounded-2xl border border-white/[0.07] bg-black/[0.14] p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl">
+    // solid-popover：筛选工具条按浮层材质挂钩子（银玻璃零变化），inset 白
+    // 高光在 Netflix 主题随钩子 box-shadow 覆盖自然消失
+    <div className="solid-popover mt-3 flex flex-wrap items-center gap-3 rounded-2xl border border-white/[0.07] bg-black/[0.14] p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl">
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
         {/* 排序：高频操作，置于工具栏最前（键与方向合并成一颗胶囊） */}
         <SortDropdown sort={sort} smartOptions={smartOptions} onChange={onSortChange} />
@@ -1720,7 +1729,7 @@ function FacetDropdown<T extends string | number>({
         </span>
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-30 mt-2 max-h-[46dvh] w-max max-w-[420px] overflow-y-auto rounded-2xl border border-white/[0.12] bg-[rgba(14,16,22,0.96)] p-3 shadow-2xl backdrop-blur-2xl max-md:max-w-[calc(100vw-2rem)]">
+        <div className="solid-popover absolute left-0 top-full z-30 mt-2 max-h-[46dvh] w-max max-w-[420px] overflow-y-auto rounded-2xl border border-white/[0.12] bg-[rgba(14,16,22,0.96)] p-3 shadow-2xl backdrop-blur-2xl max-md:max-w-[calc(100vw-2rem)]">
           <div className="flex flex-wrap gap-1.5">
             {options.map((o) => (
               <FacetChip
@@ -1798,7 +1807,7 @@ function SortDropdown({
         </span>
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-30 mt-2 w-44 rounded-2xl border border-white/[0.12] bg-[rgba(14,16,22,0.96)] p-1.5 shadow-2xl backdrop-blur-2xl">
+        <div className="solid-popover absolute left-0 top-full z-30 mt-2 w-44 rounded-2xl border border-white/[0.12] bg-[rgba(14,16,22,0.96)] p-1.5 shadow-2xl backdrop-blur-2xl">
           <p className="px-2.5 pb-1 pt-1.5 text-micro text-[var(--text-faint)]">常规</p>
           {SORT_OPTIONS.map(item)}
           {smartOptions.length > 0 && (
@@ -1849,7 +1858,7 @@ function FilterSheet({
     <>
       {/* 点外/Esc 关闭由 FilterToolbar 的 useDismiss 承担（触发器与弹层同容器） */}
       {/* 宽度收着点：右侧浮层少遮结果列表，让「选择即生效」的变化被看见 */}
-      <div className="absolute right-0 top-full z-30 mt-2 max-h-[60dvh] w-[480px] max-w-[82vw] overflow-y-auto rounded-2xl border border-white/[0.12] bg-[rgba(14,16,22,0.96)] p-4 shadow-2xl backdrop-blur-2xl">
+      <div className="solid-popover absolute right-0 top-full z-30 mt-2 max-h-[60dvh] w-[480px] max-w-[82vw] overflow-y-auto rounded-2xl border border-white/[0.12] bg-[rgba(14,16,22,0.96)] p-4 shadow-2xl backdrop-blur-2xl">
         <div className="mb-4 flex items-center justify-between">
           <div>
             <p className="text-ui font-medium text-[var(--text)]">筛选结果</p>
@@ -2118,12 +2127,13 @@ function SiteStatusSummary({
 
   return (
     <div className="relative">
+      {/* solid-card：分区 chip 挂卡片材质钩子，胶囊形保留（银玻璃零变化） */}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         title="查看各站点的搜索详情"
-        className="flex items-center gap-1.5 rounded-full border border-white/[0.12] bg-white/[0.05] px-2.5 py-1 text-caption text-[var(--text-muted)] backdrop-blur-sm transition-colors hover:border-white/[0.22] hover:text-[var(--text)]"
+        className="solid-card flex items-center gap-1.5 rounded-full border border-white/[0.12] bg-white/[0.05] px-2.5 py-1 text-caption text-[var(--text-muted)] backdrop-blur-sm transition-colors hover:border-white/[0.22] hover:text-[var(--text)]"
       >
         <span className={`size-1.5 rounded-full ${dotCls}`} />
         {streaming ? (
@@ -2143,7 +2153,7 @@ function SiteStatusSummary({
         <>
           {/* 点击空白处关闭（与筛选弹层同款交互） */}
           <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full z-30 mt-2 w-[320px] max-w-[82vw] rounded-2xl border border-white/[0.12] bg-[rgba(14,16,22,0.94)] p-2 shadow-2xl backdrop-blur-2xl">
+          <div className="solid-popover absolute right-0 top-full z-30 mt-2 w-[320px] max-w-[82vw] rounded-2xl border border-white/[0.12] bg-[rgba(14,16,22,0.94)] p-2 shadow-2xl backdrop-blur-2xl">
             <ul className="flex flex-col">
               {sites.map((s) => (
                 <li key={s.site_id} className="rounded-lg px-2 py-1.5">
@@ -2458,7 +2468,9 @@ function posterPromoBadges(hit: TorrentHit): { text: string; cls: string }[] {
   } else if (hit.download_volume_factor < 1) {
     badges.push({
       text: `${Math.round(hit.download_volume_factor * 100)}%`,
-      cls: "bg-[#6aa7ff]/85 text-white",
+      // 折扣实底徽章：基色走 --info-soft，文字走 --info-on-solid——Netflix 下
+      // 实底变白后压白字会不可读，转深色对齐「白底黑字」语言（银玻璃不变）
+      cls: "bg-[var(--info-soft)]/85 text-[var(--info-on-solid)]",
     });
   }
   if (hit.upload_volume_factor > 1) {
@@ -2636,8 +2648,10 @@ const TorrentPosterCard = memo(function TorrentPosterCard({
           <span
             className={`absolute bottom-1.5 left-1.5 rounded-md px-1.5 py-0.5 text-micro font-semibold ${
               seChip.pack
-                ? "bg-gradient-to-r from-[#4f8cff]/90 to-[#9d6bff]/90 text-white"
-                : "bg-black/70 text-[#b9d4ff]"
+                ? // 蓝紫渐变（全集/整季包）走 --info-grad-a/b：Netflix 下两端同值
+                  // 自然变成白平底，文字走 --info-on-solid 转深色保持可读
+                  "bg-gradient-to-r from-[var(--info-grad-a)]/90 to-[var(--info-grad-b)]/90 text-[var(--info-on-solid)]"
+                : "bg-black/70 text-[var(--info-text)]"
             }`}
           >
             {seChip.text}
@@ -2660,7 +2674,9 @@ const TorrentPosterCard = memo(function TorrentPosterCard({
             )}
             <GrabButton
               hit={hit}
-              className="rounded-lg border border-[#6aa7ff]/50 bg-[#6aa7ff]/25 px-2.5 py-1 text-caption font-medium text-white backdrop-blur-sm transition-colors hover:bg-[#6aa7ff]/40"
+              // 「投给订阅」蓝色操作钮走 --info-soft：Netflix 下变成白半透次级键
+              // （银玻璃值 = 原 #6aa7ff 字面量，零变化），双主题拆色见 globals.css
+              className="rounded-lg border border-[var(--info-soft)]/50 bg-[var(--info-soft)]/25 px-2.5 py-1 text-caption font-medium text-white backdrop-blur-sm transition-colors hover:bg-[var(--info-soft)]/40"
             />
             <DownloadButton
               hit={hit}
@@ -2742,7 +2758,7 @@ const TorrentPosterCard = memo(function TorrentPosterCard({
               )}
               <GrabButton
                 hit={hit}
-                className="flex h-8 items-center rounded-full border border-[#6aa7ff]/50 bg-[#6aa7ff]/25 px-3.5 text-sub font-medium text-white transition-colors hover:bg-[#6aa7ff]/40"
+                className="flex h-8 items-center rounded-full border border-[var(--info-soft)]/50 bg-[var(--info-soft)]/25 px-3.5 text-sub font-medium text-white transition-colors hover:bg-[var(--info-soft)]/40"
               />
               {/* 保存位置弹窗与命中记忆时的确认条都要压在灯箱（z-70）之上，
                   否则点了下载什么也看不见 */}
@@ -3196,7 +3212,7 @@ const TorrentRow = memo(function TorrentRow({
             )}
             <GrabButton
               hit={hit}
-              className="flex h-7 items-center rounded-full border border-[#6aa7ff]/50 bg-[#6aa7ff]/20 px-3 text-caption font-medium text-[#b9d4ff] transition-colors hover:bg-[#6aa7ff]/35"
+              className="flex h-7 items-center rounded-full border border-[var(--info-soft)]/50 bg-[var(--info-soft)]/20 px-3 text-caption font-medium text-[var(--info-text)] transition-colors hover:bg-[var(--info-soft)]/35"
             />
             <DownloadButton
               hit={hit}
@@ -3293,7 +3309,7 @@ function TorrentActionsSheet({
           )}
           <GrabButton
             hit={hit}
-            className="flex h-11 w-full items-center justify-center rounded-full border border-[#6aa7ff]/50 bg-[#6aa7ff]/20 text-ui font-medium text-[#b9d4ff] transition-colors active:bg-[#6aa7ff]/35"
+            className="flex h-11 w-full items-center justify-center rounded-full border border-[var(--info-soft)]/50 bg-[var(--info-soft)]/20 text-ui font-medium text-[var(--info-text)] transition-colors active:bg-[var(--info-soft)]/35"
           />
           <DownloadButton
             hit={hit}
@@ -3331,7 +3347,8 @@ function PromoBadges({ hit }: { hit: TorrentHit }) {
   } else if (hit.download_volume_factor < 1) {
     badges.push({
       text: `${Math.round(hit.download_volume_factor * 100)}%`,
-      cls: "bg-[#6aa7ff]/15 text-[#9cc2ff]",
+      // 折扣软底徽章：基色/文字拆 --info-soft / --info-text-2（Netflix 收敛白/灰）
+      cls: "bg-[var(--info-soft)]/15 text-[var(--info-text-2)]",
     });
   }
   if (hit.upload_volume_factor > 1) {
@@ -3385,7 +3402,7 @@ function AttrBadges({ attrs }: { attrs: TorrentAttrs }) {
     chips.push({ text: CONTENT_TYPE_LABEL[attrs.content_type], cls: "text-[#f0b6d8]" });
   }
   if (attrs.resolution) chips.push({ text: attrs.resolution });
-  if (attrs.remux) chips.push({ text: "Remux", cls: "text-[#9cc2ff]" });
+  if (attrs.remux) chips.push({ text: "Remux", cls: "text-[var(--info-text-2)]" });
   for (const v of attrs.hdr) chips.push({ text: v, cls: "text-[#c8a6ff]" });
   const subBadge = compactSubtitleBadge(attrs);
   if (subBadge) chips.push({ text: subBadge, cls: "text-[#7ee2b8]" });
@@ -3457,9 +3474,11 @@ function completeLabel(attrs: TorrentAttrs | null): string | null {
   return attrs.episodes_total ? `全${attrs.episodes_total}集` : "全集";
 }
 
-/** 全集徽标的统一样式（列表/分组/组头）；海报卡用实底变体叠图可读。 */
+/** 全集徽标的统一样式（列表/分组/组头）；海报卡用实底变体叠图可读。
+ * 蓝紫渐变走 --info-grad-a/b、文字/描边走 --info-text / --info-soft：
+ * 银玻璃保值（= 原字面量），Netflix 收敛为白平底白字（双主题拆色）。 */
 const COMPLETE_BADGE_CLS =
-  "rounded-md bg-gradient-to-r from-[#4f8cff]/25 to-[#9d6bff]/25 px-1.5 py-0.5 text-micro font-semibold text-[#b9d4ff] ring-1 ring-inset ring-[#6aa7ff]/35";
+  "rounded-md bg-gradient-to-r from-[var(--info-grad-a)]/25 to-[var(--info-grad-b)]/25 px-1.5 py-0.5 text-micro font-semibold text-[var(--info-text)] ring-1 ring-inset ring-[var(--info-soft)]/35";
 
 /* —— 占位 / 空态 —— */
 
@@ -3514,7 +3533,7 @@ function SkeletonList({ siteCount }: { siteCount: number }) {
         {SKELETON_TITLE_WIDTHS.map((width, i) => (
           <li
             key={i}
-            className="rounded-2xl border border-white/[0.05] bg-[rgba(14,16,22,0.35)] px-4 py-3 backdrop-blur-xl"
+            className="solid-card rounded-2xl border border-white/[0.05] bg-[rgba(14,16,22,0.35)] px-4 py-3 backdrop-blur-xl"
             style={{ opacity: 1 - i * 0.13, "--stagger": `${i * 120}ms` } as React.CSSProperties}
           >
             {/* 徽标排：站点名 + 属性小徽标 */}

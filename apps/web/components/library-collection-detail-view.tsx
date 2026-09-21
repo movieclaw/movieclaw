@@ -54,6 +54,7 @@ import {
 import { setPlaybackMarks } from "@/lib/api/playback";
 import { imageUrl } from "@/lib/image-proxy";
 import type { MediaItem } from "@/lib/media-types";
+import { useBackNavigation } from "@/lib/back-navigation";
 import { LibraryFilterBar } from "@/components/library-filter-bar";
 import {
   filterToRules,
@@ -157,6 +158,13 @@ export function LibraryCollectionDetailView({
   const toast = useToast();
   const confirm = useConfirm();
   const prompt = usePrompt();
+  // 删除/隐藏成功后的离开动作与下方 PageNav 的结构兜底同源：全站「返回」
+  // 语义的出口统一走 useBackNavigation（有站内历史 router.back()，直达落地
+  // 时 replace 到结构父级）——裸 window.history.back() 在分享直达、无历史
+  // 时会把用户卡死在本页（已删除的合集页），这是全库唯一的漏网点
+  const back = useBackNavigation(
+    (libraryId === null ? "/library/collections" : `/library/${libraryId}`) as Route,
+  );
   const { canManageLibraries } = usePermissions();
   const [collection, setCollection] = useState<Collection | null>(null);
   // null = 第一页还没回来：这时既不画空墙也不说"一部都没有"，那是一句还没成立的话
@@ -502,7 +510,7 @@ export function LibraryCollectionDetailView({
     try {
       await deleteCollection(collection.id);
       toast.success(automatic ? "已隐藏" : "已删除");
-      window.history.back();
+      back();
     } catch (err) {
       toast.error(
         err instanceof Error
@@ -512,7 +520,7 @@ export function LibraryCollectionDetailView({
             : "删除失败",
       );
     }
-  }, [collection, confirm, toast]);
+  }, [back, collection, confirm, toast]);
 
   const saveRules = useCallback(async () => {
     if (!collection || editing === null) return;
@@ -725,7 +733,7 @@ export function LibraryCollectionDetailView({
         }
       />
 
-      <div className="px-6 pt-2 max-md:px-4">
+      <div className={`pt-2 page-inset`}>
         <h1 className="text-title font-semibold text-[var(--text-strong)]">
           {collection?.name ?? " "}
         </h1>
@@ -825,7 +833,7 @@ export function LibraryCollectionDetailView({
 
       <div className="mt-6 max-md:mt-4">
         {items === null ? null : gallery ? (
-          <div className="px-6 max-md:px-4">
+          <div className="page-inset">
             <VideoGalleryWall
               groups={galleryGroups}
               density={density}
@@ -843,7 +851,7 @@ export function LibraryCollectionDetailView({
           </div>
         ) : showSeries ? (
           // 系列缺片：缺的那几部不另起一块，直接按上映顺序画进墙里（见 SeriesWall）
-          <div className="px-6 max-md:px-4">
+          <div className="page-inset">
             <SeriesWall
               items={rows}
               parts={series.parts}
@@ -863,7 +871,7 @@ export function LibraryCollectionDetailView({
             这个合集现在一部都没有。
           </p>
         ) : (
-          <div className="px-6 max-md:px-4">
+          <div className="page-inset">
             {/* 合集挂在库下面，每一格都落回本库的条目详情 */}
             <PosterWall items={rows} libraryIdOf={ownLibraryId} wide={false} />
             <WallLoadMore

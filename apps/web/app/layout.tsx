@@ -4,6 +4,7 @@ import localFont from "next/font/local";
 import { ViewportKeyboard } from "@/components/viewport-keyboard";
 import { appleStartupImages } from "@/lib/apple-splash";
 import { publicEnv } from "@/lib/env";
+import { DEFAULT_THEME_ID, THEMES } from "@/lib/themes";
 
 // 先引入液态玻璃组件自带的样式，再引入本项目的全局深色主题（后者可覆盖前者）。
 import "@/vendor/liquid-glass/styles.css";
@@ -95,17 +96,26 @@ const RESTORE_BACKDROP_SCRIPT = `try{if(location.pathname.indexOf("/sessions/")=
  * 的 localStorage 首帧缓存（lib/ui-prefs-cache.ts），把主题 id 写上 <html> 的
  * data-theme 属性。token 层（globals.css 的变量覆盖组）与 Tailwind 圆角换档
  * 都挂在 html[data-theme] 作用域上，属性就位即全站换肤，强刷不会先画银玻璃
- * 再跳成 Netflix。白名单只认 "netflix"（silver = 无属性即默认），缓存被改坏
- * 也注入不了任意属性值。登录后服务端偏好拉回、以及设置页切换主题时的后续
- * 同步由 lib/ui-prefs.tsx 的 effect 负责（AppShell 只在登录后渲染）。
+ * 再跳成 Netflix。白名单由主题注册表生成（DEFAULT_THEME_ID 除外——默认主题 =
+ * 无属性，与 ui-prefs 的写入口径一致），缓存被改坏也注入不了任意属性值；
+ * 新增主题自动被脚本认识，无需改这里。登录后服务端偏好拉回、以及设置页
+ * 切换主题时的后续同步由 lib/ui-prefs.tsx 的 effect 负责（AppShell 只在登录后渲染）。
  *
  * /play/*、/s/[slug] 不套 AppShell，同样吃到这段脚本与 token 层（结构层除外）。
  * Netflix 命中时顺带把 <meta name="theme-color"> 改成纯黑——强刷后浏览器地址
  * 栏 / PWA 状态栏不先闪一段银玻璃色（meta 由 viewport 导出注入，head 同步
- * 解析、脚本执行时已在；找不到时静默跳过。银玻璃不命中白名单，meta 维持
- * layout.tsx viewport 导出的 #0a0b10 原值，无需恢复动作）。
+ * 解析、脚本执行时已在；找不到时静默跳过。默认主题不命中映射，meta 维持
+ * layout.tsx viewport 导出的原值，无需恢复动作）。
+ *
+ * 映射表从主题注册表序列化而来（ THEMES → 「id → themeColor」JSON），本组件是
+ * 服务端组件、注册表是纯数据，拼接发生在 SSR 输出里，客户端零开销。
  */
-const RESTORE_THEME_SCRIPT = `try{var p=JSON.parse(localStorage.getItem("movieclaw.ui-prefs")||"null");if(p&&p.theme==="netflix"){document.documentElement.setAttribute("data-theme","netflix");var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute("content","#000000")}}catch(e){}`;
+const THEME_COLOR_MAP = JSON.stringify(
+  Object.fromEntries(
+    THEMES.filter((theme) => theme.id !== DEFAULT_THEME_ID).map((theme) => [theme.id, theme.themeColor]),
+  ),
+);
+const RESTORE_THEME_SCRIPT = `try{var p=JSON.parse(localStorage.getItem("movieclaw.ui-prefs")||"null");var c=${THEME_COLOR_MAP};if(p&&c[p.theme]){document.documentElement.setAttribute("data-theme",p.theme);var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute("content",c[p.theme])}}catch(e){}`;
 
 export default function RootLayout({
   children,

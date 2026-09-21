@@ -92,12 +92,12 @@ export function unbindWeixinAccount(accountId: string): Promise<Record<string, n
 }
 
 // ---------------------------------------------------------------------------
-// Telegram / Discord（配对码绑定，见 api/routes/channels_im.py）
+// Telegram / Discord / 飞书（见 api/routes/channels_im.py）
 // ---------------------------------------------------------------------------
 
-export type ImChannelId = "telegram" | "discord";
+export type ImChannelId = "telegram" | "discord" | "feishu";
 
-/** 已绑定的 TG/Discord bot 账号（见 schemas.channels.ImAccountView）。 */
+/** 已绑定的 TG/Discord/飞书账号（见 schemas.channels.ImAccountView）。 */
 export interface ImAccount {
   channel_id: string;
   account_id: string;
@@ -150,6 +150,19 @@ export function unbindImAccount(
       `/channels/im/${channel}/accounts/${encodeURIComponent(accountId)}`,
       { method: "DELETE" },
     ),
+  );
+}
+
+/**
+ * 接入飞书群自定义机器人：粘贴 Webhook 地址即绑即用（服务端发欢迎消息验真，
+ * 无配对码、无轮询）。secret 为签名校验密钥，未开启签名校验传空。
+ */
+export function startFeishuBinding(webhookUrl: string, secret: string): Promise<ImAccount> {
+  return unwrap(
+    request<ApiEnvelope<ImAccount>>(`/channels/im/feishu/bindings`, {
+      method: "POST",
+      body: JSON.stringify({ webhook_url: webhookUrl, secret }),
+    }),
   );
 }
 

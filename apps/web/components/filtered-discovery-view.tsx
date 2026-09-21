@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { PosterCard } from "@/components/poster-card";
 import { fetchDiscoveryGenres, fetchFilteredDiscovery } from "@/lib/api/discover";
+import { useTheme } from "@/lib/ui-prefs";
 import {
   discoveryFilterCount,
   discoveryFilterLabels,
@@ -30,6 +31,9 @@ export function FilteredDiscoveryView({
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const [genreNames, setGenreNames] = useState<ReadonlyMap<number, string>>(new Map());
+  // 页面左右留白随主题走栅格：Netflix 主题放弃居中栏、与发现页内容行同走全幅
+  // 4vw 左基线；银玻璃维持居中 1500px 栏 + px-6
+  const isNf = useTheme().structural;
 
   const loadPage = useCallback(async (page: number) => {
     if (loadingRef.current) return;
@@ -108,7 +112,11 @@ export function FilteredDiscoveryView({
     [filters, genreNames],
   );
   return (
-    <main className="mx-auto w-full max-w-[1500px] px-6 pb-12 max-md:px-4">
+    <main
+      className={
+        isNf ? "w-full page-inset pb-12" : "mx-auto w-full max-w-[1500px] page-inset pb-12"
+      }
+    >
       <header className="mb-7 flex items-end justify-between gap-4 max-md:mb-5">
         <div>
           <p className="text-sub font-semibold tracking-[0.16em] text-[var(--accent-2)]">

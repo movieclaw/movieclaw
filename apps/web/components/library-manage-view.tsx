@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Route } from "next";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { BrandLoader } from "@/components/brand-loader";
@@ -23,6 +22,7 @@ import { LibraryShares } from "@/components/library-shares";
 import { listShares } from "@/lib/api/shares";
 import { Modal } from "@/components/modal";
 import { PageNav } from "@/components/page-nav";
+import { useBackNavigation } from "@/lib/back-navigation";
 import {
   type MediaLibrary,
   deleteLibrary,
@@ -88,6 +88,10 @@ export function LibraryManageView() {
   const confirm = useConfirm();
   const toast = useToast();
   const isMobile = useIsMobile();
+  // 无权限空态的「返回媒体库」出口与全站同一语言：走 useBackNavigation
+  // （有站内历史 router.back()，直达落地 replace 到结构父级 /library），
+  // 与下方 PageNav 的结构兜底同源
+  const back = useBackNavigation("/library" as Route);
 
   // 标签栏：「媒体库」与「回收站」（docs/design/library-recycle-bin.md §2）；
   // ?tab=recycle 深链直达，切换写回地址栏
@@ -404,9 +408,13 @@ export function LibraryManageView() {
           title="没有管理权限"
           description="媒体库的创建、扫描与排序由管理员负责；你可以回到媒体库继续浏览。"
           action={
-            <Link href={"/library" as Route} className="btn-glass px-4 py-2 text-ui font-medium">
+            <button
+              type="button"
+              onClick={back}
+              className="btn-glass px-4 py-2 text-ui font-medium"
+            >
               返回媒体库
-            </Link>
+            </button>
           }
         />
       </div>
@@ -419,7 +427,7 @@ export function LibraryManageView() {
 
       {/* 页头：标题 + 说明，右侧是页面级动作「创建媒体库」（与首页「管理媒体库」
           同一位置约定：页面动作放标题行右端，顶栏只留返回与吸顶标题） */}
-      <div className="px-6 pt-3 max-md:px-4">
+      <div className={`pt-3 page-inset`}>
         <div className="flex items-start justify-between gap-4">
           <h2 className="text-on-image text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[21px]">
             媒体库管理
@@ -469,7 +477,7 @@ export function LibraryManageView() {
       </div>
 
       {/* 标签栏：媒体库 / 回收站。回收站计数为 0 时标签照常渲染（入口要被看见），只是不带数字 */}
-      <div className="mt-4 flex gap-1.5 px-6 max-md:px-4" role="tablist">
+      <div className={`mt-4 flex gap-1.5 page-inset`} role="tablist">
         {(
           [
             { id: "libraries" as const, label: "媒体库", count: libraries?.length ?? null },
@@ -507,7 +515,7 @@ export function LibraryManageView() {
       {tab === "shares" && <LibraryShares onCountChange={setShareCount} />}
 
       {tab === "libraries" && failed && libraries !== null && (
-        <div className="mx-6 mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub text-amber-200 max-md:mx-4">
+        <div className={`page-inset-mx mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub text-amber-200`}>
           与后端通信失败，正在自动重试；下方显示的是最近一次成功加载的数据
         </div>
       )}
@@ -548,7 +556,7 @@ export function LibraryManageView() {
       {tab === "libraries" && libraries !== null && libraries.length > 0 && (
         <>
           {/* 工具栏：搜索 / 类型筛选（状态筛选在页头摘要的胶囊上） */}
-          <div className="mt-5 flex flex-wrap items-center gap-2.5 px-6 max-md:px-4">
+          <div className={`mt-5 flex flex-wrap items-center gap-2.5 page-inset`}>
             <label className="flex h-9 min-w-[220px] flex-1 items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.04] px-3 text-ui text-[var(--text-muted)] focus-within:border-[var(--accent)]/60 max-md:min-w-0 max-md:basis-full sm:max-w-[320px]">
               <SearchIcon className="size-4 shrink-0" />
               <input
@@ -593,7 +601,7 @@ export function LibraryManageView() {
           {warnings.map((w) => (
             <div
               key={w}
-              className="mx-6 mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub leading-relaxed text-amber-200 max-md:mx-4"
+              className={`page-inset-mx mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub leading-relaxed text-amber-200`}
             >
               {w}
             </div>
@@ -601,7 +609,7 @@ export function LibraryManageView() {
 
           {/* 列表：不设表头——一行只有库名 / 库存 / 状态三样，各自的形态已经说明了自己是什么，
               一条表头只会让它更像一张表。筛选空结果时给「清除筛选」 */}
-          <div className="mx-6 mt-4 overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02] max-md:mx-4">
+          <div className={`page-inset-mx mt-4 overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02]`}>
             {visible.length === 0 ? (
               <div className="px-4 py-10 text-center text-ui text-[var(--text-muted)]">
                 没有符合条件的媒体库
@@ -628,7 +636,7 @@ export function LibraryManageView() {
           </div>
 
           {/* 底部只留一句排序提示；状态胶囊自带文字，不需要颜色图例 */}
-          <p className="mx-6 mt-3 text-caption text-[var(--text-faint)] max-md:mx-4">
+          <p className={`page-inset-mx mt-3 text-caption text-[var(--text-faint)]`}>
             {isMobile
               ? "顺序即首页「我的媒体库」的展示顺序，在 ··· 菜单里「调整顺序」"
               : dragEnabled

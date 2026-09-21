@@ -1,7 +1,7 @@
 "use client";
 
 import { AppUpdateDot, usePendingUpdate } from "@/components/app-update-entry";
-import { ArrowLeftIcon } from "@/components/icons";
+import { ChevronLeftIcon } from "@/components/icons";
 import { settingsSectionGroupsFor } from "@/lib/mock-data";
 import { useSession } from "@/lib/session";
 
@@ -40,7 +40,7 @@ export function NetflixSettingsSidebar({
           onClick={onBack}
           className="flex items-center gap-1.5 rounded-[4px] px-1 py-1 text-ui font-medium text-[var(--text-muted)] transition-colors hover:text-white"
         >
-          <ArrowLeftIcon className="size-4" />
+          <ChevronLeftIcon className="size-4" />
           <span>返回工作台</span>
         </button>
       </div>

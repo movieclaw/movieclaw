@@ -32,7 +32,7 @@ export function LibraryCollectionsView({
 }) {
   if (collections.length === 0) {
     return (
-      <div className="px-6 py-16 text-center text-ui leading-7 text-[var(--text-muted)] max-md:px-4">
+      <div className={`py-16 text-center text-ui leading-7 text-[var(--text-muted)] page-inset`}>
         {emptyHint ?? "还没有合集。筛出一批片之后，点「存为合集」就能把这组条件留下来。"}
       </div>
     );
@@ -73,11 +73,11 @@ function CollectionGrid({
   return (
     <section>
       {title && (
-        <h2 className="px-6 pb-3 text-sub font-medium tracking-wide text-[var(--text-faint)] max-md:px-4">
+        <h2 className={`pb-3 text-sub font-medium tracking-wide text-[var(--text-faint)] page-inset`}>
           {title}
         </h2>
       )}
-      <div className="grid gap-x-4 gap-y-7 px-6 [grid-template-columns:repeat(auto-fill,minmax(168px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:px-4 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]">
+      <div className={`grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(168px,1fr))] page-inset max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]`}>
         {collections.map((collection) => (
           <CollectionCell key={collection.id} collection={collection} libraryId={libraryId} />
         ))}

@@ -108,7 +108,7 @@ export function MediaSearchResults({
   return (
     <div className="relative flex h-full flex-col">
       {/* 状态行：与站点资源垂直的头部同构（关键词 + 快照提示） */}
-      <header className="shrink-0 px-6 pb-3 pt-4 max-md:px-4 max-md:pt-3">
+      <header className={`shrink-0 pb-3 pt-4 page-inset max-md:pt-3`}>
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
           <h1 className="text-on-image text-title-lg font-semibold tracking-[-0.01em] text-white">
             “{keyword}”
@@ -119,7 +119,7 @@ export function MediaSearchResults({
             <div className="ml-auto flex items-center gap-2">
               <span
                 title="这是历史留存的结果快照，来源站数据（评分/海报）可能已变化"
-                className="flex items-center gap-1.5 rounded-full border border-[#6aa7ff]/30 bg-[#6aa7ff]/12 px-2.5 py-1 text-caption text-[#b9d4ff] backdrop-blur-sm"
+                className="flex items-center gap-1.5 rounded-full border border-[var(--info-soft)]/30 bg-[var(--info-soft)]/12 px-2.5 py-1 text-caption text-[var(--info-text)] backdrop-blur-sm"
               >
                 <svg
                   viewBox="0 0 24 24"
@@ -151,7 +151,7 @@ export function MediaSearchResults({
 
       <div
         ref={scrollRef}
-        className="scroll-thin scroll-safe relative min-h-0 flex-1 overflow-y-auto px-6 pb-6 max-md:px-4"
+        className={`scroll-thin scroll-safe relative min-h-0 flex-1 overflow-y-auto pb-6 page-inset`}
       >
         {allEmpty ? (
           <MediaSearchEmpty

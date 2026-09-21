@@ -10,8 +10,8 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { BrandLoader } from "@/components/brand-loader";
 import { useConfirm, useToast } from "@/components/feedback";
 import {
-  ArrowLeftIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
   FilmIcon,
   MoreIcon,
   RefreshIcon,
@@ -19,10 +19,9 @@ import {
 } from "@/components/icons";
 import { MediaSourceAnnotationDialog } from "@/components/media-source-annotation-dialog";
 import { Modal } from "@/components/modal";
-import { NetflixBackButton } from "@/components/netflix/back-button";
-import { PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { useBackNavigation } from "@/lib/back-navigation";
+import { useResolvedTheme } from "@/themes/registry";
 import { PosterImage } from "@/components/poster-image";
 import { specSummary, upgradeTargetLabel } from "@/components/rule-sets-panel";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
@@ -57,8 +56,6 @@ import { subscriptionStatusMeta } from "@/lib/subscription-ui";
 import { formatDateTime, formatRelativeTime } from "@/lib/time";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { usePermissions } from "@/lib/permissions";
-import { useTheme } from "@/lib/ui-prefs";
-import { useIsMobile } from "@/lib/use-media-query";
 
 /**
  * 订阅详情分析页（/subscriptions/[id]）：订阅透明化的落点。
@@ -177,32 +174,27 @@ export function SubscriptionInspectorView({
   // 「本页自带顶栏」，否则移动端全局顶栏（☰ + logo）会先显示再消失、顶部闪一下。
   const navFallback = { label: "我的订阅", href: "/subscriptions" as Route };
 
-  // Netflix 桌面：圆角玻璃返回键（PageNav）退役，换裸白 chevron——与媒体
-  // 详情页同一返回语言（web-themes.md §5.5 修订①）。移动端仍保留 PageNav：
-  // 它要向外壳登记「本页自带顶栏」并充当返回入口。
-  const themeId = useTheme().id;
-  const isMobile = useIsMobile();
-  const isNfDesktop = themeId === "netflix" && !isMobile;
+  // Netflix 桌面返回语言一套：全出血(isHome)详情页用 NetflixBackButton；带
+  // PageNav 工具条的页面用 PageNav 内返回键；两者同图标 / 同尺寸档 / 同 4vw
+  // 基线 / 同 useBackNavigation 行为。本页属前者，PageNav 退役；移动端仍保留
+  // PageNav：它要向外壳登记「本页自带顶栏」并充当返回入口。
   const back = useBackNavigation(navFallback.href);
+  const { slots } = useResolvedTheme();
+  const DetailNav = slots.detailNav;
 
   if (failed) {
     return (
       <div className="flex h-full flex-col">
-        {isNfDesktop ? (
-          <NetflixBackButton onBack={back} />
-        ) : (
-          <PageNav title="" fallback={navFallback} />
-        )}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <div className="flex flex-1 flex-col items-center justify-center gap-4">
           <p className="text-body text-[var(--text-muted)]">未能加载该订阅，可能已被删除。</p>
-          <Link
-            href="/subscriptions"
-            replace
-            className="btn-glass px-4 py-2 text-ui font-medium"
-          >
-            <ArrowLeftIcon className="size-4" />
+          {/* 失败态的返回出口与全站同一语言：走 useBackNavigation（上方 back，
+              有站内历史 router.back()，直达落地 replace 到结构父级），不再用
+              <Link replace> 固定跳兜底地址——真实来路优先，兜底只补直达 */}
+          <button type="button" onClick={back} className="btn-glass px-4 py-2 text-ui font-medium">
+            <ChevronLeftIcon className="size-4" />
             返回订阅列表
-          </Link>
+          </button>
         </div>
       </div>
     );
@@ -211,11 +203,7 @@ export function SubscriptionInspectorView({
   if (!detail) {
     return (
       <div className="flex h-full flex-col">
-        {isNfDesktop ? (
-          <NetflixBackButton onBack={back} />
-        ) : (
-          <PageNav title="" fallback={navFallback} />
-        )}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <div className="flex flex-1 items-center justify-center gap-2.5 text-ui text-[var(--text-muted)]">
           <BrandLoader className="size-5" />
           正在加载订阅详情…
@@ -356,24 +344,27 @@ export function SubscriptionInspectorView({
   };
 
   return (
-    <div className="scroll-thin scroll-safe flex-1 overflow-y-auto px-6 pb-12 max-md:px-4">
-      {/* 顶栏：返回订阅列表 + 吸顶片名（容器已有 px-6，用 -mx-6 让吸顶蒙版铺满）。
-          Netflix 桌面换裸白 chevron（见上方 isNfDesktop 注释） */}
-      {isNfDesktop ? (
-        <NetflixBackButton onBack={back} />
-      ) : (
-        <PageNav
-          title={detail.media.title}
-          fallback={navFallback}
-          className="-mx-6 max-md:-mx-4"
-        />
-      )}
+    <div
+      className={`scroll-thin scroll-safe flex-1 overflow-y-auto pb-12 ${
+        // 正文留白走主题变量档（--page-inset：银玻璃 px-6、Netflix 4vw——
+        // 与 NetflixBackButton 的 left-[4vw] 同一条线）
+        "page-inset"
+      }`}
+    >
+      {/* 顶栏：返回订阅列表 + 吸顶片名（满宽蒙版走 page-inset-bleed 反向抵消） */}
+      <DetailNav
+        title={detail.media.title}
+        fallback={navFallback}
+        onBack={back}
+        className="page-inset-bleed"
+      />
       {/* —— 1. 订阅摘要卡：状态、身份、配置、进度、操作自上而下形成单路径。
           海报仍提供条目辨识与轻量氛围，但背景只低透明度取色，不再压过正文。
           PageNav 已占一行导航高度，摘要卡再按一级页基线留出桌面 28px / 移动端
           16px 的内容间距，避免重卡片贴住顶栏。
           sub-hero-card / sub-hero-tint：Netflix 主题的作用域覆盖钩子（globals.css，
-          #181818 实底 + 黑系渐变——银玻璃冷蓝黑与纯黑画布不同相）。 —— */}
+          #181818 实底 + 黑系渐变——银玻璃冷蓝黑与纯黑画布不同相）；Netflix 桌面
+          的让位间距（摘要卡让到返回键底之下）也挂在 globals.css 的桌面档里。 —— */}
       <section className="sub-hero-card relative mt-7 overflow-hidden rounded-2xl bg-[#0d111b] shadow-[0_24px_70px_-18px_rgba(0,0,0,0.58)] ring-1 ring-white/10 max-md:mt-4">
         {poster && (
           <PosterImage
@@ -993,14 +984,17 @@ function ProgressStrip({
           style={{ width: `${(upgrading / denom) * 100}%` }}
         />
         <div
-          className="bg-[#6aa7ff]"
+          // 「管线中」段走 --info-soft、图例点走 --info-legend：银玻璃各自保值
+          // （#6aa7ff / 与 --info 同值的 #7fb0ff，旧双值并存），Netflix 归一成白，
+          // 条带与图例不再错色；青色「洗版」段属另一挂起项，不在本次范围
+          className="bg-[var(--info-soft)]"
           style={{ width: `${(inPipeline / denom) * 100}%` }}
         />
       </div>
       <div className="tnum mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-caption text-white/45">
         <ProgressLegend color="var(--ok)" label={`已入库 ${importedSettled}`} />
         {upgrading > 0 && <ProgressLegend color="#2dd4bf" label={`洗版中 ${upgrading}`} />}
-        <ProgressLegend color="var(--info)" label={`下载中 ${inPipeline}`} />
+        <ProgressLegend color="var(--info-legend)" label={`下载中 ${inPipeline}`} />
         <ProgressLegend color="rgba(255,255,255,0.2)" label={`缺失 ${wanted}`} />
       </div>
     </div>
@@ -1070,7 +1064,9 @@ function SearchRoundBar({
     .sort()[0];
 
   return (
-    <div className="rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl">
+    // solid-card：Netflix 换皮钩子（#181818 实底 + --line 描边 + 关 blur），
+    // 本页另一批同型玻璃卡照 sub-hero-card 的收口路数补钩子；银玻璃零变化
+    <div className="solid-card rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
         <span
           className="size-1.5 shrink-0 rounded-full bg-[var(--info)]"
@@ -1107,7 +1103,7 @@ function ActivityLogSection({ activities }: { activities: SubscriptionActivity[]
   const [open, setOpen] = useState(false);
   if (activities.length === 0) return null;
   return (
-    <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl">
+    <div className="solid-card overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl">
       <button
         type="button"
         aria-expanded={open}
@@ -1175,7 +1171,7 @@ function ActivityTimeline({
 }) {
   if (activities.length === 0) {
     return (
-      <p className="rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] p-5 text-sub leading-6 text-[var(--text-muted)] backdrop-blur-xl">
+      <p className="solid-card rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] p-5 text-sub leading-6 text-[var(--text-muted)] backdrop-blur-xl">
         暂无活动记录。系统开始搜索、匹配或投递后，每个动作都会记录在这里。
       </p>
     );
@@ -1185,7 +1181,7 @@ function ActivityTimeline({
       className={
         bare
           ? "px-6 py-5 max-md:px-4"
-          : "rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] px-6 py-5 backdrop-blur-xl"
+          : "solid-card rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] px-6 py-5 backdrop-blur-xl"
       }
     >
       <ol>
@@ -1295,7 +1291,7 @@ function WantedBreakdown({
   const [openWanted, setOpenWanted] = useState<number | null>(null);
   if (wanted.length === 0) {
     return (
-      <p className="rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] p-5 text-sub leading-6 text-[var(--text-muted)] backdrop-blur-xl">
+      <p className="solid-card rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] p-5 text-sub leading-6 text-[var(--text-muted)] backdrop-blur-xl">
         当前没有追踪项。开启「自动续订」后，新集播出会自动加入。
       </p>
     );
@@ -1322,7 +1318,7 @@ function WantedBreakdown({
           return (
             <div
               key={season}
-              className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl"
+              className="solid-card overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl"
             >
               {(!isMovie || annotatable.has(season)) && (
                 /* 折叠热区用 role="button" 的 div 而不是 <button>：季头行里还有

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { ArrowLeftIcon } from "@/components/icons";
+import { ChevronLeftIcon } from "@/components/icons";
 import { EndpointForm } from "@/components/mcp/endpoint-form";
 import { ToolCatalog } from "@/components/mcp/tool-catalog";
 import {
@@ -25,7 +25,7 @@ import {
 } from "@/lib/api/mcp";
 import { useBackdrop } from "@/lib/backdrop";
 import { relativeTime } from "@/lib/devices-display";
-import { LiquidGlassButton } from "@/vendor/liquid-glass";
+import { LiquidGlassButton } from "@/components/liquid-glass";
 
 type Tab = "overview" | "tools" | "settings";
 
@@ -118,12 +118,15 @@ export function EndpointDetail({
           返回 → 标题 + 启停 → 一行淡色元信息（状态 / 地址 / 形态）。
           工具数挪到「工具」页签上，数字就长在它对应的入口旁边。 */}
       <div>
+        {/* 「全部端点」是钻取层（端点详情 → 端点列表）的返回出口，语义属「返回」
+            而非「前进/进入」（父级接线是 onBack = 退出详情回列表，见上方头部
+            注释的分层说明）——图标因此随全站返回语言统一为 ChevronLeft */}
         <button
           type="button"
           onClick={onBack}
           className="btn-glass mb-3 px-2.5 py-1 text-caption font-medium text-[var(--text-muted)]"
         >
-          <ArrowLeftIcon className="size-3.5" />
+          <ChevronLeftIcon className="size-3.5" />
           全部端点
         </button>
 

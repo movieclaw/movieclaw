@@ -350,7 +350,9 @@ export function TaskActionsMenu({
               disabled={item.disabled}
               className={`${itemClass} ${
                 item.tone === "danger"
-                  ? "!text-[#ff6b6b] data-[highlighted]:!bg-[#ff6b6b]/10"
+                  ? // 危险项字色消费 --danger：银玻璃 :root 同值（#ff6b6b）零变化，
+                    // Netflix 主题取与品牌红刻意区分的状态红 #eb3942
+                    "!text-[var(--danger)] data-[highlighted]:!bg-[var(--danger)]/10"
                   : "text-white/75"
               }`}
             >
@@ -557,15 +559,21 @@ export function JobCard({ job, onNavigate }: { job: JobView; onNavigate: () => v
   ];
 
   return (
+    // solid-card：Netflix 主题换皮钩子（globals.css netflix 块，只接管描边色/
+    // 实底/投影，银玻璃下无基样式零变化）。任务中心同页下载卡已挂（
+    // task-center-view.tsx），这是漏掉的同一批卡面；状态色描边变体照钩子
+    // 约定让位给实底+--line 材质，状态信号仍由 StatusDot 承担。
     <article
-      className={`overflow-hidden rounded-2xl border bg-[rgba(14,16,22,0.52)] ${cardBorder} ${compact ? "px-3.5 py-2.5" : "p-4"}`}
+      className={`solid-card overflow-hidden rounded-2xl border bg-[rgba(14,16,22,0.52)] ${cardBorder} ${compact ? "px-3.5 py-2.5" : "p-4"}`}
     >
       <div className="min-w-0">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
             <StatusDot status={job.status} />
+            {/* 发丝描边消费 --line：银玻璃 :root 同值（白 0.08）零变化，
+                Netflix 主题自动取实线灰 */}
             {job.subject && (
-              <span className="shrink-0 rounded-md border border-white/[0.08] bg-white/[0.045] px-1.5 py-0.5 text-micro font-medium text-white/55">
+              <span className="shrink-0 rounded-md border border-[var(--line)] bg-white/[0.045] px-1.5 py-0.5 text-micro font-medium text-white/55">
                 {jobTypeLabel}
               </span>
             )}
@@ -717,6 +725,9 @@ export function JobCard({ job, onNavigate }: { job: JobView; onNavigate: () => v
         )}
 
         {actionError && (
+          // 错误文字保留 #ff9f9f 浅红字面量：:root --danger=#ff6b6b 与之不同值，
+          // 收口会让银玻璃可见变化，待设计决策（与上方菜单危险项的同值收口
+          // 性质不同——那是 :root 同值零变化）
           <p className="mt-2 text-caption leading-5 text-[#ff9f9f]">{actionError}</p>
         )}
       </div>
@@ -729,7 +740,9 @@ export function JobCard({ job, onNavigate }: { job: JobView; onNavigate: () => v
           {originLabel(job)} · {formatRelativeTime(job.created_at)}
         </OverflowText>
         {dismissed && (
-          <span className="ml-auto shrink-0 rounded-md border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 text-micro text-white/40">
+          // 描边/填充换消费 token：--line 与 --glass-fill 的 :root 值与原字面量
+          // 完全相同（白 0.08 / 白 0.04），银玻璃零变化，Netflix 主题自动换档
+          <span className="ml-auto shrink-0 rounded-md border border-[var(--line)] bg-[var(--glass-fill)] px-1.5 py-0.5 text-micro text-white/40">
             已忽略
           </span>
         )}

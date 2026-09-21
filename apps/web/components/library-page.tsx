@@ -1,8 +1,7 @@
 "use client";
 
 import { LibraryView } from "@/components/library-view";
-import { NetflixLibraryHero } from "@/components/netflix/library-hero";
-import { useTheme } from "@/lib/ui-prefs";
+import { useResolvedTheme } from "@/themes/registry";
 
 /**
  * 媒体库页本体（/library 的客户端部分）。
@@ -13,10 +12,10 @@ import { useTheme } from "@/lib/ui-prefs";
  * 根部的 flex 列容器为 LibraryView 的滚动区提供确定高度。
  */
 export function LibraryPageBody() {
-  const isNetflix = useTheme().id === "netflix";
+  const LibraryHero = useResolvedTheme().slots.libraryHero;
   return (
     <div className="flex h-full flex-col">
-      <LibraryView hero={isNetflix ? <NetflixLibraryHero /> : null} />
+      <LibraryView hero={LibraryHero ? <LibraryHero /> : null} />
     </div>
   );
 }

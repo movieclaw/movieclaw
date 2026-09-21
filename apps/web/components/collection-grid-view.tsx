@@ -17,6 +17,7 @@ import { PosterCard } from "@/components/poster-card";
 import { browseDiscoveryCollection } from "@/lib/api/discover";
 import type { MediaItem } from "@/lib/media-types";
 import { createSessionSnapshots } from "@/lib/session-snapshot";
+import { useTheme } from "@/lib/ui-prefs";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 
 const TMDB_PAGE_SIZE = 20;
@@ -57,6 +58,8 @@ export function CollectionGridView({
 }) {
   const initialSnapshot = getCollectionGridSnapshot(collectionRef);
   const scrollRef = useScrollRestoration(`collection:${collectionRef}`);
+  const isNf = useTheme().structural;
+  const fullGrid = isNf ? "mt-8" : "mx-auto mt-8 max-w-[1500px]";
   const [items, setItems] = useState<MediaItem[] | null>(() => initialSnapshot?.items ?? null);
   const [title, setTitle] = useState(() => initialSnapshot?.title ?? "影视片单");
   const [query, setQuery] = useState("");
@@ -254,19 +257,19 @@ export function CollectionGridView({
     <div
       ref={scrollRef}
       data-scroll-root
-      className="scroll-thin scroll-safe flex-1 overflow-y-auto px-6 pb-12 max-md:px-4"
+      className={`scroll-thin scroll-safe flex-1 overflow-y-auto pb-12 page-inset`}
     >
       {/* 顶栏：返回发现电影（保留豆瓣数据源视角）+ 吸顶榜单名；
-          容器已有 px-6，用 -mx-6 让吸顶蒙版铺满整宽 */}
+          容器已有左右留白，用等量负边距让吸顶蒙版铺满整宽 */}
       <PageNav
         title={title}
         fallback={{
           label: mediaType === "tv" ? "发现剧集" : "发现电影",
           href: `/discover/${mediaType === "tv" ? "tv" : "movie"}?source=${provider === "douban" ? "douban" : "tmdb"}` as Route,
         }}
-        className="-mx-6 max-md:-mx-4"
+        className="page-inset-bleed"
       />
-      <header className="mx-auto max-w-[1500px]">
+      <header className={isNf ? undefined : "mx-auto max-w-[1500px]"}>
         <div className="mt-1 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
           <div>
             <p className="text-sub font-semibold tracking-[0.18em] text-[var(--accent-2)]">
@@ -349,7 +352,7 @@ export function CollectionGridView({
       {!items && !error && <CollectionSkeleton />}
 
       {items && (
-        <main className="mx-auto mt-8 max-w-[1500px]">
+        <main className={fullGrid}>
           {filtered.length === 0 ? (
             <div className="py-20 text-center text-body text-[var(--text-muted)]">
               没有找到匹配的影片
@@ -394,8 +397,16 @@ export function CollectionGridView({
 }
 
 function CollectionSkeleton() {
+  // 与正文网格同一套主题栅格：Netflix 全幅、银玻璃居中 1500px
+  const isNf = useTheme().structural;
   return (
-    <div className="mx-auto mt-8 grid max-w-[1500px] grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8">
+    <div
+      className={
+        isNf
+          ? "mt-8 grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8"
+          : "mx-auto mt-8 grid max-w-[1500px] grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8"
+      }
+    >
       {Array.from({ length: 24 }, (_, index) => (
         <div
           key={index}

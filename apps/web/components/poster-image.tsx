@@ -121,7 +121,7 @@ export function PosterImage({
       fallback ?? (
         <div
           aria-hidden="true"
-          className={`bg-gradient-to-b from-white/[0.05] to-[#141824] ${className}`}
+          className={`bg-gradient-to-b from-white/[0.05] to-[var(--poster-placeholder)] ${className}`}
         />
       )
     );
@@ -143,7 +143,7 @@ export function PosterImage({
         onLoad={() => setLoaded(true)}
         // 加载完成前先透明、就位后 500ms 淡入：避免大图解码完成那一帧「突然出现」。
         // 就位后不再带任何 opacity 类——不干扰调用方自己的 hover 透明度效果。
-        className={`bg-[#141824] object-cover transition-opacity duration-500 ease-out ${
+        className={`bg-[var(--poster-placeholder)] object-cover transition-opacity duration-500 ease-out ${
           loaded ? "" : "opacity-0"
         } ${className}`}
       />

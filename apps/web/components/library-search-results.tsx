@@ -54,7 +54,7 @@ export function LibrarySearchResults({
   return (
     <div className="relative flex h-full flex-col">
       {/* 状态行：与另外两个垂直的头部同构（关键词） */}
-      <header className="shrink-0 px-6 pb-3 pt-4 max-md:px-4 max-md:pt-3">
+      <header className={`shrink-0 pb-3 pt-4 page-inset max-md:pt-3`}>
         <h1 className="text-on-image text-title-lg font-semibold tracking-[-0.01em] text-white">
           “{keyword}”
         </h1>
@@ -62,7 +62,7 @@ export function LibrarySearchResults({
 
       <div
         ref={scrollRef}
-        className="scroll-thin scroll-safe relative min-h-0 flex-1 overflow-y-auto px-6 pb-6 max-md:px-4"
+        className={`scroll-thin scroll-safe relative min-h-0 flex-1 overflow-y-auto pb-6 page-inset`}
       >
         {groups === null && !error && <LibrarySearchSkeleton />}
         {(error || empty) && (

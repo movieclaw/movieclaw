@@ -42,7 +42,7 @@ import {
 import { useBackdrop } from "@/lib/backdrop";
 import { formatRelativeTime } from "@/lib/time";
 import { useTabParam } from "@/lib/use-tab-param";
-import { LiquidGlassButton } from "@/vendor/liquid-glass";
+import { LiquidGlassButton } from "@/components/liquid-glass";
 
 export function ImPushSection() {
   // ?tab=content 深链直达推送内容，切换写回地址栏（useTabParam，全设置页同一套）
@@ -103,17 +103,19 @@ function ChannelsTab() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      // 三个平台同源同后端，任一失败都视作整体失败：与其展示半张列表让用户
+      // 各平台同源同后端，任一失败都视作整体失败：与其展示半张列表让用户
       // 误以为"某个通道掉了"，不如明确报错让他重试
-      const [weixin, telegram, discord] = await Promise.all([
+      const [weixin, telegram, discord, feishu] = await Promise.all([
         listWeixinAccounts(),
         listImAccounts("telegram"),
         listImAccounts("discord"),
+        listImAccounts("feishu"),
       ]);
       setRows([
         ...weixin.map((a) => ({ ...a, channel: "weixin" as const })),
         ...telegram.map((a) => ({ ...a, channel: "telegram" as const })),
         ...discord.map((a) => ({ ...a, channel: "discord" as const })),
+        ...feishu.map((a) => ({ ...a, channel: "feishu" as const })),
       ]);
     } catch (e) {
       setError((e as Error).message);
@@ -133,7 +135,9 @@ function ChannelsTab() {
         description:
           row.channel === "weixin"
             ? "解绑后需重新扫码才能使用。"
-            : "解绑将删除 bot 凭据并停止通道，需重新配对才能使用。",
+            : row.channel === "feishu"
+              ? "解绑后群机器人不再收到推送，需重新粘贴 Webhook 地址。"
+              : "解绑将删除 bot 凭据并停止通道，需重新配对才能使用。",
         confirmLabel: "解绑",
         tone: "danger",
       }))
@@ -157,7 +161,7 @@ function ChannelsTab() {
   return (
     <div className="space-y-5">
       <p className="text-sub leading-6 text-[var(--text-muted)]">
-        接入的通道既是推送目标，也是 AI 助手的对话入口：直接给它发消息即可搜片、订阅、查进度。
+        接入的通道都是推送目标；微信 / Telegram / Discord 里还能直接和 AI 助手对话：发消息即可搜片、订阅、查进度。
         发送
         <span className="mx-1 rounded bg-white/[0.08] px-1.5 py-0.5 text-caption">/reset</span>
         重置会话，
@@ -198,7 +202,7 @@ function ChannelsTab() {
           <div>
             <p className="text-body font-medium text-[var(--text)]">还没有接入任何通道</p>
             <p className="mt-1 text-sub text-[var(--text-muted)]">
-              点击右上角「新增通道」，支持微信、Telegram 和 Discord。
+              点击右上角「新增通道」，支持微信、Telegram、Discord 和飞书。
             </p>
           </div>
         </div>
@@ -224,7 +228,11 @@ function ChannelsTab() {
             const label = CHANNEL_META[binding].label;
             setBinding(null);
             void load();
-            toast.success(`${label} 已接入，现在就可以给它发消息试试`);
+            toast.success(
+              binding === "feishu"
+                ? `${label} 已接入，去飞书群里看看欢迎消息吧`
+                : `${label} 已接入，现在就可以给它发消息试试`,
+            );
           }}
         />
       )}
@@ -320,7 +328,9 @@ function ChannelAccountRowView({
         <p className="mt-0.5 truncate text-caption text-[var(--text-faint)]">
           {row.status === "stale"
             ? (row.last_error ?? "凭据已失效，请重新绑定")
-            : `${row.bound_user_id ?? row.account_id} · 绑定于 ${formatRelativeTime(row.bound_at)}`}
+            : row.channel === "feishu"
+              ? `群机器人 · 绑定于 ${formatRelativeTime(row.bound_at)}`
+              : `${row.bound_user_id ?? row.account_id} · 绑定于 ${formatRelativeTime(row.bound_at)}`}
         </p>
       </div>
       <button

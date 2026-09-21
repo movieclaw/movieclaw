@@ -90,7 +90,7 @@ const todayArrivalStyle: Record<
 };
 
 /**
- * 订阅页的银玻璃布局（Netflix 主题走 components/netflix/subscriptions-page.tsx，
+ * 订阅页的银玻璃布局（Netflix 主题走 themes/netflix/pages/subscriptions-page.tsx，
  * 入口分流见 components/subscriptions-page.tsx）：用户全部订阅的海报墙。
  *
  * 数据直接消费 SubscribeEntryProvider 的全站订阅列表（唯一数据源）：

@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 
 import { AccountSwitcherDialog } from "@/components/account-switcher-dialog";
 import { AvatarBadge } from "@/components/avatar-badge";
-import { MovieclawMark } from "@/components/netflix/brand";
+import { MovieclawMark } from "@/components/brand";
 import {
   ActivityIcon,
   ChevronRightIcon,

@@ -15,12 +15,12 @@ import { BrandLoader } from "@/components/brand-loader";
 import { CastRow } from "@/components/cast-row";
 import { ChapterStrip } from "@/components/chapter-strip";
 import { MediaTrackRows } from "@/components/media-track-rows";
-import { NetflixBackButton, NetflixPageActions } from "@/components/netflix/back-button";
-import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
+import { PAGE_NAV_BUTTON_CLASS } from "@/components/page-nav";
+import { useResolvedTheme } from "@/themes/registry";
 import { HScroller } from "@/components/h-scroller";
 import {
-  ArrowLeftIcon,
   CheckIcon,
+  ChevronLeftIcon,
   ChevronRightIcon,
   FolderIcon,
   HeartIcon,
@@ -325,7 +325,8 @@ export function LibraryItemDetailView({
   // 的 setOverrideBackdrop。没有横幅剧照时退回海报，覆盖层自己会铺满作氛围色。
   const { setOverrideBackdrop } = useBackdrop();
   const isMobile = useIsMobile();
-  const isNfDesktop = useTheme().id === "netflix" && !isMobile;
+  const isNf = useTheme().structural;
+  const isNfDesktop = isNf && !isMobile;
   // Netflix 桌面的滚动退场（与发现详情页同一套）：挂 html.nf-hero-live 标记类，
   // 把滚动进度写进 --nf-hero-recede，globals.css 据此给沉浸覆盖层加渐暗 + 模糊、
   // 左侧纯黑遮罩护住上移后的标题。仅桌面启用——手机的剧照是页内 Hero
@@ -452,11 +453,11 @@ export function LibraryItemDetailView({
     : fromRecent
       ? { label: "媒体库", href: "/library" as Route }
       : { label: library?.name ?? "库存", href: `/library/${libraryId}` as Route };
-  // Netflix 桌面的顶栏（fixed z-40）会把 PageNav（sticky z-30）整个盖住——
-  // 返回键与 ⋯ 菜单都点不到（发现详情页踩过并修过的同款问题）；该形态下
-  // 退役 PageNav，改用悬浮返回键 + 页面操作簇（见 media-detail-view 的
-  // hidePageNav 分支，银玻璃与移动端仍走 PageNav）。
-  const hidePageNav = isNfDesktop;
+  // 详情页返回导航走主题坑位：Netflix 桌面 = 悬浮返回键 + 页面操作簇
+  // （fixed z-30，避开 z-40 顶栏的遮挡），银玻璃与移动端 = PageNav 工具条。
+  const { slots } = useResolvedTheme();
+  const DetailNav = slots.detailNav;
+  const PageActions = slots.pageActions;
   const back = useBackNavigation(navFallback.href);
 
   if (failed) {
@@ -464,21 +465,23 @@ export function LibraryItemDetailView({
       // ambient-fallback：同 MediaDetailView——本页豁免全局蒙版，兜底态没有沉浸
       // 背景可铺，文案会压在用户壁纸上，自己带一层底才读得清
       <div className="ambient-fallback flex h-full flex-col">
-        {!hidePageNav && <PageNav title="" fallback={navFallback} />}
-        {hidePageNav && <NetflixBackButton onBack={back} />}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
           <p className="text-body-lg font-semibold text-[var(--text)]">未能加载该条目</p>
           <p className="max-w-sm text-ui leading-6 text-[var(--text-muted)]">
             条目可能已被删除或重新识别为其他作品，请返回后查看。
           </p>
-          <Link
-            href={navFallback.href}
-            replace
+          {/* 失败态的返回出口与全站同一语言：走 useBackNavigation（上方 back，
+              有站内历史 router.back()，直达落地 replace 到结构父级），不再用
+              <Link replace> 固定跳兜底地址——真实来路优先，兜底只补直达 */}
+          <button
+            type="button"
+            onClick={back}
             className="btn-glass flex items-center gap-2 px-4 py-2 text-ui font-medium text-[var(--text)]"
           >
-            <ArrowLeftIcon className="size-4" />
+            <ChevronLeftIcon className="size-4" />
             返回{navFallback.label}
-          </Link>
+          </button>
         </div>
       </div>
     );
@@ -487,8 +490,7 @@ export function LibraryItemDetailView({
   if (!detail) {
     return (
       <div className="ambient-fallback flex h-full flex-col">
-        {!hidePageNav && <PageNav title="" fallback={navFallback} />}
-        {hidePageNav && <NetflixBackButton onBack={back} />}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <div className="flex flex-1 items-center justify-center gap-2.5 text-ui text-[var(--text-muted)]">
           <BrandLoader className="size-5" />
           正在读取本地刮削信息…
@@ -721,14 +723,8 @@ export function LibraryItemDetailView({
           全局蒙版，见 app-shell 的 isHome），大图直出、零边界；.detail-ambient
           在滚动容器上铺「透明 → 纯黑」的渐变板托住下方内容（见 globals.css）。
           顶栏首屏只有返回键与操作入口浮在剧照上。 */}
-      {hidePageNav ? (
-        <>
-          <NetflixBackButton onBack={back} />
-          <NetflixPageActions>{itemActions}</NetflixPageActions>
-        </>
-      ) : (
-        <PageNav title={detail.title} fallback={navFallback} actions={itemActions} />
-      )}
+      <DetailNav title={detail.title} fallback={navFallback} onBack={back} actions={itemActions} />
+      {PageActions && <PageActions>{itemActions}</PageActions>}
 
       {/* 手机 Hero（剧照）：宽度撑满，从状态栏底下起铺（绝对定位在滚动内容顶端，PageNav
           的返回键与吸顶雾层浮在它上面），随内容一起滚走，不固定在背景上。顶部一抹暗让状态栏
@@ -763,7 +759,7 @@ export function LibraryItemDetailView({
           遮罩直接落在剧照上，与发现详情页同一构图）。 */}
       <div className="detail-content relative z-10 -mt-28 pb-12 pt-28">
       {/* —— 头部信息区 —— */}
-      <div className="relative z-10 px-12 pt-6 max-md:px-4 max-md:pt-3">
+      <div className={`relative z-10 pt-6 content-inset max-md:pt-3`}>
         <div className="min-w-0 max-w-5xl pb-1">
           {/* break-words：未识别条目的标题就是文件名（Some.Movie.2023.2160p…），
               整串无空格，不允许断词就会横向撑开整页 */}
@@ -917,7 +913,10 @@ export function LibraryItemDetailView({
 
           {/* 元数据刷新的失败提示（识别相关的结论都在「修正识别结果」弹窗里给） */}
           {refreshError && (
-            <div className="mt-4 max-w-2xl rounded-xl border border-white/[0.1] bg-[rgba(14,16,22,0.6)] px-4 py-3 text-sub leading-6 text-[#ff9f9f] backdrop-blur-md">
+            // solid-card：Netflix 卡面钩子接管材质并关 blur（银玻璃零变化）；
+            // 字色保留 #ff9f9f 浅红字面量——:root --danger=#ff6b6b 与之不同值，
+            // 收口会让银玻璃可见变化，待设计决策
+            <div className="solid-card mt-4 max-w-2xl rounded-xl border border-white/[0.1] bg-[rgba(14,16,22,0.6)] px-4 py-3 text-sub leading-6 text-[#ff9f9f] backdrop-blur-md">
               {refreshError}
             </div>
           )}
@@ -926,12 +925,12 @@ export function LibraryItemDetailView({
 
       {/* 简介承接标题、类型与介质轨信息；电影与剧集保持同一阅读路径。 */}
       {itemPlot && (
-        <div className="mt-4 px-12 max-md:px-4">
+        <div className={`mt-4 content-inset`}>
           <ExpandablePlot text={itemPlot} />
         </div>
       )}
 
-      <div className="mt-9 space-y-8 px-12 max-md:mt-6 max-md:space-y-6 max-md:px-4">
+      <div className={`mt-9 space-y-8 max-md:mt-6 max-md:space-y-6 content-inset`}>
         {/* —— 剧集分集区：季选择 + 分集横滚卡 + 选中集的简介/规格/文件 —— */}
         {!isMovie && detail.seasons.length > 0 && (
           <SeasonEpisodesSection
@@ -1153,7 +1152,11 @@ export function LibraryItemDetailView({
  * 文字色不在同一个元素，不存在工具类互相覆盖的问题。
  */
 const MARK_BUTTON_CLASS =
-  "inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full border border-white/[0.12] bg-white/[0.08] text-white/85 backdrop-blur-md transition duration-200 hover:bg-white/[0.14] hover:text-white active:scale-[0.96] disabled:pointer-events-none disabled:opacity-60 md:size-12 max-md:h-11 max-md:px-4";
+  // page-nav-btn：圆钮主题钩子（与返回键/顶栏操作键同一族，银玻璃下无基样式
+  // 零变化）——Netflix 主题压成 --line 描边 + 实底深灰 + 关 blur，圆形按
+  // §2.3「圆形按钮除外」保留。不用 .btn-glass：其银玻璃基样式（胶囊+白透底）
+  // 会改变本组圆钮的银玻璃外观
+  "page-nav-btn inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full border border-white/[0.12] bg-white/[0.08] text-white/85 backdrop-blur-md transition duration-200 hover:bg-white/[0.14] hover:text-white active:scale-[0.96] disabled:pointer-events-none disabled:opacity-60 md:size-12 max-md:h-11 max-md:px-4";
 
 /**
  * 播放入口（主行动按钮 + 续播进度）。
@@ -1214,6 +1217,10 @@ export function PlayAction({
       ? Math.round((durationMs - positionMs) / 60000)
       : null;
   const label = finished ? "重新播放" : resumable ? "继续观看" : "播放";
+  // 窄屏禁用两枚标记钮的 Tooltip：按钮自己已带文字（下方 md:hidden 标签），
+  // 且实测 Tooltip 在窄屏未交互即自开、悬停叠压白色主按钮文案（视觉验收
+  // 实测，双主题复现）；桌面悬停提示保留
+  const isMobile = useIsMobile();
   const progressText = resumable
     ? [
         `看到 ${formatClock(positionMs)}`,
@@ -1245,6 +1252,7 @@ export function PlayAction({
             <Tooltip
               content={favorite ? `取消收藏${favoriteLabel}` : `收藏${favoriteLabel}`}
               dismissOnReferencePress
+              disabled={isMobile}
             >
               <button
                 type="button"
@@ -1264,7 +1272,11 @@ export function PlayAction({
             </Tooltip>
           )}
           {onTogglePlayed && (
-            <Tooltip content={finished ? "标记为未看" : "标记为已看"} dismissOnReferencePress>
+            <Tooltip
+              content={finished ? "标记为未看" : "标记为已看"}
+              dismissOnReferencePress
+              disabled={isMobile}
+            >
               <button
                 type="button"
                 onClick={onTogglePlayed}
@@ -1502,7 +1514,14 @@ function ItemActionsMenu({
 /** 图片地址：本地美术图是 API 相对路径（补 base），TMDB 图床走缓存代理。 */
 function imageUrl(url: string | null): string {
   if (!url) return "";
-  return /^https?:\/\//i.test(url) ? cachedImageUrl(url) : resolveRequestUrl(url);
+  if (/^https?:\/\//i.test(url)) return cachedImageUrl(url);
+  // 本地美术图路径由扫描端落库，Windows 机器上会带 `\` 分隔符（如
+  // /images/assets/5\backdrop.jpg）。这条地址在本页的桌面消费方是沉浸覆盖层的
+  // CSS background-image——CSS 字符串里 `\b` 会被解析成十六进制转义（U+0BAC），
+  // 请求路径被打碎成 404，Netflix 桌面的整页沉浸背景只剩纯黑；而 <img> 消费方
+  // （手机 Hero）按 URL 规范把 `\` 宽容为 `/`，同一张图反而加载正常——这正是
+  // 「页面没图、图在磁盘上明明存在」的假象来源。归一化后两处消费同一张图。
+  return resolveRequestUrl(url.replace(/\\/g, "/"));
 }
 
 const VIDEO_CODEC_LABELS: Record<string, string> = {
@@ -1857,7 +1876,7 @@ function EpisodeCard({
       }`}
     >
       <div
-        className={`relative aspect-video overflow-hidden rounded-xl bg-[#141824] transition ${
+        className={`relative aspect-video overflow-hidden rounded-xl bg-[var(--poster-placeholder)] transition ${
           selected
             ? "ring-2 ring-white/85 shadow-[0_10px_30px_rgba(0,0,0,0.5)]"
             : "ring-1 ring-white/[0.08] hover:ring-white/35"

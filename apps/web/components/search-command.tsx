@@ -710,7 +710,7 @@ function HistoryGroupRow({
           {latest.has_snapshot && (
             <span
               title="最近一次搜索已有结果快照，点击秒开预览"
-              className="shrink-0 rounded-md bg-[#6aa7ff]/15 px-1.5 py-0.5 text-micro text-[#9cc2ff]"
+              className="shrink-0 rounded-md bg-[var(--info-soft)]/15 px-1.5 py-0.5 text-micro text-[var(--info-text-2)]"
             >
               快照
             </span>
@@ -797,7 +797,7 @@ function HistorySingleRow({
         {item.has_snapshot && (
           <span
             title="已留存结果快照，点击秒开预览"
-            className="shrink-0 rounded-md bg-[#6aa7ff]/15 px-1.5 py-0.5 text-micro text-[#9cc2ff]"
+            className="shrink-0 rounded-md bg-[var(--info-soft)]/15 px-1.5 py-0.5 text-micro text-[var(--info-text-2)]"
           >
             快照
           </span>
@@ -838,7 +838,7 @@ function HistoryVariantRow({
           {item.vertical === "titles" ? "影视" : `资源 · ${item.label ?? "全部"}`}
         </span>
         {item.has_snapshot && (
-          <span className="shrink-0 rounded-md bg-[#6aa7ff]/15 px-1.5 py-0.5 text-micro text-[#9cc2ff]">
+          <span className="shrink-0 rounded-md bg-[var(--info-soft)]/15 px-1.5 py-0.5 text-micro text-[var(--info-text-2)]">
             快照
           </span>
         )}

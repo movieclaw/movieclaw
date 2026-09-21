@@ -283,6 +283,45 @@ Netflix 主题是**纯色平铺**设计，现有的三大氛围机制整体停�
 （缩略预览 = 预览色块 + 主题名），点击即走现有 `setPreview` 实时预览 + 保存回执流程，
 与外观分区的既有交互语言完全一致。
 
+### 3.7 主题插件化：目录契约与坑位注册表（2026-09-21 增补）
+
+主题升级为「可整体搬运的插件包」，机制详情见 `docs/design/theme-framework/`，此处立纪律：
+
+**目录契约**：一个主题 = `apps/web/themes/<id>/` 一个目录（`theme.ts` 定义装配 +
+`tokens.css` 变量与钩子覆盖 + `chrome/` 结构组件 + `pages/` 专属页）。
+银玻璃 = 基础实现本身（`:root` token + `components/` 基础组件），不设目录——
+「无插件即默认」。依赖方向单向：主题目录可 import 基础层（`@/lib/*`、`@/components/*`），
+基础层与业务组件**绝不** import 主题目录，唯一交点是 `themes/registry.tsx`。
+
+**坑位注册表**：主题可替换的组件位全表登记在 `themes/types.ts`（类型总账）+
+`themes/registry.tsx`（`BASE_SLOTS` 基础缺省 + `DEFINITIONS` 主题定义 +
+`getResolvedTheme`/`useResolvedTheme` 解析）。现有坑位：`desktopTopNav` /
+`mobileTabBar` / `mobileSettingsNav` / `settingsNav` / `detailNav` / `pageActions` /
+`libraryHero` 与专属页 `pages.{my,settingsIndex,subscriptions}`。解析语义：
+缺坑位回落基础实现（永不白屏）；未知坑位名 dev 断言报错；未知主题 id 回落默认主题。
+新增坑位流程：消费点先写 `slots.xxx ?? 基础实现`，再到 types.ts 立户——禁止绕过
+注册表的私下替换。
+
+**布局变量层**：页面左右留白是主题事实，进变量层——`--page-inset`（页面级，
+银玻璃 px-6 档 / Netflix 4vw）与 `--content-inset`（详情正文级，px-12 档 / 4vw），
+断点内收（≤767px → 1rem）定义在基础 media 组。页面一律消费语义工具类
+`page-inset` / `page-inset-mx` / `page-inset-bleed`（吸顶蒙版满宽的反向抵消，
+与 page-inset 天然成对）/ `content-inset`；**业务代码禁止手写主题留白判断与
+`4vw` 字面量**（tokens 覆盖组除外）。
+
+**能力声明与 vendor 边界**：主题经 `capabilities.glass` 声明是否使用液态玻璃；
+vendor（`vendor/liquid-glass`）只认 `glassEnabled` prop，**不得 import 主题机制或
+判断主题名**。业务组件从 `components/liquid-glass.tsx`（等名主题感知包装）取
+玻璃控件，由包装统一注入能力。
+
+**门禁（自检 / CI 可机检）**：`themes/` 与文档注释之外，业务代码 0 处
+`=== "netflix"`、0 处 `4vw` 字面量；`vendor/` 0 处 `useTheme`。违反任何一条 =
+破坏多主题框架。
+
+**「下载主题」预留**：主题目录即分发产物；落地时在 registry 增加动态 import 段，
+`getResolvedTheme` 同步签名与兜底路径不变。注意：JS 主题 = 同源可信代码，
+插件是 UI 资产边界、不是安全沙箱。
+
 ## 4. Netflix 主题 token 全表（`globals.css` 的 `html[data-theme="netflix"]` 覆盖组）
 
 | 现有 token | 银玻璃值 | Netflix 值 | 备注 |
@@ -392,6 +431,10 @@ Netflix 阴影，`.brand-badge` / `.nav-item` 选中胶囊 → 白系，播放�
   顶栏底下直出，其余页面照旧让位（`nf-nav-offset`）。
 
 ### 5.4 卡片行 `NetflixRow` 与卡片
+
+> **永不实现——2026-09-20 用户拍板：接线实测观感灾难，已全部回退；同日组件文件
+> `components/netflix/row.tsx` 已整个删除，全库零引用。下述设计仅作历史存档，
+> 禁止再实现或恢复 `NetflixRow`。**
 
 - **PC（hover:hover 设备）**：16:9 横版剧照（`backdropUrl`，数据层已在
   discover / libraries / playback DTO 中返回）；无横版图的条目复用 `PosterImage`

@@ -141,7 +141,9 @@ function StartupStatus({
       <section
         role={failure ? "alert" : "status"}
         aria-live="polite"
-        className="w-full max-w-[420px] rounded-2xl border border-white/[0.1] bg-[rgba(13,15,21,0.88)] p-6 shadow-2xl backdrop-blur-xl"
+        // solid-popover：自绘登录门卡按浮层材质挂钩子（--line 描边 + #181818
+        // 实底 + Netflix 投影 + 关 blur），圆角走 rounded-2xl 换档；银玻璃零变化
+        className="solid-popover w-full max-w-[420px] rounded-2xl border border-white/[0.1] bg-[rgba(13,15,21,0.88)] p-6 shadow-2xl backdrop-blur-xl"
       >
         <p className="text-sub font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
           MovieClaw

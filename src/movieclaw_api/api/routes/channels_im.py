@@ -1,10 +1,12 @@
-"""IM 通道接口(Telegram / Discord 的配对码绑定与账号管理)。
+"""IM 通道接口(Telegram / Discord 的配对码绑定 + 飞书的 Webhook 即绑即用)。
 
 前端(设置 → 消息推送)交互流程:
-1. 进页面 GET accounts 展示两个平台的绑定列表;
-2. 填 bot token POST bindings → 返回 6 位配对码;
-3. 用户去 TG/Discord 私聊 bot 发配对码;前端每 2 秒 GET bindings/{id} 轮询;
-4. confirmed → 刷新列表(通道已在收发,发码人即白名单与推送目标)。
+1. 进页面 GET accounts 展示各平台的绑定列表;
+2. Telegram/Discord:填 bot token POST bindings → 返回 6 位配对码;
+   用户私聊 bot 发码;前端每 2 秒 GET bindings/{id} 轮询;
+   confirmed → 刷新列表(通道已在收发,发码人即白名单与推送目标)。
+3. 飞书:粘贴群机器人 Webhook 地址 POST feishu/bindings → 服务端向群里
+   发一条欢迎消息验真 → 立即返回账号(纯推送出口,无配对码、无轮询)。
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.schemas.channels import (
     ChannelPushConfigView,
+    FeishuBindPayload,
     ImAccountView,
     ImBindingView,
     ImBindTokenPayload,
@@ -23,6 +26,7 @@ from movieclaw_api.schemas.channels import (
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services.channel_push import push_to_all_channels
 from movieclaw_api.services.im_channel import (
+    FEISHU_CHANNEL_ID,
     IM_CHANNEL_IDS,
     ImChannelId,
     PairChallenge,
@@ -81,6 +85,34 @@ async def list_im_accounts(
             )
             for row in rows
         ]
+    )
+
+
+# 注意:字面量路径必须先于 /{channel} 参数路由注册,否则会被参数路由吞掉
+@router.post(
+    "/feishu/bindings",
+    response_model=ApiResponse[ImAccountView],
+    status_code=201,
+    summary="接入飞书群机器人(粘贴 Webhook 地址,即绑即用)",
+    operation_id="channels.im.feishu.bind",
+)
+async def start_feishu_binding(payload: FeishuBindPayload) -> ApiResponse[ImAccountView]:
+    """校验 Webhook 地址并向群里发一条欢迎消息(即连通性验证),通道即刻可用。
+
+    飞书自定义机器人是纯推送出口(无对话能力),不要求先配置 AI 模型。
+    """
+    try:
+        row = await get_im_channels().bind_feishu(payload.webhook_url, payload.secret)
+    except ValueError as exc:
+        raise BadRequestException(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 -- 网络不可达等,转成中文业务错误
+        raise BadRequestException(f"接入飞书失败:{exc}") from exc
+    service = get_im_channels()
+    return ok(
+        ImAccountView.from_model(
+            row, running=service.manager.is_running(FEISHU_CHANNEL_ID, row.account_id)
+        ),
+        message="接入成功,欢迎消息已发送到群聊",
     )
 
 

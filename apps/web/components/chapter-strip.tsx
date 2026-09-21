@@ -171,7 +171,7 @@ function ChapterCard({
           type="button"
           onClick={onOpen}
           aria-label={chapter.image_url ? `查看章节图：${label} ${clock}` : `从 ${clock} 播放`}
-          className="relative block size-full overflow-hidden rounded-xl bg-[#141824] text-left outline-none ring-1 ring-white/[0.08] transition duration-200 hover:ring-white/35 focus-visible:ring-2 focus-visible:ring-white/70"
+          className="relative block size-full overflow-hidden rounded-xl bg-[var(--poster-placeholder)] text-left outline-none ring-1 ring-white/[0.08] transition duration-200 hover:ring-white/35 focus-visible:ring-2 focus-visible:ring-white/70"
         >
           <PosterImage
             src={imageUrl(chapter.image_url, "landscape-card")}

@@ -43,6 +43,12 @@ BUILTIN_EGRESS_SERVICES: list[dict[str, str]] = [
         "description": "Discord bot 收发消息(discord.com / gateway),国内网络需代理",
     },
     {
+        "id": "feishu",
+        "label": "飞书推送",
+        "description": "飞书群自定义机器人 Webhook(open.feishu.cn),国内网络通常可直连;"
+        "国际版 Lark(open.larksuite.com)可能需要代理",
+    },
+    {
         "id": "webhook",
         "label": "事件 Webhook",
         "description": "向外部服务推送播放、收藏等事件；目标多在内网，"

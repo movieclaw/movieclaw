@@ -89,12 +89,15 @@ export function UpNextRow({
   items,
   libraries,
   onCleared,
+  insetClassName = "page-inset",
 }: {
   items: UpNextItem[] | null;
   /** 当前身份可浏览的库：⋯ 菜单「清空某个媒体库」的候选 */
   libraries: MediaLibrary[];
   /** 清除观看记录成功后回调：父组件重新拉数据，这一行随之刷新或隐藏 */
   onCleared: () => void;
+  /** 行的左右留白，与 MediaRow 的同名参数同一套用法（语义工具类，缺省 page-inset） */
+  insetClassName?: string;
 }) {
   // 首页不存在观看记录时完全不占位；首次请求尚未返回也先保持原布局，
   // 避免从未使用播放器的用户看到一个没有实际内容的分区骨架。
@@ -103,7 +106,7 @@ export function UpNextRow({
 
   return (
     <section className="mt-8 max-md:mt-6" aria-labelledby="up-next-title">
-      <div className="flex items-center justify-between gap-4 px-6 max-md:px-4">
+      <div className={`flex items-center justify-between gap-4 ${insetClassName}`}>
         <h3
           id="up-next-title"
           className="text-on-image text-body-lg font-semibold tracking-[-0.01em] text-[var(--text)]"
@@ -114,7 +117,7 @@ export function UpNextRow({
             行同一布局，分区自己的操作长在分区上 */}
         <WatchHistoryMenu libraries={libraries} onCleared={onCleared} />
       </div>
-      <HScroller className="mt-3 gap-4 px-6 pb-2 pt-1 max-md:gap-3 max-md:px-4">
+      <HScroller className={`mt-3 gap-4 pb-2 pt-1 ${insetClassName} max-md:gap-3`}>
         {items.map((item) => <UpNextCard key={item.media_item_id} item={item} />)}
       </HScroller>
     </section>
@@ -157,7 +160,7 @@ function UpNextCard({ item }: { item: UpNextItem }) {
         className="group/card block outline-none"
       >
         <div
-          className="relative aspect-video overflow-hidden rounded-2xl bg-[#141824] shadow-[0_10px_28px_rgba(0,0,0,0.38)] ring-1 ring-white/[0.08] transition duration-300 group-hover/recent:-translate-y-1 group-hover/recent:shadow-[0_18px_42px_rgba(0,0,0,0.55)] group-hover/recent:ring-white/25 group-focus-visible/card:ring-2 group-focus-visible/card:ring-white/80"
+          className="relative aspect-video overflow-hidden rounded-2xl bg-[var(--poster-placeholder)] shadow-[0_10px_28px_rgba(0,0,0,0.38)] ring-1 ring-white/[0.08] transition duration-300 group-hover/recent:-translate-y-1 group-hover/recent:shadow-[0_18px_42px_rgba(0,0,0,0.55)] group-hover/recent:ring-white/25 group-focus-visible/card:ring-2 group-focus-visible/card:ring-white/80"
         >
           {artworkUrl ? (
             <PosterImage
@@ -193,7 +196,11 @@ function UpNextCard({ item }: { item: UpNextItem }) {
           {/* 右上角只剩"还有几集"：这一行里不存在看完的作品，对勾没有用武之地 */}
           {unwatchedLabel && (
             <div className="pointer-events-none absolute right-2 top-2">
-              <span className="tnum rounded-full border border-emerald-200/25 bg-[rgba(5,46,34,0.76)] px-2 py-0.5 text-micro font-semibold text-emerald-100 shadow-[0_5px_16px_rgba(0,0,0,0.32)] backdrop-blur-md">
+              {/* 去 backdrop-blur 照海报徽章既定约定（poster-card.tsx:363：海报
+                  墙 GPU 合成成本；本徽章 76% 不透明且压在海报图上，模糊贡献
+                  趋近于零）；emerald 字面量保留——收口到 --ok 会让银玻璃可见
+                  变化（emerald-100=#d1fae5 vs :root --ok=#4ade80），待设计决策 */}
+              <span className="tnum rounded-full border border-emerald-200/25 bg-[rgba(5,46,34,0.76)] px-2 py-0.5 text-micro font-semibold text-emerald-100 shadow-[0_5px_16px_rgba(0,0,0,0.32)]">
                 {unwatchedLabel}
               </span>
             </div>

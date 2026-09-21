@@ -99,7 +99,7 @@ function CastCard({
   const tapGuard = useTapGuard();
   const body = (
     <>
-      <div className="aspect-[2/3] overflow-hidden rounded-xl bg-[#141824] ring-1 ring-white/[0.08] transition-all duration-300 ease-out group-hover/cast:-translate-y-1 group-hover/cast:shadow-[0_16px_38px_rgba(0,0,0,0.5)] group-hover/cast:ring-white/25">
+      <div className="aspect-[2/3] overflow-hidden rounded-xl bg-[var(--poster-placeholder)] ring-1 ring-white/[0.08] transition-all duration-300 ease-out group-hover/cast:-translate-y-1 group-hover/cast:shadow-[0_16px_38px_rgba(0,0,0,0.5)] group-hover/cast:ring-white/25">
         <PosterImage
           src={person.avatarUrl ?? ""}
           alt={person.name}

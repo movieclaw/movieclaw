@@ -400,7 +400,7 @@ export function SubscribeDialog({
                     onClick={() => pickCandidate(c)}
                     className="group text-left"
                   >
-                    <div className="aspect-[2/3] overflow-hidden rounded-lg bg-[#141824] ring-1 ring-white/10 transition group-hover:ring-white/40">
+                    <div className="aspect-[2/3] overflow-hidden rounded-lg bg-[var(--poster-placeholder)] ring-1 ring-white/10 transition group-hover:ring-white/40">
                       <PosterImage
                         src={c.poster_url ? cachedImageUrl(c.poster_url) : undefined}
                         alt={c.title}

@@ -6,8 +6,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { useLayoutEffect } from "react";
 
 import {
-  ArrowLeftIcon,
   BookmarkIcon,
+  ChevronLeftIcon,
   CompassIcon,
   LibraryIcon,
   UserIcon,
@@ -93,7 +93,7 @@ export function NetflixTabBar() {
  * **2026-09 修订**：原实现把分区选择做成标题旁的下拉浮层——分区一多
  * （管理员 19 个）浮层高过视口又不能滚，长列表在触屏上滑不动；且换分区的
  * 入口藏在二级交互里。分区选择改为独立路由页：/settings 列出全部分区
- * （components/netflix/settings-index.tsx），点行进 /settings/[section]。
+ * （../pages/settings-index.tsx），点行进 /settings/[section]。
  * 本条退化为纯导航：列表页显示「设置」、返回「我的」；分区页显示分区名、
  * 返回列表页（两级返回链由外壳按 pathname 计算）。
  *
@@ -124,9 +124,12 @@ export function NetflixSettingsNav({ title, backHref }: { title: string; backHre
           type="button"
           onClick={back}
           aria-label="返回"
-          className="nf-icon-btn !size-11"
+          // 返回键与右侧搜索键同一套规格（PAGE_NAV_BUTTON_CLASS：size-9 /
+          // pointer-coarse:size-11，按指针能力分档）：全站返回键同图标
+          // （ChevronLeft）同尺寸档，不再用 !important 强制 44px 单档
+          className={PAGE_NAV_BUTTON_CLASS}
         >
-          <ArrowLeftIcon className="size-[22px]" />
+          <ChevronLeftIcon className="size-[18px] max-md:size-[22px]" />
         </button>
         <h1 className="min-w-0 flex-1 truncate px-1 text-title font-semibold text-[var(--text)]">
           {title}

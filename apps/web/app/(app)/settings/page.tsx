@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
-import { NetflixSettingsIndex } from "@/components/netflix/settings-index";
+import { useResolvedTheme } from "@/themes/registry";
 import { settingsSections } from "@/lib/mock-data";
 import { useIsMobile } from "@/lib/use-media-query";
 import { useThemeState } from "@/lib/ui-prefs";
@@ -11,7 +11,7 @@ import { useThemeState } from "@/lib/ui-prefs";
 /**
  * /settings 裸地址按形态分支：
  *   - Netflix 主题移动端：设置分区列表页（2026-09 修订——原分区下拉浮层在
- *     长清单上滑不动，见 components/netflix/settings-index.tsx）；
+ *     长清单上滑不动，见 themes/netflix/pages/settings-index.tsx）；
  *   - 其余形态（银玻璃全部 + Netflix 桌面）：重定向到首个分区，保证设置页
  *     始终有明确的分区地址。首个分区即「概览」落地页——管理员进设置先看到
  *     配置状态与下一步；成员没有概览（见 MEMBER_SECTION_IDS），SettingsPanel
@@ -26,13 +26,15 @@ import { useThemeState } from "@/lib/ui-prefs";
  */
 export default function SettingsIndexPage() {
   const router = useRouter();
-  const { theme, loading } = useThemeState();
+  const { loading } = useThemeState();
   const isMobile = useIsMobile();
-  const isNetflixMobile = theme.id === "netflix" && isMobile;
+  const { pages } = useResolvedTheme();
+  const SettingsIndex = pages.settingsIndex;
+  const isIndexForm = isMobile && SettingsIndex != null;
 
   useEffect(() => {
-    if (!loading && !isNetflixMobile) router.replace(`/settings/${settingsSections[0].id}`);
-  }, [loading, isNetflixMobile, router]);
+    if (!loading && !isIndexForm) router.replace(`/settings/${settingsSections[0].id}`);
+  }, [loading, isIndexForm, router]);
 
-  return isNetflixMobile && !loading ? <NetflixSettingsIndex /> : null;
+  return isIndexForm && !loading && SettingsIndex ? <SettingsIndex /> : null;
 }

@@ -1653,7 +1653,8 @@ async def _grab_missing_stills(
             continue
         key = f"s{episode.season_number:02d}e{episode.episode_number:02d}"
         dest = item_dir / f"{key}.jpg"
-        rel = str(dest.relative_to(assets_root()))
+        # 同 _sync_asset：落库相对路径统一正斜杠（跨平台 URL 安全）
+        rel = dest.relative_to(assets_root()).as_posix()
         if not force and episode.still_file == rel and await asyncio.to_thread(dest.is_file):
             continue
         video = Path(file.file_path)
@@ -1726,7 +1727,11 @@ async def _sync_asset(
     """
     if not tmdb_path:
         return current
-    rel = str(dest.relative_to(assets_root()))
+    # as_posix：落库相对路径统一正斜杠。Windows 的 str(Path) 带反斜杠，
+    # 进 URL 后会被 CSS url() 当转义符搅碎、严格客户端也会 404，Linux 端
+    # 按字面找文件同样找不到；Linux 上 as_posix 与 str(Path) 逐字符相同，
+    # 属跨平台无操作。
+    rel = dest.relative_to(assets_root()).as_posix()
     want = f"{size}{tmdb_path}"
     if (
         not force

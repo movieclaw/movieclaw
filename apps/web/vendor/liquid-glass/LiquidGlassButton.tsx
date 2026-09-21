@@ -27,6 +27,12 @@ export interface LiquidGlassButtonProps {
   variant?: LiquidGlassVariant;
   settings?: Partial<LiquidGlassSettings>;
   onCheckedChange?: (checked: boolean) => void;
+  /**
+   * 是否创建 WebGL 玻璃渲染层（默认 true）。由宿主应用按主题能力传入
+   * （见 themes/<id>/theme.ts 的 capabilities.glass）——vendor 不感知主题名。
+   * 关闭时静态层由主题 CSS 接管为实色形态（按下交接动画一并停用）。
+   */
+  glassEnabled?: boolean;
   className?: string;
   children?: React.ReactNode;
   "aria-label"?: string;
@@ -40,6 +46,7 @@ export function LiquidGlassButton({
   variant = "dark",
   settings,
   onCheckedChange,
+  glassEnabled = true,
   className = "",
   children,
   "aria-label": ariaLabel = "Liquid glass toggle"
@@ -79,6 +86,10 @@ export function LiquidGlassButton({
   const currentChecked = checked ?? internalChecked;
   const checkedRef = useRef(currentChecked);
   checkedRef.current = currentChecked;
+  // glassEnabled = false 时整体停用玻璃层——不创建 WebGL 渲染器，静态层由
+  // 主题 CSS 覆盖换成实色开关（灰轨道 + 红开启 + 白滑块）。注意玻璃层停用后
+  // 按下动画里「静态层淡出让位玻璃」的交接不存在了，CSS 侧必须把静态层
+  // opacity 钉住，否则按下的瞬间开关会整块透明。
   const mergedSettings = useMemo(() => resolveLiquidGlassSettings(variant, {
     blur: 0.18,
     refraction: 0.12,
@@ -117,6 +128,8 @@ export function LiquidGlassButton({
 
   const ensureRenderer = () => {
     if (rendererRef.current || !canvasRef.current) return;
+    // 玻璃停用：按下也不再建渲染器
+    if (!glassEnabled) return;
     try {
       rendererRef.current = new LiquidGlassRenderer(canvasRef.current, backgroundImage, settingsRef.current);
       rendererRef.current.setBackgroundSampling(false);

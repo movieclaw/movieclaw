@@ -31,7 +31,7 @@ import {
 } from "@/lib/api/webhook";
 import { useBackdrop } from "@/lib/backdrop";
 import { formatRelativeTime } from "@/lib/time";
-import { LiquidGlassButton } from "@/vendor/liquid-glass";
+import { LiquidGlassButton } from "@/components/liquid-glass";
 
 const INPUT_CLASS =
   "w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-sub " +

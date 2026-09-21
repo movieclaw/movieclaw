@@ -7,7 +7,7 @@ import Link from "next/link";
 
 import { ContentEmptyState } from "@/components/content-empty-state";
 import { useConfirm, useToast } from "@/components/feedback";
-import { SearchIcon, XIcon } from "@/components/icons";
+import { ChevronLeftIcon, SearchIcon, XIcon } from "@/components/icons";
 import { PosterImage } from "@/components/poster-image";
 import { Tooltip } from "@/components/tooltip";
 import {
@@ -521,7 +521,9 @@ export function LibraryDuplicateFiles({
             {focus.tier !== null ? (
               <div ref={chipRowRef} className="flex w-full items-center gap-1.5 overflow-x-auto pb-0.5">
                 <Chip active={false} onClick={() => setFocus(NO_FOCUS)}>
-                  ‹ 摘要
+                  {/* 裸字符「‹」换全站返回图标（Chip 自带 flex + gap，图标落文字前） */}
+                  <ChevronLeftIcon className="size-3.5" />
+                  摘要
                 </Chip>
                 <span aria-hidden className="h-4 w-px shrink-0 bg-white/[0.12]" />
                 {data.tiers.map((t) => (

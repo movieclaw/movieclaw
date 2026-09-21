@@ -8,14 +8,19 @@ import type {
 /**
  * 订阅状态的展示元数据与进度文案（订阅页海报墙、详情页操作区共用）。
  * 颜色语义：蓝=追踪中、绿=已收齐、黄=已暂停。
+ * 色值约定：绿/黄与银玻璃 :root --ok/--warn 同值，故收口为 token（银玻璃
+ * 零变化，Netflix 主题自动取各自语义色）；「追踪中」蓝同样收口为
+ * --info-soft——它正是当年与 --info 双值并存的 #6aa7ff 挂起项，双主题拆色
+ * 后银玻璃保值、Netflix 收敛为白。此处颜色经 inline style 消费
+ * （media-detail-view 状态字/状态点），CSS 选择器压不过，改动必须落在数据源。
  */
 export const subscriptionStatusMeta: Record<
   SubscriptionStatus,
   { label: string; color: string }
 > = {
-  active: { label: "追踪中", color: "#6aa7ff" },
-  completed: { label: "已收齐", color: "#4ade80" },
-  paused: { label: "已暂停", color: "#f5c451" },
+  active: { label: "追踪中", color: "var(--info-soft)" },
+  completed: { label: "已收齐", color: "var(--ok)" },
+  paused: { label: "已暂停", color: "var(--warn)" },
 };
 
 /** 进度说明：回答「还缺多少 / 入库了多少」——订阅信息里最高频的一眼答案。 */

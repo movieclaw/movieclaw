@@ -26,8 +26,8 @@ _DOMAIN_LINES = {
     "模型并查看进度/兼容性）",
     "appearance": "appearance 首页背景与图库（查看、上传、下载、切换和删除背景图）",
     "auth": "auth     个人信息与 CLI 访问（查看身份，修改头像/昵称/密码，创建/列出/吊销 API 令牌）",
-    "channels": "channels 消息推送与 AI 对话入口（微信、Telegram、Discord 配对/解绑，配置事件"
-    "推送并测试；绑定后可发消息搜片、订阅、查进度）",
+    "channels": "channels 消息推送与 AI 对话入口（微信、Telegram、Discord 配对/解绑，飞书群机器人"
+    "粘贴 Webhook 即绑即用；配置事件推送并测试；绑定后可发消息搜片、订阅、查进度）",
     "collection": "collection 媒体库合集（把一组筛选条件存下来：可自动收录以后新入库的片，"
     "也可固定成一份名单；成员与海报墙同一份口径，Jellyfin 客户端里同样看得到）",
     "discover": "discover 发现电影/剧集（来自 TMDB、豆瓣的实时热点、热映/待上映/在播、热门、"

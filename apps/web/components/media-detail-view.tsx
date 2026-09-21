@@ -5,7 +5,6 @@ import Link from "next/link";
 import type { Route } from "next";
 
 import {
-  ArrowLeftIcon,
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -22,8 +21,6 @@ import { CastRow } from "@/components/cast-row";
 import { DetailBackdropSlideshow } from "@/components/detail-backdrop-slideshow";
 import { HScroller } from "@/components/h-scroller";
 import { Modal } from "@/components/modal";
-import { NetflixBackButton } from "@/components/netflix/back-button";
-import { PageNav } from "@/components/page-nav";
 import { ImageLightbox, type LightboxAction } from "@/components/image-lightbox";
 import { MediaRow } from "@/components/media-row";
 import { PosterImage } from "@/components/poster-image";
@@ -41,6 +38,8 @@ import { useBackdrop } from "@/lib/backdrop";
 import { buildDiscoveryReturnPath } from "@/lib/discovery-return-path";
 import { useDoubanAppHref } from "@/lib/douban-app-link";
 import { upgradedTmdbOriginalUrl } from "@/lib/image-proxy";
+import { useResolvedTheme } from "@/themes/registry";
+import { useWantsOriginalImage } from "@/lib/image-resolution";
 import { getMediaSeed } from "@/lib/media-detail";
 import { useTapGuard } from "@/lib/use-tap-guard";
 import { usePageTitle } from "@/lib/use-page-title";
@@ -152,9 +151,13 @@ export function MediaDetailView({
   // 才显示——不存在「先低清后高清」的换图过程，也就没有换图带来的突兀/闪烁。
   // 低清 w1280 只作兜底：非 TMDB 图（无更高档位，地址原样返回）或高清加载
   // 失败时才显示。没有横幅剧照时退回海报。
+  // 小物理宽屏（≤1280，全部手机）不算「高清失守」而是「无需高清」：393px×3
+  // 倍屏物理宽 1179，w1280 已饱和，按 useWantsOriginalImage 门槛把 hdUrl 置空
+  // 直接走兜底档，不为看不见的清晰度多拉 1~3MB 原图。
+  const wantsOriginal = useWantsOriginalImage();
   const fallbackBackdrop = item?.backdropUrl || item?.posterUrl || "";
   const hdUrl =
-    source === "douban"
+    source === "douban" || !wantsOriginal
       ? undefined
       : (detail?.backdropOriginalUrl ??
         (fallbackBackdrop ? upgradedTmdbOriginalUrl(fallbackBackdrop) : undefined));
@@ -194,11 +197,19 @@ export function MediaDetailView({
         : hdState === "failed"
           ? fallbackBackdrop
           : "";
+  // 覆盖图的「设置」与「清除」分挂在两个 effect：immersiveUrl 换档时（列表
+  // w1280 → 详情 original 的同图升清，或高清解码完成后从兜底图切高清）只设置
+  // 新地址、**不撤下当前画面**——此前 cleanup 随依赖变化执行，升清瞬间会先
+  // setOverrideBackdrop(null) 把画面硬闪成黑再淡回（Netflix 主题下覆盖层的
+  // opacity 过渡又被主题层接管，连渐变都没有），就是推镜约 1 秒处的「回退
+  // 叠影」（2026-09-21 实测定位）。同图换档的无感衔接由 lib/backdrop.tsx 的
+  // 同图判断（backdropPathOf）接管：路径一致就保持可见、就位后瞬时换图。
+  // 清除只发生在视图卸载（离开详情页 / detail→detail 跳转旧视图卸载）。
+  // 空串语义：豆瓣来源或高清待定时不设置（也不清除已显示的画面）。
   useEffect(() => {
-    if (!immersiveUrl) return;
-    setOverrideBackdrop(immersiveUrl);
-    return () => setOverrideBackdrop(null);
+    if (immersiveUrl) setOverrideBackdrop(immersiveUrl);
   }, [immersiveUrl, setOverrideBackdrop]);
+  useEffect(() => () => setOverrideBackdrop(null), [setOverrideBackdrop]);
 
   // 手机页内 Hero 的取源与全站沉浸背景**分开**，这是两个不同的展示位：
   //   - 全站背景是 fixed 全屏覆盖层，竖屏上横版剧照只能按高度放大、从正中
@@ -225,11 +236,11 @@ export function MediaDetailView({
   // chevron（见 NetflixBackButton）。移动端仍保留 PageNav：它要向外壳登记
   // 「本页自带顶栏」并充当返回入口（见 app-shell）。
   // 这些 hook 必须无条件调用（短路写法会触发 rules-of-hooks）。
-  const themeId = useTheme().id;
   const isMobile = useIsMobile();
-  const isNf = themeId === "netflix";
+  const isNf = useTheme().structural;
   const isNfDesktop = isNf && !isMobile;
-  const hidePageNav = isNfDesktop;
+  const { slots } = useResolvedTheme();
+  const DetailNav = slots.detailNav;
   const showMobileHero = isMobile && mobileHeroSrc !== "";
 
   // 滚动退场：详情页下滚时剧照不是被机械地推出屏幕，而是随滚动进度渐暗 +
@@ -241,10 +252,25 @@ export function MediaDetailView({
   // 条目详情页同口径）；卸载 / 换片重建时把变量与标记类清干净，别污染其他页面。
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasItem = Boolean(item);
+  // Ken Burns 相位锚点：覆盖层的推镜随标记类起跑，起跑时刻记在这里传给
+  // 轮换层（DetailBackdropSlideshow 的 pushAnchor）换算首图负延迟，两层锁
+  // 同一条 9s 时间线。每个视图实例只在首跑记一次——数据到达引发的 effect
+  // 重跑不得重置（同帧内的类摘除重挂不会重启 CSS 动画，锚点也必须不动）。
+  const kbAnchorRef = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!isNfDesktop) return;
     const root = document.documentElement;
-    root.classList.add("nf-hero-live");
+    if (kbAnchorRef.current === undefined) {
+      // 首跑：先摘再挂并跨一次 reflow。detail→detail 直跳时新旧视图在同一
+      // 个 commit 里交接，同帧内的类切换不会触发样式重算、动画不会重启；
+      // 强制 reflow 让新一片详情的推镜确定性地从头起跑，锚点才对得上。
+      root.classList.remove("nf-hero-live");
+      void root.offsetWidth;
+      root.classList.add("nf-hero-live");
+      kbAnchorRef.current = performance.now();
+    } else if (!root.classList.contains("nf-hero-live")) {
+      root.classList.add("nf-hero-live");
+    }
     const el = scrollRef.current;
     if (!el) {
       // 兜底态（数据未到）没有滚动容器：只挂标记类，清理时照常摘除
@@ -283,8 +309,7 @@ export function MediaDetailView({
     return (
       <div className="flex h-full flex-col">
         {/* 当前页标题未知，留空——只为立起返回键并认领顶栏 */}
-        {!hidePageNav && <PageNav title="" fallback={navFallback} />}
-        {isNfDesktop && <NetflixBackButton onBack={back} />}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <DetailFallback failed={loadFailed} onBack={back} />
       </div>
     );
@@ -345,8 +370,7 @@ export function MediaDetailView({
           .detail-ambient 在滚动容器上铺「透明 → 纯黑」的渐变板托住下方内容
           （见 globals.css，Netflix 主题另有左侧渐变遮罩护住标题区）。
           手机上竖屏放不下横版剧照，改由下面的页内 Hero 呈现。 */}
-      {!hidePageNav && <PageNav title={item.title} fallback={navFallback} />}
-      {isNfDesktop && <NetflixBackButton onBack={back} />}
+      <DetailNav title={item.title} fallback={navFallback} onBack={back} />
       {/* 背景轮换：Netflix 桌面且剧照多于一张时，按序叠变（见组件说明）。
           首帧传主 backdrop 原图——与覆盖层当前显示的是同一张照片，轮换层
           淡入接管时没有构图/内容跳变。 */}
@@ -354,6 +378,7 @@ export function MediaDetailView({
         <DetailBackdropSlideshow
           images={detail.backdrops}
           initialUrl={detail.backdropOriginalUrl ?? detail.backdrops[0]?.fullUrl}
+          pushAnchor={kbAnchorRef.current}
         />
       )}
 
@@ -396,7 +421,7 @@ export function MediaDetailView({
           固定线开始，不随简介长短上下漂移——简介短时下方留黑色空档。 */}
       <div className="detail-lead">
       {/* —— 3. 头部信息区 —— */}
-      <div className="relative z-10 px-12 pt-6 max-md:px-4 max-md:pt-3">
+      <div className={`relative z-10 pt-6 content-inset max-md:pt-3`}>
         <div className="min-w-0 max-w-5xl pb-1">
           {/* break-words：未识别条目的标题就是文件名（Some.Movie.2023.2160p…），
               整串无空格，不允许断词就会横向撑开整页 */}
@@ -538,7 +563,7 @@ export function MediaDetailView({
 
       {/* 简介承接标题与基础信息；四行确实溢出时才提供展开入口。 */}
       {item.overview && (
-        <div className="mt-4 px-12 max-md:px-4">
+        <div className={`mt-4 content-inset`}>
           <ExpandablePlot text={item.overview} />
         </div>
       )}
@@ -546,7 +571,7 @@ export function MediaDetailView({
 
       {/* —— 5. 演职员 —— */}
       {people.length > 0 && (
-        <div className="mt-9 px-12 max-md:mt-6 max-md:px-4">
+        <div className={`mt-9 max-md:mt-6 content-inset`}>
           {/* 导演 / 主创放在演员之前，共用同一条人物横滚；演员头像仍来自数据源 credits。 */}
           <CastRow cast={people} personHrefPrefix="/discover/people" />
         </div>
@@ -554,14 +579,14 @@ export function MediaDetailView({
 
       {/* —— 6. 预告片：紧邻剧照，把「动态素材 + 静态素材」并成一段观感区 —— */}
       {detail && detail.videos.length > 0 && (
-        <div className="mt-9 px-12 max-md:mt-6 max-md:px-4">
+        <div className={`mt-9 max-md:mt-6 content-inset`}>
           <TrailerRow title={item.title} videos={detail.videos} />
         </div>
       )}
 
       {/* —— 7. 剧照与海报 —— */}
       {detail && (detail.backdrops.length > 0 || detail.posters.length > 0) && (
-        <div className="mt-9 px-12 max-md:mt-6 max-md:px-4">
+        <div className={`mt-9 max-md:mt-6 content-inset`}>
           <PhotoWall
             title={item.title}
             backdrops={detail.backdrops}
@@ -579,7 +604,7 @@ export function MediaDetailView({
               title: collection.name,
               items: collection.items,
             }}
-            insetClassName="px-12 max-md:px-4"
+            insetClassName="content-inset"
           />
         </div>
       )}
@@ -589,7 +614,7 @@ export function MediaDetailView({
         <div className="mt-9">
           <MediaRow
             row={{ id: `related-${item.id}`, title: "相似推荐", items: related }}
-            insetClassName="px-12 max-md:px-4"
+            insetClassName="content-inset"
           />
         </div>
       )}
@@ -741,7 +766,7 @@ function TrailerCard({
       {...tapGuard}
       className="group/trailer w-[264px] shrink-0 text-left max-md:w-[208px]"
     >
-      <div className="relative aspect-video overflow-hidden rounded-xl bg-[#141824] ring-1 ring-white/[0.08] transition-all duration-300 ease-out group-hover/trailer:-translate-y-1 group-hover/trailer:shadow-[0_16px_40px_rgba(0,0,0,0.55)] group-hover/trailer:ring-white/30">
+      <div className="relative aspect-video overflow-hidden rounded-xl bg-[var(--poster-placeholder)] ring-1 ring-white/[0.08] transition-all duration-300 ease-out group-hover/trailer:-translate-y-1 group-hover/trailer:shadow-[0_16px_40px_rgba(0,0,0,0.55)] group-hover/trailer:ring-white/30">
         {/* YouTube 封面是 4:3（上下带黑边），object-cover 裁进 16:9 恰好只剩画面 */}
         <PosterImage
           src={video.thumbnailUrl}
@@ -1077,7 +1102,7 @@ function PhotoCard({
       type="button"
       {...tapGuard}
       aria-label={`查看${label}第 ${index + 1} 张`}
-      className={`shrink-0 overflow-hidden rounded-xl bg-[#141824] ring-1 ring-white/[0.08] transition-all duration-300 ease-out hover:-translate-y-1 hover:shadow-[0_16px_40px_rgba(0,0,0,0.55)] hover:ring-white/30 ${
+      className={`shrink-0 overflow-hidden rounded-xl bg-[var(--poster-placeholder)] ring-1 ring-white/[0.08] transition-all duration-300 ease-out hover:-translate-y-1 hover:shadow-[0_16px_40px_rgba(0,0,0,0.55)] hover:ring-white/30 ${
         landscape ? "aspect-video h-[148px] max-md:h-[104px]" : "aspect-[2/3] h-[148px] max-md:h-[126px]"
       }`}
     >
@@ -1111,7 +1136,7 @@ function DetailFallback({ failed, onBack }: { failed: boolean; onBack: () => voi
             onClick={onBack}
             className="btn-glass px-4 py-2 text-ui font-medium text-[var(--text)]"
           >
-            <ArrowLeftIcon className="size-4" />
+            <ChevronLeftIcon className="size-4" />
             返回
           </button>
         </>

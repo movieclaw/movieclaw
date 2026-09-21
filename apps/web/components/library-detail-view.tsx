@@ -5,7 +5,6 @@ import { createPortal } from "react-dom";
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { Route } from "next";
-import Link from "next/link";
 
 import { BrandLoader } from "@/components/brand-loader";
 import { useConfirm, useToast } from "@/components/feedback";
@@ -32,6 +31,7 @@ import { listCollections, type Collection } from "@/lib/api/collections";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { useIsMobile } from "@/lib/use-media-query";
+import { useBackNavigation } from "@/lib/back-navigation";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
 import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
@@ -1314,6 +1314,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 兜底态（加载中/失败/不存在）也渲染 PageNav（库名未知，末项留空）：向外壳
   // 登记「本页自带顶栏」，否则移动端全局顶栏（☰ + logo）会先显示再消失、顶部闪一下。
   const navFallback = { label: "媒体库", href: "/library" as Route };
+  // 失败态的「返回媒体库」出口与全站同一语言：走 useBackNavigation（有站内
+  // 历史 router.back()，直达落地 replace 到结构父级），不再用 <Link replace>
+  // 固定跳兜底地址——真实来路优先，兜底只补直达。
+  const back = useBackNavigation(navFallback.href);
 
   if (failed && libraries === null) {
     return (
@@ -1351,13 +1355,13 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         <PageNav title="" fallback={navFallback} />
         <CenteredNote>
           <p className="text-ui text-[var(--text-muted)]">这个媒体库不存在（可能已被删除）</p>
-          <Link
-            href={"/library" as Route}
-            replace
-            className="btn-glass px-4 py-2 text-ui font-medium"
+          <button
+            type="button"
+            onClick={back}
+            className="btn-glass px-4 py-2 text-ui font-medium text-[var(--text)]"
           >
             返回媒体库
-          </Link>
+          </button>
         </CenteredNote>
       </div>
     );
@@ -1564,7 +1568,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         toolbar={(isMobile && !photoWall && viewSwitch) || undefined}
       />
       {/* —— 库头部 —— */}
-      <div className="px-6 max-md:px-4">
+      <div className="page-inset">
         <div className="flex items-center gap-2.5">
           <h2 className="text-on-image truncate text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[20px]">
             {library.name}
@@ -1728,7 +1732,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           设置 / 扫描 / 待处理 / 回收站照常（都在上方头部与 ⋯ 菜单里），海报墙、
           未识别分区一概不渲染——内容对当前身份就是不存在 —— */}
       {!library.viewer_access ? (
-        <div className="mt-16 flex flex-col items-center gap-3 px-6 text-center">
+        <div className={`mt-16 flex flex-col items-center gap-3 text-center page-inset`}>
           <LockIcon className="size-9 text-white/[0.28]" />
           <p className="text-ui leading-7 text-[var(--text-muted)]">
             内容已隐藏：你不在这个库的可见范围内。
@@ -1753,7 +1757,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         <div
           role="tablist"
           aria-label="库内视图"
-          className="mt-5 flex items-center gap-1 px-6"
+          className={`mt-5 flex items-center gap-1 page-inset`}
         >
           {(
             [
@@ -1842,7 +1846,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                   }}
                 />
               }
-              className="mt-5 px-6 max-md:mt-4 max-md:px-4"
+              className={`mt-5 page-inset max-md:mt-4`}
             />
             </div>
           )}
@@ -1850,7 +1854,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
             {/* 索引条与内容列并排：条固定在视口右侧（sticky），列照常滚。索引条
                 有固定高度，加载哨兵与未识别分区必须放进同一列里——否则卡片少时
                 这一行被索引条撑高，分区会被推到一大段空白之下 */}
-            <div className="flex items-start gap-2 px-6 max-md:gap-1 max-md:px-4">
+            <div className={`flex items-start gap-2 page-inset max-md:gap-1`}>
               {/* overflow-anchor:none：向上补页后墙会长高，浏览器自带的滚动锚定
                   会跟着自己补一次 scrollTop，与我们按长高量做的补偿叠加就是跳两下
                   （何况 Safari 根本没有滚动锚定）。这一段的位置全部自己算 */}
@@ -2572,9 +2576,14 @@ function IssueDrawer({
         type="button"
         aria-label="关闭"
         onClick={onClose}
-        className="absolute inset-0 cursor-default bg-black/50 backdrop-blur-[2px]"
+        // modal-scrim：遮罩照居中弹窗同款钩子（Netflix 主题换 72% 纯黑、关
+        // blur），银玻璃下无基样式、bg-black/50 原样保留
+        className="modal-scrim absolute inset-0 cursor-default bg-black/50 backdrop-blur-[2px]"
       />
-      <div className="absolute right-0 top-0 flex h-full w-full max-w-[600px] flex-col border-l border-white/10 bg-[rgba(16,18,26,0.94)] shadow-[-24px_0_70px_rgba(0,0,0,0.55)] backdrop-blur-2xl max-md:max-w-none">
+      {/* solid-popover：右侧滑抽屉按浮层材质挂钩子（--line 描边 + #181818
+          实底 + Netflix 投影 + 关 blur，globals.css），宽高/形态留给调用点；
+          银玻璃下钩子无基样式零变化 */}
+      <div className="solid-popover absolute right-0 top-0 flex h-full w-full max-w-[600px] flex-col border-l border-white/10 bg-[rgba(16,18,26,0.94)] shadow-[-24px_0_70px_rgba(0,0,0,0.55)] backdrop-blur-2xl max-md:max-w-none">
         {/* 头部：tab + 关闭。padding-top 叠 --safe-top：面板 top-0 贴的是屏幕物理顶边，
             iOS 独立 App（black-translucent + viewport-fit=cover）里状态栏正压在这一行上，
             不让位就会与 tab 胶囊糊在一起（见 globals.css 的安全区说明） */}

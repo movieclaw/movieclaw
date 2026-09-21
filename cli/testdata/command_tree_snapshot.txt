@@ -33,6 +33,7 @@ channels im accounts list
 channels im accounts unbind
 channels im bindings start
 channels im bindings status
+channels im feishu bind
 channels im push config get
 channels im push config update
 channels im push test

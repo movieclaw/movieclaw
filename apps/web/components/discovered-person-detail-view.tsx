@@ -5,8 +5,7 @@ import type { Route } from "next";
 import Link from "next/link";
 
 import { BrandLoader } from "@/components/brand-loader";
-import { ArrowLeftIcon } from "@/components/icons";
-import { PageNav } from "@/components/page-nav";
+import { ChevronLeftIcon } from "@/components/icons";
 import { PosterCardVisual } from "@/components/poster-card";
 import { PosterImage } from "@/components/poster-image";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
@@ -18,6 +17,8 @@ import { HttpError } from "@/lib/http";
 import { useMediaDetail } from "@/lib/media-detail";
 import type { MediaItem } from "@/lib/media-types";
 import { usePageTitle } from "@/lib/use-page-title";
+import { useBackNavigation } from "@/lib/back-navigation";
+import { useResolvedTheme } from "@/themes/registry";
 
 /**
  * 发现页影人详情：展示 TMDB combined credits 中的完整影视履历。
@@ -35,6 +36,13 @@ export function DiscoveredPersonDetailView({
   const { subscriptionOf } = useSubscribeEntry();
   const { open } = useMediaDetail();
   const navFallback = { label: "发现电影", href: "/discover/movie" as Route };
+  // Netflix 桌面返回语言一套：全出血(isHome)详情页用 NetflixBackButton；带
+  // PageNav 工具条的页面用 PageNav 内返回键；两者同图标 / 同尺寸档 / 同 4vw
+  // 基线 / 同 useBackNavigation 行为。本页 Netflix 桌面换 NetflixBackButton
+  // 浮在顶栏下（与条目详情页同一套）；移动端保留 PageNav——它要向外壳登记顶栏
+  const back = useBackNavigation(navFallback.href);
+  const { slots } = useResolvedTheme();
+  const DetailNav = slots.detailNav;
 
   useEffect(() => {
     let cancelled = false;
@@ -63,7 +71,7 @@ export function DiscoveredPersonDetailView({
   if (failure !== null) {
     return (
       <div className="flex h-full flex-col">
-        <PageNav title="" fallback={navFallback} />
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <PersonFallback failure={failure} />
       </div>
     );
@@ -71,7 +79,7 @@ export function DiscoveredPersonDetailView({
   if (person === null) {
     return (
       <div className="flex h-full flex-col">
-        <PageNav title="" fallback={navFallback} />
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <div className="flex flex-1 items-center justify-center gap-2.5 text-ui text-[var(--text-muted)]">
           <BrandLoader className="size-5" />
           正在读取 TMDB 影人作品…
@@ -82,10 +90,12 @@ export function DiscoveredPersonDetailView({
 
   return (
     <div className="scroll-thin scroll-safe h-full overflow-y-auto pb-12">
-      <PageNav title={person.name} fallback={navFallback} />
+      <DetailNav title={person.name} fallback={navFallback} onBack={back} />
 
-      <header className="flex items-end gap-6 px-12 pt-2 max-md:gap-4 max-md:px-4">
-        <div className="w-[132px] shrink-0 overflow-hidden rounded-xl bg-[#141824] shadow-[0_20px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.1] max-md:w-[92px]">
+      {/* person-hero：Netflix 桌面让位钩子（globals.css 桌面档把头部推到
+          NetflixBackButton 键底之下，银玻璃与移动端不吃这条规则） */}
+      <header className={`person-hero flex items-end gap-6 pt-2 content-inset max-md:gap-4`}>
+        <div className="w-[132px] shrink-0 overflow-hidden rounded-xl bg-[var(--poster-placeholder)] shadow-[0_20px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.1] max-md:w-[92px]">
           <PosterImage
             src={person.avatarUrl}
             alt={person.name}
@@ -113,7 +123,7 @@ export function DiscoveredPersonDetailView({
         </div>
       </header>
 
-      <div className="mt-8 px-12 max-md:mt-6 max-md:px-4">
+      <div className={`mt-8 max-md:mt-6 content-inset`}>
         {person.items.length > 0 ? (
           <CreditGrid items={person.items} isSubscribed={isSubscribed} onOpen={open} />
         ) : (
@@ -195,7 +205,7 @@ function PersonFallback({ failure }: { failure: "missing" | "error" }) {
           : "请稍后重试；若持续失败，请检查 TMDB 网络连接。"}
       </p>
       <Link href={"/discover/movie" as Route} className="btn-glass px-4 py-2 text-ui font-medium">
-        <ArrowLeftIcon className="size-4" />
+        <ChevronLeftIcon className="size-4" />
         返回发现页
       </Link>
     </div>

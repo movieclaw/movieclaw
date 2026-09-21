@@ -4,7 +4,7 @@ import type { Route } from "next";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { LiquidGlassButton } from "@/vendor/liquid-glass";
+import { LiquidGlassButton } from "@/components/liquid-glass";
 
 import { AppStorageSection } from "@/components/app-storage-section";
 import { ScheduledTasksSection } from "@/components/scheduled-tasks-section";
@@ -32,9 +32,9 @@ import { TrickplayToggleSection } from "@/components/trickplay-toggle-section";
 import { WebhookSection } from "@/components/webhook-section";
 import { GlassPanel } from "@/components/glass-panel";
 import {
-  ArrowLeftIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
   GripIcon,
   PlusIcon,
   XIcon,
@@ -51,6 +51,7 @@ import { useSession } from "@/lib/session";
 import { applyNavOrder, mergeNavOrder, sameNavOrder } from "@/lib/sidebar-nav";
 import { settingsSectionGroupsFor, settingsSections } from "@/lib/mock-data";
 import { useTheme, useUiPrefs } from "@/lib/ui-prefs";
+import { useResolvedTheme } from "@/themes/registry";
 import { useTabParam } from "@/lib/use-tab-param";
 
 /**
@@ -93,7 +94,7 @@ export function SettingsSidebar({ active, onSelect, onBack }: SettingsSidebarPro
           onClick={onBack}
           className="btn-glass px-3.5 py-1.5 text-sub font-medium text-[var(--text-muted)] hover:text-[var(--text)]"
         >
-          <ArrowLeftIcon className="size-4" />
+          <ChevronLeftIcon className="size-4" />
           <span>返回工作台</span>
         </button>
       </div>
@@ -145,6 +146,10 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
   // 时回退到首个可见分区——界面兜底，真正的安全边界在后端 403
   const { session } = useSession();
   const router = useRouter();
+  // 内容列在设置 main 区（右侧分区菜单之后的剩余空间）内水平居中，两主题一致；
+  // 银玻璃无分区菜单，居中即全宽居中（mx-auto px-6）。分区菜单固定 300px 宽
+  // （见 app-shell 的设置分支），列不与菜单重叠
+  const isNf = useTheme().structural;
   const allowed = settingsSectionGroupsFor(session.role).flatMap((g) => g.items);
   const section =
     allowed.find((s) => s.id === active) ?? allowed[0] ?? settingsSections[0];
@@ -169,7 +174,9 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
           操作，展开后还有成排统计，2xl 太挤（3xl）；下载器展开后是地址/目录长值 +
           路径映射对照表，同给 3xl；其余表单类分区维持 2xl 的舒适阅读宽度 */}
       <div
-        className={`mx-auto w-full px-6 pb-20 pt-12 max-md:px-4 max-md:pb-12 max-md:pt-6 ${
+        className={`w-full pb-20 pt-12 max-md:pb-12 max-md:pt-6 ${
+          isNf ? "mx-auto pl-12 pr-12 max-md:px-4" : "mx-auto px-6 max-md:px-4"
+        } ${
           section.id === "logs" || section.id === "mcp"
             ? "max-w-4xl"
             : section.id === "sites" || section.id === "downloaders"
@@ -591,7 +598,7 @@ function AppSection() {
   // 本分区只对管理员渲染（成员的分区清单里没有 app），无需再按角色关轮询
   const pendingUpdate = usePendingUpdate();
   // Netflix：激活胶囊是白底黑字（与外观分区同一语言，见 AppearanceSection）
-  const activePillCls = useTheme().id === "netflix" ? "bg-white text-black" : "bg-white/[0.14] text-white";
+  const activePillCls = useTheme().structural ? "bg-white text-black" : "bg-white/[0.14] text-white";
   const tabs = [
     { id: "update" as const, label: "版本与更新" },
     { id: "storage" as const, label: "缓存管理" },
@@ -669,8 +676,9 @@ function AppearanceSection() {
   ] as const;
   // Netflix 主题是纯色平铺设计（docs/design/web-themes.md §3.5）：背景大图与
   // 玻璃/蒙版整体停用，这两组设置置灰标注，prefs 字段保留不丢。
-  const theme = useTheme();
-  const glassDisabled = theme.id === "netflix";
+  // 纯色平铺主题（capabilities.glass = false）不渲染背景大图与玻璃/蒙版，
+  // 这两组设置置灰标注，prefs 字段保留不丢
+  const glassDisabled = !useResolvedTheme().capabilities.glass;
   // Netflix：激活胶囊是白底黑字（品牌语言：选中态 = 白底），不是灰底透明白
   const activePillCls = glassDisabled ? "bg-white text-black" : "bg-white/[0.14] text-white";
 

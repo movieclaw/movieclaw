@@ -1,4 +1,4 @@
-import { MovieclawMark } from "@/components/netflix/brand";
+import { MovieclawMark } from "@/components/brand";
 
 /**
  * 全站统一的品牌加载指示：M 字标 + 呼吸动画（见 globals.css 的 .brand-loader）。

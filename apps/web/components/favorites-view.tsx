@@ -634,7 +634,7 @@ export function FavoritesView() {
           )
         }
       />
-      <div className="px-6 max-md:px-4">
+      <div className="page-inset">
         <h2 className="text-on-image truncate text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[20px]">
           我的收藏
         </h2>

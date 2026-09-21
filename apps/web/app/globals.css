@@ -1,5 +1,22 @@
 @import "tailwindcss";
 
+/* Netflix 主题覆盖组：全部规则挂 html[data-theme="netflix"] 作用域，
+   特异性高于基础同类规则，置于 tailwind 之后不构成级联依赖。
+   （迁移说明 docs/design/theme-framework/） */
+@import "../themes/netflix/tokens.css";
+
+@theme {
+  --text-micro: 10px;
+  --text-caption: 11px;
+  --text-sub: 12px;
+  --text-ui: 13px;
+  --text-body: 14px;
+  --text-body-lg: 15px;
+  --text-title-sm: 16px;
+  --text-title: 17px;
+  --text-title-lg: 19px;
+}
+
 /*
  * —— 语义字号 token（全站唯一的字号来源） ——
  *
@@ -31,19 +48,7 @@
  * 同时输出 line-height，与现状「行高继承 body 1.5 或由 leading-* 显式指定」
  * 的排版行为不一致，会引起全站布局抖动。
  */
-@theme {
-  --text-micro: 10px;
-  --text-caption: 11px;
-  --text-sub: 12px;
-  --text-ui: 13px;
-  --text-body: 14px;
-  --text-body-lg: 15px;
-  --text-title-sm: 16px;
-  --text-title: 17px;
-  --text-title-lg: 19px;
-}
 
-/* 移动端换档：整体抬到 iOS HIG 的可读标准（断点与全站移动端约定一致，767px） */
 @media (max-width: 767px) {
   :root {
     --text-micro: 11px;
@@ -58,17 +63,8 @@
   }
 }
 
-/*
- * Movieclaw 控制台 —— 冷调「银玻璃」主题（液态玻璃 · Bing 式氛围底）
- * ------------------------------------------------------------------
- * 设计语言：沉浸式左右分区（参考 Codex 桌面端）+ 半透明「液态玻璃」表面。
- * - 背景：不用照片，改用纯 CSS 冷调「抽象光斑」（多层 radial-gradient 光晕），
- *   透过半透明玻璃面板隐约透出，复刻 Bing「大图氛围底」的空间纵深感。
- * - 表面：更透、更强的背景模糊 —— 玻璃质感是视觉主角，让底部冷光渗上来。
- * - 强调：不用彩色。以「冷银高光」替代原先的影院红→琥珀，克制、专业、通透。
- *   （参考 Bing 无边框 + 极软阴影 + 冷色聚焦环的处理。）
- * - 字体：拉丁/数字用 Inter，中文交给系统 PingFang SC。
- */
+/* 移动端换档：整体抬到 iOS HIG 的可读标准（断点与全站移动端约定一致，767px） */
+
 
 :root {
   color-scheme: dark;
@@ -79,6 +75,16 @@
   --surface-main: rgba(13, 15, 21, 0.42);
   --surface-raised: rgba(30, 33, 43, 0.74); /* 浮层：菜单 / 卡片 */
   --surface-inset: rgba(255, 255, 255, 0.05); /* 内嵌：输入框 */
+  /* 海报/剧照加载前的占位底（冷蓝黑，银玻璃画布上的既定观感；
+     Netflix 主题在下方覆盖组里换中性灰） */
+  --poster-placeholder: #141824;
+
+  /* —— 主题布局留白档 ——
+     页面级（px-6 档）与详情正文级（px-12 档）各一档；断点内收见下方
+     media 组，主题覆盖（Netflix 4vw）在 html[data-theme="netflix"] 组。
+     页面一律消费 page-inset 系语义工具类，禁止手写主题留白判断。 */
+  --page-inset: 1.5rem;
+  --content-inset: 3rem;
 
   /* —— 文本层级（冷白） —— */
   --text: #f3f5f9;
@@ -136,6 +142,26 @@
   --danger-solid: #c73838;
   --danger-solid-hover: #d64545;
 
+  /*
+   * —— 信息蓝系（#6aa7ff 遗留字面量的收口） ——
+   * /search 一族（快照药丸、选种横幅、「投给订阅」钮、全集徽章、侧栏活动点、
+   * 订阅「追踪中」）历史上就地写死 #6aa7ff 系信息蓝，与 --info(#7fb0ff)
+   * 双值并存，一直是「语义蓝待设计决策」的挂起项。现按双主题拆色拍板收口：
+   * :root 逐字保留原字面量（银玻璃逐像素零变化），Netflix 主题在下方覆盖组里
+   * 整组换成白/灰层次——红只留给品牌与播放动作，信息类不再以彩色出现在
+   * Netflix 画布上。组件里不要再写这些十六进制，一律 var() 引用。
+   */
+  --info-soft: #6aa7ff; /* 软底 / 描边 / 实底通用基色 */
+  --info-text: #b9d4ff; /* 软底上的信息文字 */
+  --info-text-2: #9cc2ff; /* 次级信息文字（小角标） */
+  --info-grad-a: #4f8cff; /* 全集徽章蓝紫渐变 · 起点 */
+  --info-grad-b: #9d6bff; /* 全集徽章蓝紫渐变 · 终点 */
+  --info-on-solid: #ffffff; /* 高浓度信息实底（/85、/90）上的文字 */
+  /* 订阅检查器进度条「下载中」的图例点：银玻璃沿用与 --info 相同的 #7fb0ff
+     （图例此前直接走 var(--info)，与条带段的 #6aa7ff 本就双值并存）。
+     拆主题时两者各自保值，Netflix 归一成白后图例与条带不再错色 */
+  --info-legend: #7fb0ff;
+
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 
@@ -186,9 +212,18 @@
   --keyboard-inset: 0px;
 }
 
-/* display-mode: standalone 限定「加到主屏后独立打开」（浏览器内访问不受影响）；
-   -webkit-touch-callout 是 iOS WebKit 独有特性（macOS Safari 不支持），
-   两者相与即「iOS PWA」。Android PWA、桌面端与浏览器标签页一律不补偿。 */
+/*
+ * Movieclaw 控制台 —— 冷调「银玻璃」主题（液态玻璃 · Bing 式氛围底）
+ * ------------------------------------------------------------------
+ * 设计语言：沉浸式左右分区（参考 Codex 桌面端）+ 半透明「液态玻璃」表面。
+ * - 背景：不用照片，改用纯 CSS 冷调「抽象光斑」（多层 radial-gradient 光晕），
+ *   透过半透明玻璃面板隐约透出，复刻 Bing「大图氛围底」的空间纵深感。
+ * - 表面：更透、更强的背景模糊 —— 玻璃质感是视觉主角，让底部冷光渗上来。
+ * - 强调：不用彩色。以「冷银高光」替代原先的影院红→琥珀，克制、专业、通透。
+ *   （参考 Bing 无边框 + 极软阴影 + 冷色聚焦环的处理。）
+ * - 字体：拉丁/数字用 Inter，中文交给系统 PingFang SC。
+ */
+
 @media (display-mode: standalone) {
   @supports (-webkit-touch-callout: none) {
     :root {
@@ -197,9 +232,14 @@
   }
 }
 
+/* display-mode: standalone 限定「加到主屏后独立打开」（浏览器内访问不受影响）；
+   -webkit-touch-callout 是 iOS WebKit 独有特性（macOS Safari 不支持），
+   两者相与即「iOS PWA」。Android PWA、桌面端与浏览器标签页一律不补偿。 */
+
 * {
   box-sizing: border-box;
 }
+
 
 html,
 body {
@@ -219,6 +259,7 @@ body {
   min-height: calc(100% + var(--vp-overshoot));
 }
 
+
 html {
   /* iOS 横屏时会自作主张放大「它认为是正文」的文字，把精排的紧凑布局撑破；
      锁定为 100% 关掉这个推断（无障碍缩放不受影响，用户捏合仍然有效）。 */
@@ -227,6 +268,12 @@ html {
   /* iOS 点按任意可点元素会闪一块系统灰色高亮，与全站自定义的
      active 态（缩放/白色蒙层）叠在一起很脏，关掉用自己的。 */
   -webkit-tap-highlight-color: transparent;
+}
+
+
+
+.page-inset {
+  padding-inline: var(--page-inset);
 }
 
 /* iOS 对每次点按都要等一拍判断「是不是双击缩放」，快速连点（翻页、
@@ -241,6 +288,34 @@ html {
    横向、页面横向没得滚才碰巧没事；伪横屏容器转了 90°，沿条就是物理竖直方向，
    浏览器把触摸当翻页手势收走（pointercancel），进度条一动不动
    （2026-09-14 真触摸复现，docs/design/player-feel.md §19.8）。 */
+/* —— 主题布局留白：语义工具类（消费 --page-inset / --content-inset） ——
+   页面左右留白随主题走档：银玻璃 px-6/px-12 档、Netflix 全站 4vw。 */
+
+
+.page-inset-mx {
+  margin-inline: var(--page-inset);
+}
+
+
+.page-inset-bleed {
+  margin-inline: calc(var(--page-inset) * -1);
+}
+
+/* 吸顶工具条（PageNav）满宽蒙版的反向抵消：与 page-inset 天然成对 */
+
+.content-inset {
+  padding-inline: var(--content-inset);
+}
+
+
+@media (width < 768px) {
+  :root {
+    --page-inset: 1rem;
+    --content-inset: 1rem;
+  }
+}
+
+
 @layer base {
   button,
   a,
@@ -250,6 +325,37 @@ html {
   video,
   [role="button"] {
     touch-action: manipulation;
+  }
+}
+
+
+@media (display-mode: standalone) and (pointer: coarse) {
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  /* :where() 把优先级压到 0，不去和组件自己的选择器抢。注意本段是无层 CSS，
+     整体优先于 Tailwind 的 @layer utilities——同一个元素上再挂 select-none 是
+     盖不住的，要局部剔除就挂到子元素上（user-select 是继承属性，子元素自身
+     的声明必赢）：系统日志整行放开可选、行内时间戳与级别徽标各自挂
+     select-none 把自己排除在选区外，正是这个用法。 */
+  :where(
+    input,
+    textarea,
+    [contenteditable]:not([contenteditable="false"]),
+    code,
+    pre,
+    samp,
+    .font-mono,
+    .markdown,
+    .code-highlight,
+    .selectable
+  ) {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
   }
 }
 
@@ -285,34 +391,9 @@ html {
    放开时 user-select 与 -webkit-touch-callout 必须同时重申：前者是继承属性，
    后者在 iOS 上同样逐级继承，只改一个会剩下另一个继续拦着（典型症状是
    文字能选中了、长按却还是不弹拷贝菜单）。 */
-@media (display-mode: standalone) and (pointer: coarse) {
-  body {
-    -webkit-user-select: none;
-    user-select: none;
-    -webkit-touch-callout: none;
-  }
 
-  /* :where() 把优先级压到 0，不去和组件自己的选择器抢。注意本段是无层 CSS，
-     整体优先于 Tailwind 的 @layer utilities——同一个元素上再挂 select-none 是
-     盖不住的，要局部剔除就挂到子元素上（user-select 是继承属性，子元素自身
-     的声明必赢）：系统日志整行放开可选、行内时间戳与级别徽标各自挂
-     select-none 把自己排除在选区外，正是这个用法。 */
-  :where(
-    input,
-    textarea,
-    [contenteditable]:not([contenteditable="false"]),
-    code,
-    pre,
-    samp,
-    .font-mono,
-    .markdown,
-    .code-highlight,
-    .selectable
-  ) {
-    -webkit-user-select: text;
-    user-select: text;
-    -webkit-touch-callout: default;
-  }
+select {
+  color-scheme: dark;
 }
 
 /* —— 原生 <select> 下拉弹层的 Windows 修复 ——
@@ -322,13 +403,19 @@ html {
    1) 在 select 上显式重申 color-scheme（弹层配色跟随控件自身而非 :root）；
    2) 给 option/optgroup 显式指定「不透明深色底 + 亮色字」——弹层里半透明
       背景会叠在系统白底上，必须用实色。 */
-select {
-  color-scheme: dark;
-}
 select option,
 select optgroup {
   background-color: #161923;
   color: var(--text);
+}
+
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text);
+  caret-color: var(--text);
+  transition: background-color 9999999s ease-out;
 }
 
 /* —— Chrome 自动填充配色修正 ——
@@ -337,13 +424,6 @@ select optgroup {
    像坏掉一样，Windows 上尤其常见（密码保存使用率高）。用「无限时长的
    background-color 过渡」把 UA 的刷底永远拖住，再显式指定文字与光标颜色。
    Firefox 的自动填充高亮很淡且不可覆盖，无需处理。 */
-input:-webkit-autofill,
-input:-webkit-autofill:hover,
-input:-webkit-autofill:focus {
-  -webkit-text-fill-color: var(--text);
-  caret-color: var(--text);
-  transition: background-color 9999999s ease-out;
-}
 
 body {
   margin: 0;
@@ -362,21 +442,7 @@ body {
   overscroll-behavior: none;
 }
 
-/*
- * —— 移动端全局约定 ——
- *
- * 1) 输入控件字号提到 16px：iOS Safari 在聚焦字号 < 16px 的输入框时会强制
- *    放大整个页面（且不会自动缩回），是移动端最常见的「页面突然歪了」。
- *    全站输入框在桌面是 12.5~13px 的紧凑排版，这里只在小屏放大，
- *    不影响桌面观感。用 :where() 保持 0 优先级，组件仍可按需覆盖。
- * 2) 触摸设备没有 hover：Tailwind v4 的 hover: 变体只在支持悬停的设备上
- *    生效，于是所有「悬停才浮现」的操作（列表行的下载/详情按钮、卡片上的
- *    订阅入口、会话行的更多菜单）在手机上永远点不到。给这些元素补一个
- *    .touch-reveal，在无悬停设备上恒定可见——这是移动端可用性的硬要求。
- * 3) 触控目标 44pt：iOS HIG 的最小可点面积。视觉上不便放大到 44px 的小按钮
- *    （会话行的 ⋯、composer 的发送键等）挂 .touch-target，用伪元素在移动端
- *    把命中区悄悄撑到 44×44——伪元素参与父按钮的点击判定，外观不变。
- */
+
 @media (max-width: 767px) {
   :where(input, textarea, select) {
     font-size: 16px;
@@ -396,6 +462,22 @@ body {
   }
 }
 
+/*
+ * —— 移动端全局约定 ——
+ *
+ * 1) 输入控件字号提到 16px：iOS Safari 在聚焦字号 < 16px 的输入框时会强制
+ *    放大整个页面（且不会自动缩回），是移动端最常见的「页面突然歪了」。
+ *    全站输入框在桌面是 12.5~13px 的紧凑排版，这里只在小屏放大，
+ *    不影响桌面观感。用 :where() 保持 0 优先级，组件仍可按需覆盖。
+ * 2) 触摸设备没有 hover：Tailwind v4 的 hover: 变体只在支持悬停的设备上
+ *    生效，于是所有「悬停才浮现」的操作（列表行的下载/详情按钮、卡片上的
+ *    订阅入口、会话行的更多菜单）在手机上永远点不到。给这些元素补一个
+ *    .touch-reveal，在无悬停设备上恒定可见——这是移动端可用性的硬要求。
+ * 3) 触控目标 44pt：iOS HIG 的最小可点面积。视觉上不便放大到 44px 的小按钮
+ *    （会话行的 ⋯、composer 的发送键等）挂 .touch-target，用伪元素在移动端
+ *    把命中区悄悄撑到 44×44——伪元素参与父按钮的点击判定，外观不变。
+ */
+
 @media (hover: none) {
   .touch-reveal {
     opacity: 1 !important;
@@ -404,25 +486,8 @@ body {
   }
 }
 
-/*
- * 【全站约定】backdrop-filter 一律只写标准属性，不要手写 -webkit- 前缀行。
- *
- * 构建期 Tailwind v4 的 Lightning CSS 会按浏览器目标自动补前缀（产物里两条都在）；
- * 但源码里如果自己写了 -webkit-backdrop-filter，它会认为「作者已指定前缀形式」，
- * 压缩时把标准属性整条丢掉，只留 -webkit- 那条。而新版 Chrome（148 起实测）
- * 已移除 -webkit-backdrop-filter 别名，于是**打包产物里所有毛玻璃/蒙版模糊全失效**，
- * dev 模式（不压缩、两条都在）却一切正常——这正是「本地好好的、镜像里不对」的成因。
- * 同理只影响 backdrop-filter；mask-image 等前缀属性不受此规则约束。
- */
 
-/*
- * 站点铺底：默认为固定色调的深石墨蓝渐变底（public/backdrop-default.jpg，
- * 由构建脚本生成的斜向渐变 + 左上冷光晕 + 防色带噪声），用户可在外观设置换成
- * 自己的图。其上叠一层冷调 radial-gradient 光晕 + 竖向暗渐变蒙版：
- *   1) 蒙版压暗底图，保证半透明玻璃面板与文字始终可读；
- *   2) 冷色光晕（靛蓝 / 淡紫 / 青）与银冷主题呼应。
- * 这张图同时被液态玻璃着色器采样做折射（见 lib/glass.ts 的 BACKDROP），二者须为同一张。
- */
+
 body::before {
   content: "";
   position: fixed;
@@ -446,25 +511,24 @@ body::before {
 }
 
 /*
- * 影片详情页（媒体库条目 / 发现页条目）的「剧照 → 纯黑」渐变板。
+ * 【全站约定】backdrop-filter 一律只写标准属性，不要手写 -webkit- 前缀行。
  *
- * 剧照本身是全站背景（BackdropProvider 的沉浸覆盖层，随页面进入淡入、
- * 离开淡出），详情页自己不再画任何 Hero 图层；这层渐变挂在页面的滚动容器上，
- * 顶部一段完全透明让剧照直出，从标题上方开始逐级压暗，到基础信息之后落成
- * 纯黑并一直铺到内容底部。
- *
- * 为什么挂在滚动容器的 background 上、而不是内容层的 div：
- *   - .scroll-thin 在 WebKit 下是占位的经典滚动条（9px），绝对定位 / 普通流
- *     的子元素都盖不到滚动条轨道那一条，轨道透明就会漏出一条原图；元素自身
- *     的 background 覆盖的是 border-box，连轨道一起盖住；
- *   - background-attachment: local 让渐变随内容一起滚动、并以整个可滚动
- *     高度为 100%，短内容时也至少铺满容器，底部不会露出剧照。
- * 渐变起点 --detail-ambient-top = 剧照横幅可视高度（--detail-hero-h 与
- * --detail-hero-min-h 取大）− 内容层上提量（-mt-28 = 112px），色阶与原先
- * 内容层上的渐变完全一致。横幅高度与渐变起点必须严格同步（起点一错，标题
- * 就会压在亮图上或横幅下沿露出一截渐变断层），所以页面侧的氛围留白 spacer
- * 也从同一组变量取值（h-[var(--detail-hero-h)]）——改高度只改变量，两处不会漂移。
+ * 构建期 Tailwind v4 的 Lightning CSS 会按浏览器目标自动补前缀（产物里两条都在）；
+ * 但源码里如果自己写了 -webkit-backdrop-filter，它会认为「作者已指定前缀形式」，
+ * 压缩时把标准属性整条丢掉，只留 -webkit- 那条。而新版 Chrome（148 起实测）
+ * 已移除 -webkit-backdrop-filter 别名，于是**打包产物里所有毛玻璃/蒙版模糊全失效**，
+ * dev 模式（不压缩、两条都在）却一切正常——这正是「本地好好的、镜像里不对」的成因。
+ * 同理只影响 backdrop-filter；mask-image 等前缀属性不受此规则约束。
  */
+/*
+ * 站点铺底：默认为固定色调的深石墨蓝渐变底（public/backdrop-default.jpg，
+ * 由构建脚本生成的斜向渐变 + 左上冷光晕 + 防色带噪声），用户可在外观设置换成
+ * 自己的图。其上叠一层冷调 radial-gradient 光晕 + 竖向暗渐变蒙版：
+ *   1) 蒙版压暗底图，保证半透明玻璃面板与文字始终可读；
+ *   2) 冷色光晕（靛蓝 / 淡紫 / 青）与银冷主题呼应。
+ * 这张图同时被液态玻璃着色器采样做折射（见 lib/glass.ts 的 BACKDROP），二者须为同一张。
+ */
+
 .detail-ambient {
   --detail-hero-h: 30vh;
   --detail-hero-min-h: 180px;
@@ -485,6 +549,27 @@ body::before {
   background-attachment: local;
   background-repeat: no-repeat;
 }
+
+/*
+ * 影片详情页（媒体库条目 / 发现页条目）的「剧照 → 纯黑」渐变板。
+ *
+ * 剧照本身是全站背景（BackdropProvider 的沉浸覆盖层，随页面进入淡入、
+ * 离开淡出），详情页自己不再画任何 Hero 图层；这层渐变挂在页面的滚动容器上，
+ * 顶部一段完全透明让剧照直出，从标题上方开始逐级压暗，到基础信息之后落成
+ * 纯黑并一直铺到内容底部。
+ *
+ * 为什么挂在滚动容器的 background 上、而不是内容层的 div：
+ *   - .scroll-thin 在 WebKit 下是占位的经典滚动条（9px），绝对定位 / 普通流
+ *     的子元素都盖不到滚动条轨道那一条，轨道透明就会漏出一条原图；元素自身
+ *     的 background 覆盖的是 border-box，连轨道一起盖住；
+ *   - background-attachment: local 让渐变随内容一起滚动、并以整个可滚动
+ *     高度为 100%，短内容时也至少铺满容器，底部不会露出剧照。
+ * 渐变起点 --detail-ambient-top = 剧照横幅可视高度（--detail-hero-h 与
+ * --detail-hero-min-h 取大）− 内容层上提量（-mt-28 = 112px），色阶与原先
+ * 内容层上的渐变完全一致。横幅高度与渐变起点必须严格同步（起点一错，标题
+ * 就会压在亮图上或横幅下沿露出一截渐变断层），所以页面侧的氛围留白 spacer
+ * 也从同一组变量取值（h-[var(--detail-hero-h)]）——改高度只改变量，两处不会漂移。
+ */
 @media (max-width: 767px) {
   .detail-ambient {
     --detail-hero-h: 22vh;
@@ -498,6 +583,12 @@ body::before {
   }
 }
 
+
+.ambient-fallback {
+  background: rgb(5 7 12 / 0.72);
+  backdrop-filter: blur(12px);
+}
+
 /*
  * 氛围页的加载/错误兜底底板。
  *
@@ -506,9 +597,11 @@ body::before {
  * 一句加载/错误文案，直接压在用户自己配的壁纸上——壁纸一亮，浅灰文案就没了。
  * 这些兜底态自己带一层底，与全局蒙版同色系，读得清且不破坏氛围页的观感。
  */
-.ambient-fallback {
-  background: rgb(5 7 12 / 0.72);
-  backdrop-filter: blur(12px);
+
+.page-scrim,
+.search-palette-overlay {
+  background: rgb(5 7 12 / var(--scrim-dark, 0.69));
+  backdrop-filter: blur(var(--scrim-blur, 13px));
 }
 
 /*
@@ -521,11 +614,6 @@ body::before {
  * 变量未就绪时兜底为出厂默认值（压暗 0.69 + 模糊 13px，背景大图化为朦胧色块），
  * 须与 lib/api/ui.ts 的 DEFAULT_UI_PREFS 及后端 ScrimUiPrefs 的默认值一致。
  */
-.page-scrim,
-.search-palette-overlay {
-  background: rgb(5 7 12 / var(--scrim-dark, 0.69));
-  backdrop-filter: blur(var(--scrim-blur, 13px));
-}
 .page-scrim {
   position: fixed;
   /* 与背景大图同样铺到屏幕物理底边，否则底部会漏出一条未压暗的原图 */
@@ -538,6 +626,7 @@ body::before {
      值会卡在旧档不更新（滑杆拖不动的元凶）。全站现在只有一档蒙版，
      值只在用户拖滑杆时变化，本就要即时跟手，无需过渡。 */
 }
+
 @keyframes page-scrim-in {
   from {
     opacity: 0;
@@ -547,10 +636,12 @@ body::before {
   }
 }
 
-/* Toast 回执（components/feedback.tsx）：自下方轻浮入，与玻璃面板同源的进场语言 */
+
 .toast-item {
   animation: toast-in 280ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
 }
+
+/* Toast 回执（components/feedback.tsx）：自下方轻浮入，与玻璃面板同源的进场语言 */
 @keyframes toast-in {
   from {
     opacity: 0;
@@ -561,17 +652,14 @@ body::before {
     transform: translateY(0);
   }
 }
+
 @media (prefers-reduced-motion: reduce) {
   .toast-item {
     animation: none;
   }
 }
 
-/*
- * 沉浸页蒙版（Agent 对话页）：与 .page-scrim 同层同显隐逻辑，但完全不透明——
- * 密集文本页整页不允许透出背景大图。底色用中性近黑（不带全站的冷蓝调），
- * 对齐桌面端 AI 产品的阅读配色（见下方 .immersive-theme）。
- */
+
 .page-solid {
   position: fixed;
   inset: 0 0 calc(-1 * var(--vp-overshoot)) 0;
@@ -580,6 +668,12 @@ body::before {
   background: #0f0f10;
   animation: page-scrim-in 240ms ease both;
 }
+
+/*
+ * 沉浸页蒙版（Agent 对话页）：与 .page-scrim 同层同显隐逻辑，但完全不透明——
+ * 密集文本页整页不允许透出背景大图。底色用中性近黑（不带全站的冷蓝调），
+ * 对齐桌面端 AI 产品的阅读配色（见下方 .immersive-theme）。
+ */
 /* 沉浸路由标记（immersive-route）：layout.tsx 的内联脚本在首帧绘制前打上、
    AppShell 在客户端路由切换时同步。/sessions/[id] 下背景大图的伪元素整个不渲染
    （不渲染 = 浏览器不会下载这张图），纯色层直接实底、不做淡入——
@@ -590,16 +684,12 @@ html.immersive-route body::before {
      预取图片（包括 --backdrop-image 变量更新时）。置空才真正不发请求 */
   background: none;
 }
+
 html.immersive-route .page-solid {
   animation: none;
 }
 
-/*
- * —— 沉浸页阅读主题（Agent 对话容器） ——
- * 模仿 ChatGPT/Codex 桌面端的阅读版式：中性灰阶文字（去掉全站冷白的蓝调）、
- * 系统字体栈（Latin 走 SF Pro/Segoe，中文照旧 PingFang）。只在对话页容器内
- * 覆盖文字变量，全站其他页面的冷调玻璃语言不受影响。
- */
+
 .immersive-theme {
   font-family:
     -apple-system, BlinkMacSystemFont, "SF Pro Text", ui-sans-serif, system-ui,
@@ -613,16 +703,30 @@ html.immersive-route .page-solid {
 }
 
 /*
+ * —— 沉浸页阅读主题（Agent 对话容器） ——
+ * 模仿 ChatGPT/Codex 桌面端的阅读版式：中性灰阶文字（去掉全站冷白的蓝调）、
+ * 系统字体栈（Latin 走 SF Pro/Segoe，中文照旧 PingFang）。只在对话页容器内
+ * 覆盖文字变量，全站其他页面的冷调玻璃语言不受影响。
+ */
+
+@layer base {
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}
+
+/*
  * a 的默认观感（继承文字色、无下划线）与 preflight 同向，但 text-decoration
  * 档位不同（none 而非 inherit）。必须写在 @layer base 里：无 @layer 的普通
  * 规则优先级永远高于任何 @layer，而 Tailwind 的工具类都在 @layer utilities
  * （与下方 button cursor 规则同一坑，2026-09-16 实测踩中——顶栏导航链接的
  * text-[var(--accent)] 激活红被这条无层规则压成继承色，红色高亮不生效）。
  */
+
 @layer base {
-  a {
-    color: inherit;
-    text-decoration: none;
+  button {
+    cursor: pointer;
   }
 }
 
@@ -639,17 +743,7 @@ html.immersive-route .page-solid {
  * 原先这里还有 font: inherit 和 color: inherit —— 与 preflight 完全重复
  * （见 tailwindcss/preflight.css 的 button 规则），已删除。
  */
-@layer base {
-  button {
-    cursor: pointer;
-  }
-}
 
-/*
- * 统一的键盘聚焦环（去色的冷光，借鉴 Bing 蓝环手法）。
- * 注意：不含 input/textarea —— 文本输入的聚焦指示改由其外层容器承载
- * （见 .field-shell / .composer-shell），避免「框中又套一个内环」的双环问题。
- */
 :where(button, a, [tabindex]):focus-visible {
   outline: 2px solid var(--accent-ring);
   outline-offset: 2px;
@@ -657,16 +751,24 @@ html.immersive-route .page-solid {
 }
 
 /*
+ * 统一的键盘聚焦环（去色的冷光，借鉴 Bing 蓝环手法）。
+ * 注意：不含 input/textarea —— 文本输入的聚焦指示改由其外层容器承载
+ * （见 .field-shell / .composer-shell），避免「框中又套一个内环」的双环问题。
+ */
+
+.field-shell {
+  transition: box-shadow 160ms ease, background-color 160ms ease;
+}
+
+/*
  * 文本输入容器：聚焦(:focus-within)时由「容器」统一显示一圈细指示环，
  * 内部 input/textarea 自身已 outline-none（不各画各的），从根本上消除嵌套双环。
  * 用无 @layer 的普通规则书写，保证稳定压过 Tailwind 工具类。
  */
-.field-shell {
-  transition: box-shadow 160ms ease, background-color 160ms ease;
-}
 .field-shell:focus-within {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-ring) 55%, transparent);
 }
+
 /* composer 静止即带投影，聚焦时叠加指示环并加深投影（保留投影不闪断） */
 .composer-shell {
   transition: box-shadow 160ms ease;
@@ -674,14 +776,14 @@ html.immersive-route .page-solid {
      暗图下几乎不可见，亮图、花图下把字从纹理里托出来（text-shadow 可继承） */
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 }
+
 .composer-shell:focus-within {
   box-shadow:
     0 8px 30px rgba(0, 0, 0, 0.32),
     inset 0 0 0 1px color-mix(in srgb, var(--accent-ring) 55%, transparent);
 }
 
-/* composer 输入框里的技能 token（Lexical SkillTokenNode）：
-   与会话气泡里的技能 chip 同一视觉语言，行内原子实体、整体删除 */
+
 .skill-token-chip {
   background: rgba(255, 255, 255, 0.09);
   border-radius: 8px;
@@ -692,18 +794,30 @@ html.immersive-route .page-solid {
   white-space: nowrap;
 }
 
-/* 数字等宽（时间、计数），排版更整齐 */
+/* composer 输入框里的技能 token（Lexical SkillTokenNode）：
+   与会话气泡里的技能 chip 同一视觉语言，行内原子实体、整体删除 */
+
 .tnum {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
 }
 
-/* 横滚海报行：隐藏原生滚动条（翻页交给两侧箭头与触控板横扫），保持画面干净 */
+/* 数字等宽（时间、计数），排版更整齐 */
+
 .scroll-none {
   scrollbar-width: none;
 }
+
+/* 横滚海报行：隐藏原生滚动条（翻页交给两侧箭头与触控板横扫），保持画面干净 */
 .scroll-none::-webkit-scrollbar {
   display: none;
+}
+
+
+.scroll-safe::after {
+  content: "";
+  display: block;
+  height: var(--safe-bottom);
 }
 
 /*
@@ -714,10 +828,10 @@ html.immersive-route .page-solid {
  * 用 ::after 占位而非改 padding：不与各页自己的 pb-* 打架；
  * 非全面屏设备与桌面端 env() 解析为 0，占位高度为零、无副作用。
  */
-.scroll-safe::after {
-  content: "";
-  display: block;
-  height: var(--safe-bottom);
+
+:where(*) {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
 }
 
 /* —— 滚动条全局兜底（Windows / Linux） ——
@@ -727,28 +841,35 @@ html.immersive-route .page-solid {
    的通配规则统一细化。注意只用标准属性（Chromium 121+ / Firefox 支持，
    老内核退化为原生深色滚动条，可接受）；不能全局写 ::-webkit-scrollbar——
    一旦命中，macOS 的 overlay 行为就会被替换成常驻自绘滚动条。 */
-:where(*) {
+
+.scroll-thin {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
 }
 
 /* —— 细滚动条 —— */
-.scroll-thin {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
-}
 .scroll-thin::-webkit-scrollbar {
   width: 9px;
 }
+
 .scroll-thin::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.14);
   border-radius: 999px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
+
 .scroll-thin::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.26);
   background-clip: content-box;
+}
+
+
+.markdown {
+  font-size: var(--text-body-lg);
+  line-height: 28px;
+  color: var(--text);
+  word-break: break-word;
 }
 
 /*
@@ -757,12 +878,6 @@ html.immersive-route .page-solid {
  * 字号走语义 token 的阅读正文档（桌面 15px / 移动 17px），行高 28px 两档通用
  * （15px 下约 1.85、17px 下约 1.65，均在舒适阅读区间），保证切换渲染器不跳版式。
  */
-.markdown {
-  font-size: var(--text-body-lg);
-  line-height: 28px;
-  color: var(--text);
-  word-break: break-word;
-}
 /*
  * 紧凑档：Markdown 嵌在卡片里当"说明文字"用时（更新说明等），阅读正文档
  * 会比周边的 text-sub 大出一大截、显得喧宾夺主。只压字号与行高，排版规则
@@ -773,15 +888,18 @@ html.immersive-route .page-solid {
   line-height: 1.75;
   color: var(--text-muted);
 }
+
 .markdown--compact h1,
 .markdown--compact h2,
 .markdown--compact h3,
 .markdown--compact h4 {
   color: var(--text);
 }
+
 .markdown > * + * {
   margin-top: 0.75em;
 }
+
 .markdown h1,
 .markdown h2,
 .markdown h3,
@@ -789,57 +907,71 @@ html.immersive-route .page-solid {
   font-weight: 600;
   line-height: 1.4;
 }
+
 .markdown > * + h1,
 .markdown > * + h2,
 .markdown > * + h3,
 .markdown > * + h4 {
   margin-top: 1.4em;
 }
+
 .markdown h1 {
   font-size: 1.25em;
 }
+
 .markdown h2 {
   font-size: 1.15em;
 }
+
 .markdown h3,
 .markdown h4 {
   font-size: 1.05em;
 }
+
 .markdown ul,
 .markdown ol {
   padding-left: 1.5em;
 }
+
 .markdown ul {
   list-style: disc;
 }
+
 .markdown ol {
   list-style: decimal;
 }
+
 .markdown li + li {
   margin-top: 0.3em;
 }
+
 .markdown li > ul,
 .markdown li > ol {
   margin-top: 0.3em;
 }
+
 /* GFM 任务列表：去掉原生序号缩进，checkbox 顶替列表符 */
 .markdown li:has(> input[type="checkbox"]) {
   list-style: none;
   margin-left: -1.5em;
 }
+
 .markdown input[type="checkbox"] {
   margin-right: 0.45em;
   vertical-align: -0.1em;
 }
+
 .markdown a {
   color: #8ab4ff;
   text-decoration: underline;
   text-underline-offset: 3px;
   text-decoration-color: rgba(138, 180, 255, 0.4);
 }
+
 .markdown a:hover {
   text-decoration-color: currentColor;
 }
+
 .markdown code {
   font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.86em;
@@ -847,6 +979,7 @@ html.immersive-route .page-solid {
   border-radius: 5px;
   padding: 0.15em 0.4em;
 }
+
 .markdown pre {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.07);
@@ -855,22 +988,26 @@ html.immersive-route .page-solid {
   overflow-x: auto;
   line-height: 1.6;
 }
+
 .markdown pre code {
   background: none;
   border-radius: 0;
   padding: 0;
   font-size: var(--text-sub);
 }
+
 .markdown blockquote {
   border-left: 3px solid rgba(255, 255, 255, 0.14);
   padding-left: 0.9em;
   color: var(--text-muted);
 }
+
 .markdown hr {
   border: none;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   margin: 1.4em 0;
 }
+
 .markdown table {
   display: block;
   max-width: 100%;
@@ -878,22 +1015,20 @@ html.immersive-route .page-solid {
   border-collapse: collapse;
   font-size: 0.93em;
 }
+
 .markdown th,
 .markdown td {
   border: 1px solid rgba(255, 255, 255, 0.1);
   padding: 6px 12px;
   text-align: left;
 }
+
 .markdown th {
   font-weight: 600;
   background: rgba(255, 255, 255, 0.04);
 }
 
-/*
- * —— 工具调用卡片里的代码展示（components/highlighted-code.tsx） ——
- * shiki 输出的 <pre> 自带主题底色，这里压掉让它贴合卡片自身的玻璃底；
- * 长命令/长参数强制换行完整展示，超长内容由卡片外层限高滚动。
- */
+
 .code-highlight pre {
   margin: 0;
   padding: 4px 0;
@@ -906,19 +1041,27 @@ html.immersive-route .page-solid {
 }
 
 /*
- * 侧栏 / 内容区现在都是 GlassPanel（真实 WebGL 玻璃）承载，玻璃本身负责
- * 透出并折射背景大图。这里只保留一层 WebGL 不可用时的兜底底色，避免白屏；
- * 正常渲染时它被上方的玻璃 canvas 覆盖、不可见。
- * 侧栏更深、内容区更浅，与各自玻璃预设的 darkTint 对应。
+ * —— 工具调用卡片里的代码展示（components/highlighted-code.tsx） ——
+ * shiki 输出的 <pre> 自带主题底色，这里压掉让它贴合卡片自身的玻璃底；
+ * 长命令/长参数强制换行完整展示，超长内容由卡片外层限高滚动。
  */
+
 .panel--sidebar {
   /* --glass-fallback：兜底色强度系数（0~1，GlassPanel 按侧栏透明度写入）。
      玻璃走 opacity 材质淡出时兜底色必须同步淡出，否则它会顶上来挡住页面。 */
   background: rgb(7 8 12 / calc(0.9 * var(--glass-fallback, 1)));
 }
+
+/*
+ * 侧栏 / 内容区现在都是 GlassPanel（真实 WebGL 玻璃）承载，玻璃本身负责
+ * 透出并折射背景大图。这里只保留一层 WebGL 不可用时的兜底底色，避免白屏；
+ * 正常渲染时它被上方的玻璃 canvas 覆盖、不可见。
+ * 侧栏更深、内容区更浅，与各自玻璃预设的 darkTint 对应。
+ */
 .panel--main {
   background: rgba(9, 11, 17, 0.72);
 }
+
 /* 沉浸页（Agent 对话）的实色侧栏：不透玻璃、不折射背景大图，
    中性灰（与 .page-solid 同调）略抬一档 + 发丝描边，保留浮起卡片的形状语言 */
 .panel--sidebar-flat {
@@ -927,11 +1070,7 @@ html.immersive-route .page-solid {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 
-/*
- * 真实 WebGL 液态玻璃面板（见 components/glass-panel.tsx）。
- * canvas 铺满容器、置于内容层之下，内容层照常承载布局与交互。
- * 玻璃本身负责透出并折射背景大图，故这里不再叠 CSS 模糊/半透明底色。
- */
+
 .glass-panel {
   position: relative;
   isolation: isolate;
@@ -945,6 +1084,12 @@ html.immersive-route .page-solid {
     0 24px 70px -18px rgb(0 0 0 / calc(0.62 * var(--glass-fallback, 1))),
     0 8px 24px -10px rgb(0 0 0 / calc(0.5 * var(--glass-fallback, 1)));
 }
+
+/*
+ * 真实 WebGL 液态玻璃面板（见 components/glass-panel.tsx）。
+ * canvas 铺满容器、置于内容层之下，内容层照常承载布局与交互。
+ * 玻璃本身负责透出并折射背景大图，故这里不再叠 CSS 模糊/半透明底色。
+ */
 /* 内容层顶上一圈极淡玻璃亮边，压在 canvas 之上才可见。
    不透明度可被 --glass-hairline 覆盖：侧栏透明度调高时淡出这条线
    （由 GlassPanel 的 hairlineAlpha 入参写入，见 lib/glass.ts 的 sidebarGlass）。 */
@@ -957,6 +1102,7 @@ html.immersive-route .page-solid {
   border-radius: inherit;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, var(--glass-hairline, 0.07));
 }
+
 .glass-panel__canvas {
   position: absolute;
   inset: 0;
@@ -965,6 +1111,7 @@ html.immersive-route .page-solid {
   height: 100%;
   pointer-events: none;
 }
+
 .glass-panel__content {
   position: relative;
   z-index: 1;
@@ -972,10 +1119,7 @@ html.immersive-route .page-solid {
   border-radius: inherit;
 }
 
-/*
- * 浮层表面（菜单、卡片）：比面板更亮一档，带柔和投影，表达「抬升」。
- * 顶部一道内高光模拟玻璃边缘的受光。
- */
+
 .surface-raised {
   position: relative;
   background: var(--surface-raised);
@@ -986,6 +1130,11 @@ html.immersive-route .page-solid {
     0 2px 8px rgba(0, 0, 0, 0.32),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
+
+/*
+ * 浮层表面（菜单、卡片）：比面板更亮一档，带柔和投影，表达「抬升」。
+ * 顶部一道内高光模拟玻璃边缘的受光。
+ */
 /*
  * 带文字的浮层菜单（⋯ 下拉、库卡片管理菜单、用户菜单、会话菜单）的底。
  *
@@ -1025,6 +1174,7 @@ html.immersive-route .page-solid {
      向上/向下弹的都有，中心起在任何方向都不违和 */
   animation: menu-surface-in 0.16s ease both;
 }
+
 @keyframes menu-surface-in {
   from {
     opacity: 0;
@@ -1035,10 +1185,17 @@ html.immersive-route .page-solid {
     transform: scale(1);
   }
 }
+
 @media (prefers-reduced-motion: reduce) {
   .menu-surface {
     animation: none;
   }
+}
+
+
+.notice-surface {
+  background: rgb(15 17 23 / 0.55);
+  backdrop-filter: blur(20px) saturate(1.2);
 }
 
 /*
@@ -1049,19 +1206,7 @@ html.immersive-route .page-solid {
  * 深色底 + 强模糊，无论背后是什么图对比度都成立，只留一丝透维持玻璃语言。
  * 边框颜色不在这里定死，由使用方按语义配（默认 --line、错误态红）。
  */
-.notice-surface {
-  background: rgb(15 17 23 / 0.55);
-  backdrop-filter: blur(20px) saturate(1.2);
-}
 
-/*
- * 设置内容区的子卡片（个人信息 / 字段组 / 开关组 / 站点配置等）。
- * 现只用于设置模式，承载在近黑玻璃面板之上。质感对齐参考站 Component Studio 的元素：
- * 不是「浮起的实心灰块 + 重投影」，而是「玻璃上的一层极淡白色磨砂内嵌」——
- *   半透白填充 + 顶部一道受光高光渐变 + 发丝白描边 + 一线内高光，去掉重外投影。
- * 层次靠通透度拉开，卡片自然融进深色面板，与内部行（bg-white/.03）语言一致。
- * 注意：浮层菜单是另一个同源类 .surface-raised（需要不透明+投影来漂浮分离），不走这套。
- */
 .css-glass {
   position: relative;
   border-radius: 16px;
@@ -1077,8 +1222,14 @@ html.immersive-route .page-solid {
 }
 
 /*
- * 可点击行：侧栏导航、探索、最近运行、菜单项等。
+ * 设置内容区的子卡片（个人信息 / 字段组 / 开关组 / 站点配置等）。
+ * 现只用于设置模式，承载在近黑玻璃面板之上。质感对齐参考站 Component Studio 的元素：
+ * 不是「浮起的实心灰块 + 重投影」，而是「玻璃上的一层极淡白色磨砂内嵌」——
+ *   半透白填充 + 顶部一道受光高光渐变 + 发丝白描边 + 一线内高光，去掉重外投影。
+ * 层次靠通透度拉开，卡片自然融进深色面板，与内部行（bg-white/.03）语言一致。
+ * 注意：浮层菜单是另一个同源类 .surface-raised（需要不透明+投影来漂浮分离），不走这套。
  */
+
 .glass-row {
   position: relative;
   display: flex;
@@ -1096,20 +1247,21 @@ html.immersive-route .page-solid {
     border-color 150ms ease,
     box-shadow 150ms ease;
 }
+
+/*
+ * 可点击行：侧栏导航、探索、最近运行、菜单项等。
+ */
 .glass-row:hover {
   background: var(--glass-fill-hover);
   color: var(--text);
 }
+
 .glass-row[data-active="true"] {
   background: var(--glass-fill-active);
   color: var(--text);
 }
 
-/*
- * 导航激活态（对齐参考站 liquid-glass-oss 的选中项）：一块「浮起的圆角亮胶囊」——
- * 更亮的竖向渐变填充 + 一圈极淡描边 + 顶部内高光 + 柔和外投影，
- * 在同色列表里明确「抬升」出选中项，靠色块与阴影表达，不用左侧指示条。
- */
+
 .nav-item[data-active="true"] {
   background: linear-gradient(
     180deg,
@@ -1122,14 +1274,12 @@ html.immersive-route .page-solid {
     0 6px 16px -6px rgba(0, 0, 0, 0.45);
 }
 
-/* ---- AI 生成标记 -----------------------------------------------------------
-   同一部片里 AI 字幕常常和发行方字幕并排列着，而两者的可信度不一样（译文与
-   时间轴都可能有偏差）。所以这个标记要**抢眼**：紫青渐变胶囊 + 一道每隔几秒
-   扫过的高光，在一列灰白文字里一眼就能挑出来，同时不占多少宽度。
+/*
+ * 导航激活态（对齐参考站 liquid-glass-oss 的选中项）：一块「浮起的圆角亮胶囊」——
+ * 更亮的竖向渐变填充 + 一圈极淡描边 + 顶部内高光 + 柔和外投影，
+ * 在同色列表里明确「抬升」出选中项，靠色块与阴影表达，不用左侧指示条。
+ */
 
-   高光用 ::after 的位移而不是 background-position 动画：位移只动合成层，
-   background-position 每帧都要重绘渐变——这块标记会长时间挂在播放器上，
-   而播放器正是全站最不能白烧 GPU 的地方。 */
 .ai-chip {
   position: relative;
   display: inline-flex;
@@ -1147,6 +1297,15 @@ html.immersive-route .page-solid {
   letter-spacing: 0.02em;
   box-shadow: 0 0 0 1px rgb(255 255 255 / 0.14) inset;
 }
+
+/* ---- AI 生成标记 -----------------------------------------------------------
+   同一部片里 AI 字幕常常和发行方字幕并排列着，而两者的可信度不一样（译文与
+   时间轴都可能有偏差）。所以这个标记要**抢眼**：紫青渐变胶囊 + 一道每隔几秒
+   扫过的高光，在一列灰白文字里一眼就能挑出来，同时不占多少宽度。
+
+   高光用 ::after 的位移而不是 background-position 动画：位移只动合成层，
+   background-position 每帧都要重绘渐变——这块标记会长时间挂在播放器上，
+   而播放器正是全站最不能白烧 GPU 的地方。 */
 .ai-chip::after {
   content: "";
   position: absolute;
@@ -1160,6 +1319,7 @@ html.immersive-route .page-solid {
   translate: -110% 0;
   animation: ai-chip-sheen 3.6s ease-in-out infinite;
 }
+
 @keyframes ai-chip-sheen {
   0%,
   62% {
@@ -1169,6 +1329,7 @@ html.immersive-route .page-solid {
     translate: 110% 0;
   }
 }
+
 @media (prefers-reduced-motion: reduce) {
   .ai-chip::after {
     animation: none;
@@ -1176,11 +1337,7 @@ html.immersive-route .page-solid {
   }
 }
 
-/*
- * 列表行左侧图标徽标（对齐参考站列表项的圆形首字母徽标，这里承载图标）：
- * 平时是深色玻璃圆角方块 + 顶部内高光；hover 略提亮；选中行内变成亮银徽标+深墨图标，
- * 与选中胶囊一起「抬升」。尺寸由使用处用 Tailwind size-* 指定。
- */
+
 .icon-chip {
   display: grid;
   place-items: center;
@@ -1191,17 +1348,24 @@ html.immersive-route .page-solid {
   color: var(--text-muted);
   transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
 }
+
+/*
+ * 列表行左侧图标徽标（对齐参考站列表项的圆形首字母徽标，这里承载图标）：
+ * 平时是深色玻璃圆角方块 + 顶部内高光；hover 略提亮；选中行内变成亮银徽标+深墨图标，
+ * 与选中胶囊一起「抬升」。尺寸由使用处用 Tailwind size-* 指定。
+ */
 .glass-row:hover .icon-chip {
   background: rgba(255, 255, 255, 0.1);
   color: var(--text);
 }
+
 .nav-item[data-active="true"] .icon-chip {
   background: linear-gradient(145deg, #f4f7fc 0%, #b7c2d6 100%);
   color: #141821;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
-/* 分组小标题 */
+
 .group-label {
   font-size: var(--text-micro);
   font-weight: 650;
@@ -1210,14 +1374,16 @@ html.immersive-route .page-solid {
   color: var(--text-faint);
 }
 
-/* 直接压在背景大图上的文字：叠一层柔和暗投影，保证在亮画面上也读得清 */
+/* 分组小标题 */
+
 .text-on-image {
   text-shadow:
     0 1px 3px rgba(0, 0, 0, 0.5),
     0 2px 16px rgba(0, 0, 0, 0.55);
 }
 
-/* 标题的微妙高光（白 → 略灰的竖向渐变），更有质感 */
+/* 直接压在背景大图上的文字：叠一层柔和暗投影，保证在亮画面上也读得清 */
+
 .text-sheen {
   background: linear-gradient(180deg, #ffffff 0%, rgba(243, 245, 249, 0.66) 100%);
   -webkit-background-clip: text;
@@ -1225,10 +1391,8 @@ html.immersive-route .page-solid {
   color: transparent;
 }
 
-/*
- * 主操作按钮：亮「银玻璃」—— 浅色玻璃 + 深色墨字。
- * 借鉴 Bing 白色搜索胶囊：明亮、通透、无彩色，靠高光与软阴影表达质感。
- */
+/* 标题的微妙高光（白 → 略灰的竖向渐变），更有质感 */
+
 .btn-accent {
   background: linear-gradient(145deg, #f6f8fc 0%, #ccd6e6 100%);
   color: #141821;
@@ -1240,19 +1404,20 @@ html.immersive-route .page-solid {
     transform 120ms ease,
     box-shadow 150ms ease;
 }
+
+/*
+ * 主操作按钮：亮「银玻璃」—— 浅色玻璃 + 深色墨字。
+ * 借鉴 Bing 白色搜索胶囊：明亮、通透、无彩色，靠高光与软阴影表达质感。
+ */
 .btn-accent:hover {
   filter: brightness(1.04);
 }
+
 .btn-accent:active {
   transform: scale(0.96);
 }
 
-/*
- * 次级玻璃胶囊按钮：设置页的「编辑 / 刷新 / 取消」等次要操作。
- * 与侧栏「新任务」同一语言：极暗半透填充 + 发丝描边 + 一线内高光，
- * 比无边框的 .glass-row 多一圈可见轮廓，在深色底上能被一眼认出是按钮。
- * 主操作则用亮银 .btn-accent，二者构成明确的主次层级。
- */
+
 .btn-glass {
   display: inline-flex;
   align-items: center;
@@ -1268,13 +1433,29 @@ html.immersive-route .page-solid {
     border-color 150ms ease,
     color 150ms ease;
 }
+
+/*
+ * 次级玻璃胶囊按钮：设置页的「编辑 / 刷新 / 取消」等次要操作。
+ * 与侧栏「新任务」同一语言：极暗半透填充 + 发丝描边 + 一线内高光，
+ * 比无边框的 .glass-row 多一圈可见轮廓，在深色底上能被一眼认出是按钮。
+ * 主操作则用亮银 .btn-accent，二者构成明确的主次层级。
+ */
 .btn-glass:hover {
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.15);
 }
+
 .btn-glass:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+
+.lg-nav-cta,
+.lg-send {
+  transition:
+    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    filter 160ms ease;
 }
 
 /* —— 液态玻璃动作按钮（新任务 / 发送）的悬停反馈 ——
@@ -1283,27 +1464,29 @@ html.immersive-route .page-solid {
    2) 借用组件自带的白色高光面(__active-surface)做一层极弱的提亮，
       模拟玻璃在指针下被点亮的质感（这两个按钮平时不进入 active 态，
       所以这层高光只在 hover 时出现，不会与选中态冲突）。 */
-.lg-nav-cta,
-.lg-send {
-  transition:
-    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    filter 160ms ease;
-}
 .lg-nav-cta:hover:not(.is-pressed),
 .lg-send:hover:not(.is-pressed) {
   transform: translateY(-1px);
   filter: brightness(1.08);
 }
+
 .lg-nav-cta:hover .lg-icon-button__active-surface,
 .lg-send:hover .lg-icon-button__active-surface {
   opacity: 0.1;
   transform: scale(1);
 }
 
-/* 命令面板层级：vendor 默认 z-index:8，但本应用外壳 (.app-shell) 是 z-10，
-   若不抬高，Portal 到 body 后的浮层仍会被外壳内容盖住。抬到 50 稳压全站之上。 */
+
 .lg-command-overlay {
   z-index: 50;
+}
+
+/* 命令面板层级：vendor 默认 z-index:8，但本应用外壳 (.app-shell) 是 z-10，
+   若不抬高，Portal 到 body 后的浮层仍会被外壳内容盖住。抬到 50 稳压全站之上。 */
+
+.app-shell {
+  transform-origin: center center;
+  transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 /* 主界面后推纵深（Spotlight 式）：命令面板打开时（body.cmdk-open），整个外壳轻微
@@ -1311,9 +1494,10 @@ html.immersive-route .page-solid {
    不再额外压暗外壳，避免绕过用户设置叠加第二层固定暗度。
    面板本身 Portal 到 body、不在 .app-shell 内，故不受此缩放影响。
    transform-origin 居中，缩放后四周露出 body 的深色背景渐变，纵深感更明确。 */
-.app-shell {
-  transform-origin: center center;
-  transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+
+.viewport-app-height {
+  height: calc(100vh - var(--keyboard-inset));
+  height: calc(100dvh - var(--keyboard-inset));
 }
 
 /*
@@ -1321,9 +1505,10 @@ html.immersive-route .page-solid {
  * 支持动态视口单位的浏览器则用后声明的 100dvh，继续正确跟随地址栏收放。
  * AppShell 与登录/初始化/启动故障页共用，避免任一入口因高度声明失效而塌成空页。
  */
-.viewport-app-height {
-  height: calc(100vh - var(--keyboard-inset));
-  height: calc(100dvh - var(--keyboard-inset));
+
+.viewport-overlay-height {
+  height: calc(100vh + var(--vp-overshoot));
+  height: calc(100dvh + var(--vp-overshoot));
 }
 
 /*
@@ -1339,22 +1524,12 @@ html.immersive-route .page-solid {
  *
  * 不减 --keyboard-inset：灯箱上没有输入框，弹起软键盘时它该保持满屏。
  */
-.viewport-overlay-height {
-  height: calc(100vh + var(--vp-overshoot));
-  height: calc(100dvh + var(--vp-overshoot));
-}
 
 body.cmdk-open .app-shell {
   transform: scale(0.978);
 }
 
-/*
- * —— 移动端顶栏 ——
- * 不做成实心 header 色块，而是与 PageNav 同一套「向下渐隐的雾」：顶边最浓、
- * 到底部完全化开。这样「新任务」这类大图直出的氛围页不会被一条硬边框拦腰截断，
- * 而密集内容页向上滚动时文字又能被雾压住、不糊在一起。
- * 顶部内边距吃安全区，刘海屏上图标不会被状态栏压住。
- */
+
 .mobile-topbar {
   padding-top: var(--safe-top);
   /* 横屏刘海：顶栏是 absolute 铺满全宽的浮层，不吃主区的安全区内边距，
@@ -1373,20 +1548,13 @@ body.cmdk-open .app-shell {
 }
 
 /*
- * 移动端主区让位：顶栏是浮在内容之上的 absolute 雾层，主区必须自己空出
- * 「安全区 + 顶栏」这一段，否则页面第一屏会被压在汉堡和字标下面。
- * 两条横向内边距同理吃安全区（横屏刘海）。
- *
- * 收口在这一条规则里、而不是逐页写 pt-14：全站十几个路由页都是
- * 「外层 h-full + 内层 overflow-y-auto」的同一形状，主区的内边距会自然
- * 传导给每一个页面，新增路由无需登记、不会漏。
- *
- * 注意：底部**不在这里让位**。主区整体抬高 safe-bottom 会把滚动视口在
- * Home 指示条上方截断——内容被硬裁一刀、下面露出一条空底「黑边」
- * （iPhone 全面屏 PWA 实测）。原生 App 的做法是内容一直滚到屏幕物理底边、
- * 从指示条下方穿过，只在滚动内容末尾留出安全区高度的空白，
- * 由页面级滚动容器的 .scroll-safe 承担（见下方）。
+ * —— 移动端顶栏 ——
+ * 不做成实心 header 色块，而是与 PageNav 同一套「向下渐隐的雾」：顶边最浓、
+ * 到底部完全化开。这样「新任务」这类大图直出的氛围页不会被一条硬边框拦腰截断，
+ * 而密集内容页向上滚动时文字又能被雾压住、不糊在一起。
+ * 顶部内边距吃安全区，刘海屏上图标不会被状态栏压住。
  */
+
 @media (max-width: 767px) {
   .app-shell > main {
     padding-top: calc(var(--safe-top) + var(--mobile-topbar-h));
@@ -1413,12 +1581,21 @@ body.cmdk-open .app-shell {
 }
 
 /*
- * —— 移动端抽屉式侧栏 ——
- * 覆盖式浮层（不是挤压布局）：主区宽度不变，抽屉从左侧滑入盖住内容。
- * 作为 .app-shell 的兄弟节点固定定位，不受外壳缩放/裁剪影响。
- * 宽度取视口的 86%（上限 320px），留出右侧一条可点关闭的空白，
- * 符合移动端「侧滑菜单」的肌肉记忆。
+ * 移动端主区让位：顶栏是浮在内容之上的 absolute 雾层，主区必须自己空出
+ * 「安全区 + 顶栏」这一段，否则页面第一屏会被压在汉堡和字标下面。
+ * 两条横向内边距同理吃安全区（横屏刘海）。
+ *
+ * 收口在这一条规则里、而不是逐页写 pt-14：全站十几个路由页都是
+ * 「外层 h-full + 内层 overflow-y-auto」的同一形状，主区的内边距会自然
+ * 传导给每一个页面，新增路由无需登记、不会漏。
+ *
+ * 注意：底部**不在这里让位**。主区整体抬高 safe-bottom 会把滚动视口在
+ * Home 指示条上方截断——内容被硬裁一刀、下面露出一条空底「黑边」
+ * （iPhone 全面屏 PWA 实测）。原生 App 的做法是内容一直滚到屏幕物理底边、
+ * 从指示条下方穿过，只在滚动内容末尾留出安全区高度的空白，
+ * 由页面级滚动容器的 .scroll-safe 承担（见下方）。
  */
+
 .mobile-drawer {
   position: fixed;
   z-index: 60;
@@ -1435,14 +1612,24 @@ body.cmdk-open .app-shell {
   transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
   will-change: transform;
 }
+
+/*
+ * —— 移动端抽屉式侧栏 ——
+ * 覆盖式浮层（不是挤压布局）：主区宽度不变，抽屉从左侧滑入盖住内容。
+ * 作为 .app-shell 的兄弟节点固定定位，不受外壳缩放/裁剪影响。
+ * 宽度取视口的 86%（上限 320px），留出右侧一条可点关闭的空白，
+ * 符合移动端「侧滑菜单」的肌肉记忆。
+ */
 .mobile-drawer[data-open="false"] {
   transform: translateX(-104%);
   /* 关闭状态彻底不可交互：抽屉里仍挂着 WebGL 玻璃面板，不能让它拦截主区触摸 */
   pointer-events: none;
 }
+
 .mobile-drawer[data-open="true"] {
   transform: translateX(0);
 }
+
 .mobile-drawer-scrim {
   position: fixed;
   inset: 0 0 calc(-1 * var(--vp-overshoot)) 0;
@@ -1452,29 +1639,33 @@ body.cmdk-open .app-shell {
   animation: page-scrim-in 200ms ease both;
 }
 
-/* 搜索命令面板（components/search-command.tsx）：纯 CSS 深色实心浮层
-   （Raycast/Spotlight 式），非 WebGL 玻璃。遮罩与全站 .page-scrim 共用颜色、
-   暗度和模糊度，因此会同步响应「外观」中的蒙版设置；面板入场 160ms 下落
-   + 缩放，退出即时卸载（对齐 Raycast 的干脆手感，不做出场动画）。 */
+
 @keyframes search-palette-fade-in {
   from {
     opacity: 0;
   }
 }
+
+/* 搜索命令面板（components/search-command.tsx）：纯 CSS 深色实心浮层
+   （Raycast/Spotlight 式），非 WebGL 玻璃。遮罩与全站 .page-scrim 共用颜色、
+   暗度和模糊度，因此会同步响应「外观」中的蒙版设置；面板入场 160ms 下落
+   + 缩放，退出即时卸载（对齐 Raycast 的干脆手感，不做出场动画）。 */
 @keyframes search-palette-pop-in {
   from {
     opacity: 0;
     transform: translateY(-10px) scale(0.985);
   }
 }
+
 .search-palette-overlay {
   animation: search-palette-fade-in 140ms ease-out;
 }
+
 .search-palette-panel {
   animation: search-palette-pop-in 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-/* 品牌 / 头像徽标：银玻璃渐变 + 顶部高光 */
+
 .brand-badge {
   background: linear-gradient(145deg, #f4f7fc 0%, #b7c2d6 100%);
   color: #141821;
@@ -1483,11 +1674,8 @@ body.cmdk-open .app-shell {
     inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
-/*
- * 玻璃滑杆（设置 → 外观 → 界面质感）：原生 input[type=range] 换装。
- * 轨道 = 发丝描边的暗玻璃细条，滑块 = 与 .btn-accent 同语言的亮银圆钮，
- * 在深色蒙版上主次分明。WebKit 与 Firefox 的伪元素需分开声明（不可合并选择器）。
- */
+/* 品牌 / 头像徽标：银玻璃渐变 + 顶部高光 */
+
 .range-glass {
   -webkit-appearance: none;
   appearance: none;
@@ -1495,16 +1683,24 @@ body.cmdk-open .app-shell {
   background: transparent;
   cursor: pointer;
 }
+
+/*
+ * 玻璃滑杆（设置 → 外观 → 界面质感）：原生 input[type=range] 换装。
+ * 轨道 = 发丝描边的暗玻璃细条，滑块 = 与 .btn-accent 同语言的亮银圆钮，
+ * 在深色蒙版上主次分明。WebKit 与 Firefox 的伪元素需分开声明（不可合并选择器）。
+ */
 .range-glass:disabled {
   opacity: 0.5;
   cursor: default;
 }
+
 .range-glass::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.14);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
 }
+
 .range-glass::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -1518,12 +1714,14 @@ body.cmdk-open .app-shell {
     0 2px 8px rgba(0, 0, 0, 0.45),
     inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
+
 .range-glass::-moz-range-track {
   height: 4px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.14);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
 }
+
 .range-glass::-moz-range-thumb {
   height: 16px;
   width: 16px;
@@ -1534,13 +1732,14 @@ body.cmdk-open .app-shell {
     0 2px 8px rgba(0, 0, 0, 0.45),
     inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
+
 .range-glass:focus-visible {
   outline: 2px solid var(--accent-ring);
   outline-offset: 2px;
   border-radius: 999px;
 }
 
-/* —— 搜索等待态：骨架 shimmer 与进度条扫光（见 components/search-results.tsx） —— */
+
 @keyframes search-shimmer {
   from {
     background-position: 200% 0;
@@ -1549,6 +1748,8 @@ body.cmdk-open .app-shell {
     background-position: -200% 0;
   }
 }
+
+/* —— 搜索等待态：骨架 shimmer 与进度条扫光（见 components/search-results.tsx） —— */
 .skeleton-block {
   display: inline-block;
   background-color: rgba(255, 255, 255, 0.05);
@@ -1558,6 +1759,7 @@ body.cmdk-open .app-shell {
   /* 各骨架行通过 --stagger 错峰，扫光斜向依次掠过，比整片同步呼吸更有"加载中"的动感 */
   animation-delay: var(--stagger, 0ms);
 }
+
 /* 扫光动画走 transform 而非 left：left 是布局属性，每帧都要重排重绘；
    transform 在合成器上执行，搜索期间常驻的动画不该持续占用主线程。
    translateX 以自身宽度（父宽 40%）为基准：-100% 自身 = 原 left:-40%，
@@ -1570,10 +1772,12 @@ body.cmdk-open .app-shell {
     transform: translateX(250%);
   }
 }
+
 .progress-sweep {
   left: 0;
   animation: search-progress-sweep 1.1s ease-in-out infinite;
 }
+
 /* ---------------------------------------------------------------------------
    网页播放器（components/player/*，docs/design/web-player.md §6）
 
@@ -1603,6 +1807,12 @@ body.cmdk-open .app-shell {
   --player-buffered: rgba(255, 255, 255, 0.55);
 }
 
+
+.player-inset-x {
+  padding-left: max(1.5rem, var(--safe-left));
+  padding-right: max(1.5rem, var(--safe-right));
+}
+
 /* ---- iOS PWA 安全区（docs/design/web-player.md §6.8） --------------------
    /play 路由刻意不套工作台外壳，也就没了外壳那层 --safe-top 适配；而站点是
    black-translucent 状态栏 + viewport-fit=cover，PWA 里页面直接画到状态栏和
@@ -1624,10 +1834,6 @@ body.cmdk-open .app-shell {
    这条曾经只加在进度条上（.player-scrub-inset），控件另走 12px，于是窄屏下
    进度条比上下的卡片各缩进 16px，看着像没对齐。既然 28 是进度条的硬下限，
    就把所有人拉到这一档——对齐是白拿的，顺带把顶栏返回键也挪出了手势区。 */
-.player-inset-x {
-  padding-left: max(1.5rem, var(--safe-left));
-  padding-right: max(1.5rem, var(--safe-right));
-}
 @media (max-width: 767.98px) {
   .player-inset-x {
     padding-left: max(1.75rem, calc(var(--safe-left) + 0.75rem));
@@ -1635,36 +1841,33 @@ body.cmdk-open .app-shell {
   }
 }
 
+
+.player-root media-controller > :not([slot="media"]) {
+  line-height: normal;
+}
+
 /* media-controller（继承自 media-container）在 :host 上写死 `line-height: 0`，
    为的是消掉行内 <video> 底下那道空隙。但我们的顶栏、控制条、菜单、提示全是
    它的 light DOM 子节点，会一并把行高继承成 0——表现是每一行文字都塌成一条
    线、彼此叠在一起。这正是「播放器看着粗糙」的一大来源，必须在自己的浮层上
    把行高要回来；media 插槽是它自己要管的，不碰。 */
-.player-root media-controller > :not([slot="media"]) {
-  line-height: normal;
+
+.player-root[data-chrome="hidden"] {
+  cursor: none;
 }
 
 /* 控制条隐藏时把指针也藏起来：留一个箭头浮在画面上是最典型的「像半成品」。
    注意只藏播放器内部，菜单展开时不藏（那时 chrome 本来就是显示的）。 */
-.player-root[data-chrome="hidden"] {
-  cursor: none;
+
+html:has(.player-root) {
+  overscroll-behavior-x: none;
 }
 
 /* 播放器打开时禁掉根滚动容器的横向历史滑动（Chrome/Edge 触控板双指左划
    返回上一页）：看片中一次不经意的横向滚动就退出播放器，代价太大。触屏的
    边缘手势由 video-player 的 touchstart 守卫负责（那是另一条通路，CSS 管
    不到）；macOS Safari 两者都不认，只能靠进度条让位。 */
-html:has(.player-root) {
-  overscroll-behavior-x: none;
-}
 
-/* ---- 反馈浮层的进出场（调节胶囊 / 快进快退提示 / 转圈） ------------------
-   进出各 0.16 秒的淡入淡出 + 一点缩放，与控制条 300ms 的显隐同一套节奏；
-   挂在**内层胶囊**上而不是定位容器上——容器的 transform 是 Tailwind 的
-   translate 定位，keyframes 里再写 transform 会把定位顶掉。
-   转圈另有 0.45 秒的出场延迟（.player-busy-appear）：一次 200ms 的短缓冲
-   不该闪一下转圈，「转圈晃过」比「短暂无提示」更让人觉得卡（Netflix 同款
-   手法）；`both` 让延迟期间保持在 from 帧（完全透明）。 */
 @keyframes player-flash-in {
   from {
     opacity: 0;
@@ -1675,6 +1878,14 @@ html:has(.player-root) {
     transform: scale(1);
   }
 }
+
+/* ---- 反馈浮层的进出场（调节胶囊 / 快进快退提示 / 转圈） ------------------
+   进出各 0.16 秒的淡入淡出 + 一点缩放，与控制条 300ms 的显隐同一套节奏；
+   挂在**内层胶囊**上而不是定位容器上——容器的 transform 是 Tailwind 的
+   translate 定位，keyframes 里再写 transform 会把定位顶掉。
+   转圈另有 0.45 秒的出场延迟（.player-busy-appear）：一次 200ms 的短缓冲
+   不该闪一下转圈，「转圈晃过」比「短暂无提示」更让人觉得卡（Netflix 同款
+   手法）；`both` 让延迟期间保持在 from 帧（完全透明）。 */
 @keyframes player-flash-out {
   from {
     opacity: 1;
@@ -1685,15 +1896,19 @@ html:has(.player-root) {
     transform: scale(0.96);
   }
 }
+
 .player-flash-in {
   animation: player-flash-in 0.16s ease both;
 }
+
 .player-flash-out {
   animation: player-flash-out 0.16s ease both;
 }
+
 .player-busy-appear {
   animation: player-flash-in 0.25s ease 0.45s both;
 }
+
 @media (prefers-reduced-motion: reduce) {
   .player-flash-in,
   .player-flash-out {
@@ -1706,25 +1921,25 @@ html:has(.player-root) {
   }
 }
 
-/* iOS 原生 HLS 内联播放的系统字幕位置修正：WebKit 把 cue 画在整个 video
-   元素的底部，竖屏 letterbox 时就是屏幕最底的黑边。用画面矩形算出的抬升量
-   （--cue-lift，video-player 维护）把 cue 容器顶回画面下沿。只影响内联——
-   原生全屏与画中画由系统层渲染，页面 CSS 够不着，那两处位置本来就对。 */
+
 .player-root video::-webkit-media-text-track-container {
   transform: translateY(calc(-1 * var(--cue-lift, 0px)));
   transition: transform 0.3s;
 }
 
-/* 内联系统 cue 的字号：WebKit 默认按**元素高**算，竖屏 letterbox 时字会比
-   标准大好几倍。显式按画面高 5.2% 指定（Apple/Netflix 的字幕字号区间），
-   与自绘层同一标准；颜色背景不动——尊重系统字幕样式与用户的辅助功能设置。 */
+/* iOS 原生 HLS 内联播放的系统字幕位置修正：WebKit 把 cue 画在整个 video
+   元素的底部，竖屏 letterbox 时就是屏幕最底的黑边。用画面矩形算出的抬升量
+   （--cue-lift，video-player 维护）把 cue 容器顶回画面下沿。只影响内联——
+   原生全屏与画中画由系统层渲染，页面 CSS 够不着，那两处位置本来就对。 */
+
 .player-root video::cue {
   font-size: var(--cue-font-size, 1em);
 }
 
-/* iOS 伪横屏：iPhone Safari 没有元素级全屏和方向锁，把整个播放器容器
-   旋转 90° 铺满视口来「横过来」。宽高对调（100dvh/100dvw），旋转后原点
-   在左上角，先转再往回平移一个屏宽才落回视口内。 */
+/* 内联系统 cue 的字号：WebKit 默认按**元素高**算，竖屏 letterbox 时字会比
+   标准大好几倍。显式按画面高 5.2% 指定（Apple/Netflix 的字幕字号区间），
+   与自绘层同一标准；颜色背景不动——尊重系统字幕样式与用户的辅助功能设置。 */
+
 .player-fake-landscape {
   position: fixed;
   inset: auto;
@@ -1746,6 +1961,16 @@ html:has(.player-root) {
   --safe-right: env(safe-area-inset-bottom, 0px);
   --safe-top: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-left, 0px);
+}
+
+/* iOS 伪横屏：iPhone Safari 没有元素级全屏和方向锁，把整个播放器容器
+   旋转 90° 铺满视口来「横过来」。宽高对调（100dvh/100dvw），旋转后原点
+   在左上角，先转再往回平移一个屏宽才落回视口内。 */
+
+.player-scrub-shade {
+  /* 与 player-controls.tsx 里圆点的 size-[14px] / pointer-coarse:size-[18px] 同源 */
+  --player-thumb-r: 7px;
+  margin-inline: var(--player-thumb-r);
 }
 
 /* ---- 自建进度条 -----------------------------------------------------------
@@ -1774,16 +1999,12 @@ html:has(.player-root) {
    顺带把 .player-inset-x 那 28px 的本意补齐：那段注释要的是「0 进度的把手整个
    落在 iOS 返回手势区外」，但此前落在 28px 上的是把手**中心**，左缘只到 19px、
    仍压在手势带里；让出半个身位之后左缘正好是 28px。 */
-.player-scrub-shade {
-  /* 与 player-controls.tsx 里圆点的 size-[14px] / pointer-coarse:size-[18px] 同源 */
-  --player-thumb-r: 7px;
-  margin-inline: var(--player-thumb-r);
-}
 @media (pointer: coarse) {
   .player-scrub-shade {
     --player-thumb-r: 9px;
   }
 }
+
 
 .player-scrub-shade::before {
   content: "";
@@ -1802,22 +2023,26 @@ html:has(.player-root) {
   );
 }
 
-/* 再给轨道紧贴一圈 hairline 暗描边 + 一道向下的投影，把它从画面里「抬」起来。
-   iOS/macOS 控件浮在任意壁纸上的标准做法，与上面的 scrim 是两道保险。 */
+
 .player-scrub-track {
   box-shadow:
     0 0 0 1px rgb(0 0 0 / 0.4),
     0 1px 6px rgb(0 0 0 / 0.5);
 }
 
+/* 再给轨道紧贴一圈 hairline 暗描边 + 一道向下的投影，把它从画面里「抬」起来。
+   iOS/macOS 控件浮在任意壁纸上的标准做法，与上面的 scrim 是两道保险。 */
+
 .player-scrub::-webkit-slider-runnable-track {
   background: transparent;
   height: 100%;
 }
+
 .player-scrub::-moz-range-track {
   background: transparent;
   height: 100%;
 }
+
 /* 原生把手缩到 1px 并隐形：位置由组件里自己画的圆点负责（原因见
    player-controls.tsx 里那段注释——原生把手与已播段的坐标系差半个把手宽）。
    1px 而不是 0：0 宽的把手在部分浏览器上会让拖动判定变得不稳。 */
@@ -1827,14 +2052,23 @@ html:has(.player-root) {
   height: 14px;
   background: transparent;
 }
+
 .player-scrub::-moz-range-thumb {
   width: 1px;
   height: 14px;
   border: none;
   background: transparent;
 }
+
 .player-scrub:focus {
   outline: none;
+}
+
+
+.player-glass {
+  background: rgb(15 17 23 / 0.5);
+  backdrop-filter: blur(12px) saturate(1.3);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1);
 }
 
 /* ---- 磨砂卡片 ---------------------------------------------------------------
@@ -1843,25 +2077,15 @@ html:has(.player-root) {
    .notice-surface 一致——足够实的深色底 + 强模糊，背后是什么都读得清。
 
    注意：**不要手写 -webkit-backdrop-filter**，原因见本文件开头那条全站约定。 */
-.player-glass {
-  background: rgb(15 17 23 / 0.5);
-  backdrop-filter: blur(12px) saturate(1.3);
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1);
+
+.player-root[data-chrome="hidden"] .player-glass {
+  backdrop-filter: none;
 }
 
 /* 控制条收起后必须把磨砂一并摘掉：backdrop-filter 叠在视频上，每一帧都要
    对画面重新采样做模糊，是 GPU 合成的头号大户；opacity:0 只是看不见，元素
    还在合成树里照样算。实测掉帧率 2.5%+ 的大头就在这里（QoE 2026-08-23）。 */
-.player-root[data-chrome="hidden"] .player-glass {
-  backdrop-filter: none;
-}
 
-/* ---- 图标按钮 -------------------------------------------------------------
-   尺寸与交互对齐全站的顶栏控件（components/page-nav.tsx 的
-   PAGE_NAV_BUTTON_CLASS）：36px 命中区、移动端 44px、悬停换底色、按下 0.94。
-   与那边唯一的差别是这里不带自己的玻璃底与描边——播放器里这几个键是装在
-   一张磨砂卡片上的，每个再包一层底会变成「玻璃里的玻璃」。单独浮在画面上的
-   键（顶栏的返回）用的就是那边的完整样式。 */
 .player-btn {
   position: relative;
   display: grid;
@@ -1873,14 +2097,23 @@ html:has(.player-root) {
     color 0.15s linear,
     transform 0.12s ease;
 }
+
+/* ---- 图标按钮 -------------------------------------------------------------
+   尺寸与交互对齐全站的顶栏控件（components/page-nav.tsx 的
+   PAGE_NAV_BUTTON_CLASS）：36px 命中区、移动端 44px、悬停换底色、按下 0.94。
+   与那边唯一的差别是这里不带自己的玻璃底与描边——播放器里这几个键是装在
+   一张磨砂卡片上的，每个再包一层底会变成「玻璃里的玻璃」。单独浮在画面上的
+   键（顶栏的返回）用的就是那边的完整样式。 */
 .player-btn:hover,
 .player-btn:focus-visible {
   background: rgba(255, 255, 255, 0.12);
   color: #fff;
 }
+
 .player-btn:active {
   transform: scale(0.94);
 }
+
 /*
  * 「这个功能开着」的标记：图标下方一条短横杠（YouTube 用的就是这个），
  * 外加提亮。
@@ -1893,6 +2126,7 @@ html:has(.player-root) {
 .player-btn[data-active="true"] {
   color: #fff;
 }
+
 .player-btn[data-active="true"]::before {
   content: "";
   position: absolute;
@@ -1905,18 +2139,21 @@ html:has(.player-root) {
   background: var(--player-accent);
 }
 
-/* 菜单展开时按钮保持「按住」的样子。与上面那条是两件事：一个说功能开着，
-   一个说菜单开着，合成一个会让「关掉字幕但菜单还开着」看起来像还开着。 */
+
 .player-btn[data-open="true"] {
   background: rgba(255, 255, 255, 0.12);
   color: #fff;
 }
 
-/* 按钮说明气泡：Netflix 每个图标上方都有一块黑底白字的说明，
-   否则一排纯图标要靠猜。纯 CSS 实现，不为它引一个浮层库。 */
+/* 菜单展开时按钮保持「按住」的样子。与上面那条是两件事：一个说功能开着，
+   一个说菜单开着，合成一个会让「关掉字幕但菜单还开着」看起来像还开着。 */
+
 .player-tip {
   position: relative;
 }
+
+/* 按钮说明气泡：Netflix 每个图标上方都有一块黑底白字的说明，
+   否则一排纯图标要靠猜。纯 CSS 实现，不为它引一个浮层库。 */
 .player-tip::after {
   content: attr(data-tip);
   position: absolute;
@@ -1938,21 +2175,25 @@ html:has(.player-root) {
   opacity: 0;
   transition: opacity 0.12s linear;
 }
+
 .player-tip:hover::after,
 .player-tip:focus-visible::after {
   opacity: 1;
 }
+
 /* 菜单展开时不再弹说明气泡：菜单本身已经写着标题，两块黑底文字叠在一起很脏 */
 .player-tip[data-open="true"]::after {
   content: none;
 }
 
-/* 触屏没有悬停，气泡会在点击后赖着不走 */
+
 @media (hover: none) {
   .player-tip::after {
     content: none;
   }
 }
+
+/* 触屏没有悬停，气泡会在点击后赖着不走 */
 
 @media (prefers-reduced-motion: reduce) {
   .player-btn,
@@ -1965,281 +2206,27 @@ html:has(.player-root) {
   }
 }
 
-/*
- * ============================================================================
- * 「Netflix」主题（html[data-theme="netflix"]）
- * ============================================================================
- * 规格来源：docs/design/web-themes.md（§4 token 全表 / §2 设计语言调研）。
- *
- * 生效分三层，全部挂在本作用域上：
- *   1. token 层：语义变量整组覆盖，全站组件消费变量、皮肤自动跟随；
- *   2. Tailwind v4 圆角换档：rounded-* 工具类编译产物是 var(--radius-*) 引用，
- *      在根节点覆盖变量即可全站把圆角压到 Netflix 的 2/4/6 档，无需重编译
- *      （rounded-full / rounded-none 与任意值 rounded-[10px] 是静态值，不受影响
- *      ——前者本来就该圆，后者按「验收清单内替换、清单外接受」策略处理）；
- *   3. 结构层：外壳（顶栏 / 底部标签栏 / 内容首页）由 React 按 useTheme() 分支
- *      渲染，见 components/netflix/*；这里只承载它们的样式。
- *
- * 与现有氛围体系的兼容（§3.5）：Netflix 是纯色平铺设计，body::before 背景大图
- * 在本主题下整体不渲染；全站蒙版（.page-scrim）由外壳不渲染（netflix 分支里
- * 根本不挂）；WebGL 液态玻璃由 GlassPanel 读主题后不挂 canvas，走 flat 形态。
- */
-html[data-theme="netflix"] {
-  color-scheme: dark;
-
-  /* —— 分层表面（§4） —— */
-  /* Netflix 画布是纯黑 #000（官网 body 直出纯黑），#141414 只做卡片/行悬浮面 —— */
-  --bg: #000000;
-  --surface-main: #141414;
-  --surface-raised: #181818; /* 卡片 / 弹层 / 信息面板 */
-  --surface-inset: #2f2f2f; /* 输入框内嵌（存疑值，P6 对照定稿） */
-
-  /* —— 文本层级 —— */
-  --text: #ffffff;
-  --text-muted: #b3b3b3;
-  --text-faint: #808080;
-
-  /* —— 描边：Netflix 用实线（存疑值 #404040，P6 定稿） —— */
-  --line: #404040;
-  --line-strong: #808080;
-
-  /* —— 强调：品牌红。纪律（§4）：红只出现在字标 / 进度条 / 匹配度高亮 /
-        激活指示上；主按钮是白底黑字（见 .btn-accent 覆盖）。 —— */
-  --accent: #e50914;
-  --accent-strong: #c11119; /* hover 红：Netflix 的红是 hover 变暗，不是变亮 */
-  --accent-2: #b20710; /* pressed / 品牌暗红 */
-  --accent-soft: rgba(229, 9, 20, 0.15);
-  /* Netflix 焦点环 = 2px 白描边（生产 CSS 证实），不是冷光 */
-  --accent-ring: rgba(255, 255, 255, 0.7);
-
-  /* —— 行内填充（hover / active） —— */
-  --glass-fill: rgba(255, 255, 255, 0.06);
-  --glass-fill-hover: rgba(255, 255, 255, 0.12); /* ≈ #2f2f2f on #141414 */
-  --glass-fill-active: rgba(255, 255, 255, 0.2);
-
-  /* —— 状态语义色（Netflix 化；--danger 刻意不等于品牌红，红点/红字是状态
-        信号，与品牌色混用会让满屏红失去语义，见 §4 备注） —— */
-  --ok: #46d369;
-  --info: #6ba6ff;
-  --warn: #e87c03;
-  --danger: #eb3942;
-  --danger-solid: #b20710;
-  --danger-solid-hover: #c11119;
-
-  /* —— Tailwind v4 圆角换档（默认值表：xs 2 / sm 4 / md 6 / lg 8 / xl 12 /
-        2xl 16 / 3xl 24 / 4xl 32）：压到 Netflix 的 2/4/6 档 —— */
-  --radius-xs: 2px; /* 徽章 */
-  --radius-sm: 4px; /* 按钮、输入框、卡片、磁贴（生产 CSS 证实 4px） */
-  --radius-md: 4px;
-  --radius-lg: 4px;
-  --radius-xl: 6px; /* 弹窗、展开卡 */
-  --radius-2xl: 6px;
-  --radius-3xl: 8px; /* 个别大面留一档 */
-  --radius-4xl: 8px;
-
-  /* PageNav 吸顶雾换纯黑系（浓度档与银玻璃一致，只换色相——雾的「压字
-     不糊」手感是全站调过的，不因主题重调） */
-  --page-fog: linear-gradient(
-    180deg,
-    rgba(0, 0, 0, 0.72) 0%,
-    rgba(0, 0, 0, 0.46) 46%,
-    rgba(0, 0, 0, 0) 100%
-  );
-}
-
-/* —— 氛围体系停用：背景大图伪元素整体不渲染，纯 #141414 直出（§3.5） —— */
-html[data-theme="netflix"] body::before {
-  display: none;
-}
-
-/*
- * —— 画面类元素去白边 ——
- * 银玻璃语言给每张海报/封面容器一圈白色 ring 勾轮廓（ring-white/[0.06~0.4]），
- * 在纯黑画布上成了一圈亮白细框，hover 放大时尤其刺眼——Netflix 的卡片没有任何
- * 描边，分隔全靠卡片间隙。ring 工具类的颜色经 --tw-ring-color 落在字面量 #fff
- * 上（无共享变量可改），这里按类名子串一次性把颜色打穿为透明：凡 class 里带
- * ring-white 的元素（含 hover:/focus-visible: 变体）在主题下全部失效。
- * 键盘焦点不受影响——全站 :focus-visible 的 outline（var(--accent-ring)，主题下
- * 为白环）是独立于 box-shadow ring 的另一条通路。
- * 本条必须在无层 CSS 里（本文件默认环境），无层规则优先于 @layer utilities，
- * 一条规则覆盖静息与 hover 两种状态。
- */
-html[data-theme="netflix"] [class*="ring-white"] {
-  --tw-ring-color: transparent;
-}
-
-/* 圆角行（菜单项 / 设置分区行）：glass-row 的无层 14px 圆角换 Netflix 4px 档 */
-html[data-theme="netflix"] .glass-row {
-  border-radius: 4px;
-}
-
-/* —— 品牌红扩大使用面（§4 纪律：红只出现在品牌标识 / 主 CTA / 进度条 /
-      激活指示上） —— */
-/* 头像徽标（无上传图时的首字底）：银玻璃 → 品牌红 */
-html[data-theme="netflix"] .brand-badge {
-  background: linear-gradient(145deg, #e50914 0%, #b00710 100%);
-  color: #ffffff;
-  box-shadow: none;
-}
-/* 设置页滑杆的圆钮：亮银 → 品牌红（轨道不变） */
-html[data-theme="netflix"] .range-glass::-webkit-slider-thumb {
-  background: var(--accent);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
-}
-html[data-theme="netflix"] .range-glass::-moz-range-thumb {
-  background: var(--accent);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
-}
-
-/* 沉浸层（AI 会话页）取 Netflix 播放器/沉浸语言的纯黑（§5.7） */
-html[data-theme="netflix"] .page-solid {
-  background: #000;
-}
-
-/* —— 玻璃面板 flat 形态（GlassPanel 读主题后不再挂 canvas，容器只剩实色卡） —— */
-html[data-theme="netflix"] .glass-panel {
-  box-shadow: none;
-}
-html[data-theme="netflix"] .glass-panel--flat {
-  background: var(--surface-raised);
-}
-html[data-theme="netflix"] .glass-panel--flat .glass-panel__content::before {
-  /* 发丝内线换成 Netflix 实线描边 */
-  box-shadow: inset 0 0 0 1px var(--line);
-}
-/* 兜底底色统一抬到卡片面（原为更深的面板色） */
-html[data-theme="netflix"] .panel--sidebar,
-html[data-theme="netflix"] .panel--main {
-  background: var(--surface-raised);
-}
-html[data-theme="netflix"] .panel--sidebar-flat {
-  background: #181818;
-  box-shadow: inset 0 0 0 1px var(--line);
-}
-
-/* —— 浮层表面：#181818 实底 + Netflix 弹窗阴影（§4「中心化类同步覆盖」） —— */
-html[data-theme="netflix"] .surface-raised,
-html[data-theme="netflix"] .menu-surface {
-  background: #181818;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.9);
-}
-html[data-theme="netflix"] .surface-raised {
-  border-radius: 6px;
-}
-/* 菜单的「深底叠深底」发丝内线换成实线描边 */
-html[data-theme="netflix"] .menu-surface {
-  box-shadow:
-    0 8px 32px rgba(0, 0, 0, 0.9),
-    inset 0 0 0 1px var(--line);
-}
-html[data-theme="netflix"] .notice-surface {
-  background: rgb(24 24 24 / 0.92);
-  backdrop-filter: none;
-}
-/* 设置子卡片：玻璃磨砂内嵌 → 实色卡 + 实线描边（§5.7 控制台换皮） */
-html[data-theme="netflix"] .css-glass {
-  border: 1px solid var(--line);
-  background: var(--surface-raised);
-  box-shadow: none;
-}
-
-/* —— 主操作按钮：白底黑字三态（生产 CSS：1 / hover 0.75 / 按下 0.5） —— */
-html[data-theme="netflix"] .btn-accent {
-  background: #ffffff;
-  color: #000000;
-  box-shadow: none;
-}
-html[data-theme="netflix"] .btn-accent:hover {
-  filter: none;
-  background: rgb(255 255 255 / 0.75);
-}
-html[data-theme="netflix"] .btn-accent:active {
-  transform: none;
-  background: rgb(255 255 255 / 0.5);
-}
-
-/* —— 次级按钮：灰半透方角（生产 CSS：rgba(109,109,110,0.7)，hover 0.4） —— */
-html[data-theme="netflix"] .btn-glass {
-  border: 0;
-  background: rgba(109, 109, 110, 0.7);
-  color: #ffffff;
-  box-shadow: none;
-}
-html[data-theme="netflix"] .btn-glass:hover {
-  background: rgba(109, 109, 110, 0.4);
-  border-color: transparent;
-}
-
-/* —— 选中胶囊：白系（§4；侧栏在 netflix 主题只服务于设置模式） —— */
-html[data-theme="netflix"] .nav-item[data-active="true"] {
-  background: rgba(255, 255, 255, 0.2);
-  border-color: transparent;
-  box-shadow: none;
-}
-html[data-theme="netflix"] .nav-item[data-active="true"] .icon-chip {
-  background: #ffffff;
-  color: #141414;
-  box-shadow: none;
-}
-
-/* 原生 select 弹层底色跟随卡片面（Windows Chromium 不吃 color-scheme，见上方原注释） */
-html[data-theme="netflix"] select option,
-html[data-theme="netflix"] select optgroup {
-  background-color: #181818;
-}
-
-/* —— 详情页（§5.5） ——
- * 渐变落点不再覆盖成 #141414：Netflix 画布本就是纯黑 #000（#141414 只做卡片/
- * 行悬浮面），基础 .detail-ambient 的「透明 → #000」渐变直接沿用，下方内容
- * 底色与画布同色、无接缝。
- * 滚动条轨道必须给实色：剧照是 fixed 全屏覆盖层，而轨道默认透明——透明轨道
- * 会在页面右缘漏出一整条未压暗的原图（轨道不被元素自身 background 覆盖）。
- * 轨道色取画布纯黑、滑块维持全局同款半透明白。
- * 内容层**不画任何遮罩**：横向过渡是图片层的 `--nf-blend` mask，纵向渐隐
- * 是图片层的 ::after（见下方）——内容层的背景画在图片层之上（z-10 > z-2），
- * 在这里铺渐变就是第二重视觉遮罩，且出现时机与图片不同步（实测两次踩坑）。
- * hero 以下的正文可读性：图片层自身在纵向渐隐到纯黑 + 滚动时渐暗模糊。 */
-html[data-theme="netflix"] .detail-ambient {
-  scrollbar-color: rgba(255, 255, 255, 0.16) #000;
-  background-image: none;
-}
-/* 同上，给不支持 scrollbar-color 的老 Chromium 的 ::-webkit 通路兜底
-   （支持的内核会忽略 ::-webkit-*，两条并存不冲突） */
-html[data-theme="netflix"] .detail-ambient::-webkit-scrollbar-track {
-  background: #000;
-}
-/* 标题上移：银玻璃的内容层 -mt-28 + pt-28（上提与内边距互相抵消，标题停在
-   渐变板中段）；Netflix 的标题要落在横幅**左上区**（约横幅高度 1/3 处、让开
-   左上角的返回键），借左侧纯黑遮罩直接坐在剧照上——负外边距 320px、内边距
-   归零。注意底部渐变的起点（--detail-ambient-top）刻意**不**跟随上提：整幅
-   剧照不能因为标题上移就提早压暗，标题区由左侧纯黑遮罩单独护住。无层规则
-   优先于 Tailwind 的 @layer utilities，直接覆盖 -mt-28/pt-28 工具类。 */
-@media (min-width: 768px) {
-  html[data-theme="netflix"] .detail-ambient {
-    --detail-hero-h: 58vh;
-    --detail-hero-min-h: 340px;
-  }
-  html[data-theme="netflix"] .detail-content {
-    margin-top: -320px;
-    padding-top: 0;
-  }
-  /* 标题/简介这个前导簇占满到横幅底（内容起点 = 横幅底 − 320px，簇高固定
-     320px）：演职员表从横幅正下方一条固定线开始，不随简介长短上下漂移；
-     简介短时，下方留的是纯黑空档。 */
-  html[data-theme="netflix"] .detail-lead {
-    min-height: 320px;
-  }
-}
+/* 人物页头部让位（person-detail-view / discovered-person-detail-view 的 header）：
+   Netflix 桌面返回键（NetflixBackButton，fixed left-[4vw]、top =
+   --nf-nav-h 68px + 12px）悬在左上角，而头部原起点（pt-2 → 顶 76px）被键
+   整个压住（键底 68+12+键径 36/44 = 116/124px）。照详情页标题上移
+   （.detail-content）的先例，netflix 桌面作用域把头部推到 68+64=132px——
+   鼠标档键下留 16px、触屏档（pointer-coarse 44px 键）留 8px，都不小于既定
+   的 ≥8px 间隙。无层规则压过 pt-2 工具类；银玻璃与移动端（<768px）不吃
+   这条，间距维持 pt-2 不变。 */
 /* 沉浸覆盖层的尺寸与定位基准（backdrop.tsx 不再内联写死，内联会压过类级规则）：
    默认 cover + 居中顶对齐 */
 .backdrop-override {
   background-size: cover;
   background-position: center top;
 }
+
 /* Netflix 详情页的「左黑右图」构图（仅桌面）：黑色块只占窗口左 1/4，覆盖层
    从窗口 25% 起铺（图片保持 cover 原始比例**不放大**）；25%~50% 区间从纯黑
    渐显，窗口右半完全正常显示图片。渐变用多段缓动曲线（两端平缓、中段过渡），
-   线性 ramp 在照片上会读出一道明显的「带」。
+   线性 ramp 在照片上会读出一道明显的「带」。2026-09-20 修订：6 档内插仍被
+   反馈「中段生硬」——内部档位加密到 8 档的 S 曲线（最陡斜率 ~3.9→~3.2/档，
+   0.2~0.8 过渡带约 14→20 档），起止区间与构图不动，只把过渡抻匀。
    移动端不做左移/mask（竖屏没有「左文右图」的横向分区），改为全幅 + 纵向
    渐隐（见下方 ::after 的移动端档）。 */
 /* 渐变曲线定义在 :root 上（原挂在 html.nf-hero-live）：消费者有三处——详情页
@@ -2250,79 +2237,16 @@ html[data-theme="netflix"] .detail-ambient::-webkit-scrollbar-track {
   --nf-blend: linear-gradient(
     90deg,
     rgba(0, 0, 0, 0) 0%,
-    rgba(0, 0, 0, 0.18) 6%,
-    rgba(0, 0, 0, 0.45) 13%,
-    rgba(0, 0, 0, 0.72) 20%,
-    rgba(0, 0, 0, 0.92) 28%,
+    rgba(0, 0, 0, 0.07) 4%,
+    rgba(0, 0, 0, 0.19) 10%,
+    rgba(0, 0, 0, 0.37) 16%,
+    rgba(0, 0, 0, 0.56) 22%,
+    rgba(0, 0, 0, 0.74) 28%,
+    rgba(0, 0, 0, 0.89) 34%,
     #000 40%
   );
 }
-@media (min-width: 768px) {
-  html.nf-hero-live .backdrop-override {
-    left: 25%;
-    mask-image: var(--nf-blend);
-    -webkit-mask-image: var(--nf-blend);
-  }
-}
-/* 轮换层挂载时隐藏沉浸覆盖层：覆盖层永远停在主 backdrop（第一张图），
-   轮换开始后它会从半透明渐变区透出、成为「上一张的残影」。覆盖层的 opacity
-   由组件内联样式驱动（CSS 压不过内联），这里改用 visibility；首帧两层显示
-   同一张图，切换瞬间不可见。 */
-/* 轮换层存在（将要接管背景）时，覆盖层从一开始就不显示。
-   不能让两层共存哪怕一瞬：mask 是半透明的，同一张图被两层各「漏」一次，
-   渐变区亮度 = 2m − m²（m=50% 处亮 33%）；覆盖层一隐藏亮度骤降回 m——
-   这就是「图片开始动之后渐变区突然变暗」的根源。隐藏后入场只剩一条路径：
-   黑场 → 轮换层（原图）一次性淡入，中途没有任何层切换。 */
-html.nf-hero-live:has(.detail-slideshow) .backdrop-override {
-  visibility: hidden;
-}
-/* 滚动退场：详情页下滚时剧照渐暗 + 模糊（媒体详情视图把滚动进度写在根节点
-   的 --nf-hero-recede 上）。filter 只挂在标记类 nf-hero-live 存在时——即
-   Netflix 详情页挂载期间——其他页面不给全屏覆盖层强加零值 filter（那会白白
-   提升一个全屏合成层）。blur 让退场像「失焦」而不是「推走」，brightness 压到
-   45% 保证前景文字始终可读。
-   背景轮换层（DetailBackdropSlideshow）与覆盖层同一构图（右移 46% + 左缘
-   渐隐），两处规则必须一起改。 */
-html.nf-hero-live .backdrop-override,
-html.nf-hero-live .detail-slideshow {
-  filter: blur(calc(var(--nf-hero-recede, 0) * 12px))
-    brightness(calc(1 - var(--nf-hero-recede, 0) * 0.55));
-  /* 注册属性的过渡（见下方 @property）：滚轮一次甩几百像素时，进度变量
-     不再一帧跳到目标，而是按固定时长缓动过去——退场观感是连续的 */
-  transition: --nf-hero-recede 450ms linear;
-}
-/* 纵向渐隐画在图片层自己身上（::after 渐到纯黑、与画布同色）：hero 以下的
-   正文行依然落在黑底上，而变暗来源从「内容层全宽渐变」变成图片层的一部分，
-   视觉上不再多出一层遮罩。 */
-html.nf-hero-live .backdrop-override::after,
-html.nf-hero-live .detail-slideshow::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 58%, #000 88%);
-}
-/* 移动端竖屏档（2026-09 修订）：hero 约 40vh、标题压进图下段，渐变整体
-   上移收口到 ~60vh；顶部另压一抹暗，保证状态栏/PageNav 返回键在亮图上
-   可读。此前移动端完全没有渐变（净效果 = 亮图直压白字），桌面专属的
-   「左黑右图」又与竖屏无关——这是移动端详情页观感「不成体系」的主因。 */
-@media (max-width: 767px) {
-  html.nf-hero-live .backdrop-override::after {
-    background:
-      linear-gradient(180deg, rgba(0, 0, 0, 0.32) 0%, rgba(0, 0, 0, 0) 15%),
-      linear-gradient(
-        180deg,
-        rgba(0, 0, 0, 0) 20%,
-        rgba(0, 0, 0, 0.5) 36%,
-        rgba(0, 0, 0, 0.85) 50%,
-        #000 62%
-      );
-  }
-}
-/* 滚动退场的另一半：整层随进度淡出（此前纵向渐变随内容滚上来兜底，
-   移除后改由这里接手）——深层滚动时图片只剩微光，正文完全主导。 */
-html.nf-hero-live .detail-slideshow {
-  opacity: calc(1 - var(--nf-hero-recede, 0) * 0.85);
-}
+
 /* 背景轮换层（DetailBackdropSlideshow，portal 到 body）：与覆盖层同一构图
    （黑色块 1/4 + 左缘渐隐，两处规则必须一起改）。z 取 2——高于沉浸覆盖层(z-1)、
    仍在外壳(z-10)之下，滚动容器渐变板照常把它压暗。
@@ -2338,31 +2262,11 @@ html.nf-hero-live .detail-slideshow {
   mask-image: var(--nf-blend);
   -webkit-mask-image: var(--nf-blend);
 }
+
 .detail-slideshow[data-ready="true"] {
   opacity: calc(1 - var(--nf-hero-recede, 0) * 0.85);
 }
-.detail-slideshow img {
-  transition: opacity 1600ms ease-in-out;
-  /* Ken Burns 缓推：覆盖整个驻留周期（轮换 9s + 溶解 1.6s）缓慢放大平移，
-     「叠变」的另一半——溶解时两层各自在动，是融接不是硬切。
-     700ms 起步延迟 = 与覆盖层交接的淡入时长：淡入期间轮换层静止在 scale 1，
-     与覆盖层逐像素重合（否则交接时两张不同缩放的同一张图叠出重影，且图片
-     边缘的移动会让左侧遮罩看起来「先小后大」）；淡入完成后缓推才启动。 */
-  animation: nf-kenburns 11.5s linear 700ms both;
-}
-@keyframes nf-kenburns {
-  from {
-    transform: scale(1);
-  }
-  to {
-    transform: scale(1.045);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .detail-slideshow img {
-    animation: none;
-  }
-}
+
 /* —— /library 顶部的 Netflix Billboard 画面层（library-hero.tsx） ——
  * 与详情页沉浸剧照同一套画面语言（「media 那样的样式」）：
  *   - 桌面：左侧多段缓变黑遮罩（--nf-blend，与详情页「左黑右图」同一条曲线）
@@ -2379,18 +2283,21 @@ html.nf-hero-live .detail-slideshow {
     brightness(calc(1 - var(--nf-hero-recede, 0) * 0.55));
   transition: --nf-hero-recede 450ms linear;
 }
+
 @media (min-width: 768px) {
   .nf-billboard-art {
     mask-image: var(--nf-blend);
     -webkit-mask-image: var(--nf-blend);
   }
 }
+
 .nf-billboard-art::after {
   content: "";
   position: absolute;
   inset: 0;
   background: linear-gradient(180deg, rgba(0, 0, 0, 0) 58%, #000 88%);
 }
+
 @media (max-width: 767px) {
   .nf-billboard-art::after {
     background:
@@ -2404,6 +2311,7 @@ html.nf-hero-live .detail-slideshow {
       );
   }
 }
+
 /* 滚动进度变量注册成 <number> 类型：Chromium 只对注册属性做插值过渡，
    未注册的自定义属性变化永远瞬时生效（这也是 PageNav 的 --nav-reveal
    不加 transition 的原因）。顶栏黑底层与剧照退场都靠这一机制消化
@@ -2413,35 +2321,23 @@ html.nf-hero-live .detail-slideshow {
   inherits: true;
   initial-value: 0;
 }
+
 @property --nf-hero-recede {
   syntax: "<number>";
   inherits: true;
   initial-value: 0;
 }
+
 /* 顶栏黑底层的缓动（变量由 components/netflix/top-nav.tsx 按滚动进度写入） */
 .nf-topnav {
   transition: --nf-nav-dim 450ms linear;
 }
 
-/*
- * 品牌加载动画（components/brand-loader.tsx）：M 字标缓慢呼吸——
- * 轻微放大 + 透明度起伏，比旋转圆环安静、有品牌辨识度。
- * 系统开启「减弱动态效果」时退化为静止 logo。
- * 品牌资产随主题分叉（组件里双渲染）：银玻璃 = rotor 图片；
- * Netflix = 红色 SVG M 字标——加载中的一抹品牌红。
- */
+
 .brand-loader {
   animation: brand-loader-breath 1.4s ease-in-out infinite;
 }
-.brand-loader--netflix {
-  display: none;
-}
-html[data-theme="netflix"] .brand-loader--silver {
-  display: none;
-}
-html[data-theme="netflix"] .brand-loader--netflix {
-  display: block;
-}
+
 @keyframes brand-loader-breath {
   0%,
   100% {
@@ -2453,31 +2349,23 @@ html[data-theme="netflix"] .brand-loader--netflix {
     opacity: 1;
   }
 }
+
 @media (prefers-reduced-motion: reduce) {
   .brand-loader {
     animation: none;
     opacity: 0.75;
   }
 }
-html[data-theme="netflix"] .detail-ambient.detail-ambient--hero {
-  /* 纯黑而非 #141414：手机页内 Hero 的底部渐变（library-item-detail-view）
-     落点是 to-black（#000），容器底色取卡片灰会在图与内容的交界处显出一道
-     色差缝；Netflix 画布本就是 #000，与渐变终点同色无缝衔接 */
-  background: #000;
-}
-html[data-theme="netflix"] .ambient-fallback {
-  background: rgb(20 20 20 / 0.8);
-  backdrop-filter: none;
-}
 
-/* ============================ Netflix 结构组件 ============================ */
 
-/* 顶栏高度：外壳与各页面让位的统一基准（§5.1，社区共识值 68px） */
+
 :root {
   --nf-nav-h: 68px;
 }
 
-/* 顶栏图标按钮（搜索 / 铃 / 头像下拉箭头等共用） */
+/* ============================ Netflix 结构组件 ============================ */
+/* 顶栏高度：外壳与各页面让位的统一基准（§5.1，社区共识值 68px） */
+
 .nf-icon-btn {
   display: grid;
   place-items: center;
@@ -2488,9 +2376,12 @@ html[data-theme="netflix"] .ambient-fallback {
   color: #ffffff;
   transition: background 150ms ease, color 150ms ease;
 }
+
+/* 顶栏图标按钮（搜索 / 铃 / 头像下拉箭头等共用） */
 .nf-icon-btn:hover {
   background: var(--glass-fill-hover);
 }
+
 /* 触屏设备（含 ≥768px 的平板 / 横屏手机）放大到 44px 触控目标——与播放器
    控件、PageNav 的 pointer-coarse 分档同一原则：触控尺寸看指针能力而不是
    视口宽度，视口分档会让 iPad 与横屏手机回落到鼠标档的 36px。 */
@@ -2503,63 +2394,51 @@ html[data-theme="netflix"] .ambient-fallback {
 
 /* 桌面外壳：主区为绝对定位画布，非氛围页为顶栏让位（氛围页全出血、
    内容从顶栏底下穿过，观感即 Netflix 的 billboard / 详情 hero） */
-html[data-theme="netflix"] .nf-nav-offset {
-  padding-top: var(--nf-nav-h);
+
+.nf-row {
+  --nf-cols: 5;
+  --nf-inset: 4vw;
+  --nf-gap: 8px;
 }
 
 /*
  * 横版卡片行的宽度体系（§5.4 断点表）：行左右内边距 4vw、卡间距 8px，
  * 每行张数按断点换档，卡宽由 CSS 变量推导——组件里不写魔法宽度。
  */
-.nf-row {
-  --nf-cols: 5;
-  --nf-inset: 4vw;
-  --nf-gap: 8px;
-}
 @media (min-width: 1400px) {
   .nf-row {
     --nf-cols: 6;
   }
 }
+
 @media (max-width: 950px) {
   .nf-row {
     --nf-cols: 4;
   }
 }
+
 .nf-card-land {
   width: calc(
     (100vw - 2 * var(--nf-inset) - (var(--nf-cols) - 1) * var(--nf-gap)) / var(--nf-cols)
   );
 }
 
-/* 移动端底部标签栏（§5.2）：栏高 49px + 底部安全区，主区让位收口在这一条。
-   实底不透明（同 NetflixTopNav 的取舍：Netflix 的栏是实底不是毛玻璃）——
-   0.95 不透明度下的模糊几乎不可见，却让滚动每帧多一层采样合成的开销，
-   索性提到全不透明并去掉 backdrop-filter。 */
+
 .nf-tabbar {
   background: #0a0a0a;
 }
-@media (max-width: 767px) {
-  html[data-theme="netflix"] .app-shell > main {
-    padding-bottom: calc(49px + var(--safe-bottom));
-  }
-  /* 不透明 tab 栏下，main 已整层让位 49px+safe-bottom，各页滚动容器里的
-     .scroll-safe（为「内容从指示条下方穿过」的半透明设计）再垫一次
-     safe-bottom 就是双倍空白——Netflix 主题作用域下关掉内层占位。 */
-  html[data-theme="netflix"] .app-shell > main .scroll-safe::after {
-    height: 0;
-  }
-}
 
-/* hover 展开卡（Portal + fixed，§5.4）：z 取 500 档——高于内容行、
-   低于全局浮层（菜单 70 / 抽屉 60 / 命令面板 50 档是外壳内的；
-   Portal 到 body 后与它们同层比较，取 500 稳压内容与外壳浮层） */
+
 .nf-hovercard {
   z-index: 500;
   transform-origin: center top;
   /* 官方技术博客《Delivering Meaning with Previews on Web》：展开画布 400ms */
   animation: nf-expand 400ms cubic-bezier(0, 0, 0.2, 1) both;
 }
+
+/* hover 展开卡（Portal + fixed，§5.4）：z 取 500 档——高于内容行、
+   低于全局浮层（菜单 70 / 抽屉 60 / 命令面板 50 档是外壳内的；
+   Portal 到 body 后与它们同层比较，取 500 稳压内容与外壳浮层） */
 @keyframes nf-expand {
   from {
     transform: scale(1);
@@ -2570,6 +2449,7 @@ html[data-theme="netflix"] .nf-nav-offset {
     opacity: 1;
   }
 }
+
 @media (prefers-reduced-motion: reduce) {
   .nf-hovercard {
     animation: none;
@@ -2577,87 +2457,8 @@ html[data-theme="netflix"] .nf-nav-offset {
   }
 }
 
-/* —— 移动端收口（docs/design/web-themes-mobile/）—— */
-
-/* 设置页大图标头（settings-view 的分区头）：Netflix 移动端由页顶的
-   NetflixSettingsNav（返回键 + 分区名）承担定位，窄屏不再重复占位 */
-@media (max-width: 767px) {
-  html[data-theme="netflix"] .settings-panel-head {
-    display: none;
-  }
-}
-
-/* 移动全局顶栏雾层换纯黑系：Netflix 画布是纯黑，银玻璃蓝黑雾在其上会读出色偏。
-   blur 与 mask 保留——雾下滚过的海报墙仍要被压糊，这是雾的职责。 */
-html[data-theme="netflix"] .mobile-topbar {
-  background: linear-gradient(
-    180deg,
-    rgba(0, 0, 0, 0.8) 0%,
-    rgba(0, 0, 0, 0.55) 58%,
-    rgba(0, 0, 0, 0) 100%
-  );
-}
-
-/* 搜索命令面板：Netflix 弹层语言——#181818 实底、方角、无玻璃模糊
-   （§5.1「浮层换 Netflix 皮」）。无层 CSS 特异性 0,2,0 压过工具类的
-   bg-[rgba(...)] / rounded-2xl / backdrop-blur-2xl（任意值不走 token，
-   只能这样压），与上面 40 处 netflix 覆盖同型。遮罩同步换 Netflix 的
-   70% 纯黑（§2.5 详情弹层规格）——不走银玻璃的可调 scrim 变量（蓝黑
-   色相 + blur 与纯色平铺的世界不符）。 */
-html[data-theme="netflix"] .search-palette-overlay {
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: none;
-}
-html[data-theme="netflix"] .search-palette-panel {
-  background: #181818;
-  border-color: rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
-  backdrop-filter: none;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.9);
-}
-
-/* 订阅详情摘要卡（subscription-inspector-view）：银玻璃的冷蓝黑底与 Netflix
-   纯黑画布不同相（同 mobile-topbar 雾层的色偏问题），换弹层面板语言——
-   #181818 实底，压暗渐变收敛为黑系、右半多透一些让海报氛围透出来。
-   无层 CSS 特异性压过卡片上的任意值工具类，与 search-palette 同型。 */
-html[data-theme="netflix"] .sub-hero-card {
-  background: #181818;
-}
-html[data-theme="netflix"] .sub-hero-card > .sub-hero-tint {
-  background: linear-gradient(
-    90deg,
-    rgba(0, 0, 0, 0.92),
-    rgba(0, 0, 0, 0.58) 55%,
-    rgba(24, 24, 24, 0.3)
-  );
-}
-
 /* 详情页移动端 hero 提档为 Netflix 专属档（§5.5 修订：约 40vh，对齐 App
    详情构图；银玻璃移动端维持 22vh/120px 不动）。spacer 与渐变起点同源取
    这两个变量，改一处全链路跟随。 */
-@media (max-width: 767px) {
-  /* 选择器必须钉在 .detail-ambient 上，不能只写 html[data-theme="netflix"]：
-     .detail-ambient 自己在上面的移动端档里声明了 --detail-hero-h: 22vh，而
-     自定义属性上「元素自身的声明」恒定压过「从祖先继承的值」（与选择器
-     特异度、源码先后都无关）。挂在 html 上等于没写——实测 Netflix 手机详情页
-     一直是 22vh/186px，而不是这里要的 40vh/220px。桌面档（上面 58vh 那条）
-     本来就写成后代选择器，所以只有移动档踩了坑。 */
-  html[data-theme="netflix"] .detail-ambient {
-    --detail-hero-h: 40vh;
-    --detail-hero-min-h: 220px;
-  }
 
-  /* 移动行张数断点（§7 表 500-767 / <500 两档）：Netflix 主题下竖版海报卡
-     从银玻璃的固定 126px 换为视口宽公式——375px ≈ 3 张可见 + 半张 peek、
-     320px ≈ 2~3 张，一条规则覆盖首页 / 发现 / 库的全部行（都走 MediaRow 的
-     .m-row），银玻璃不受作用域影响。 */
-  html[data-theme="netflix"] .m-row > div {
-    width: clamp(100px, 30vw, 156px);
-  }
-  /* 发现页加载骨架卡挂同一宽度公式（discover-view 的 .m-row-skel）：
-     骨架与真实行卡同宽，数据到达时整行不跳宽。 */
-  html[data-theme="netflix"] .m-row-skel {
-    width: clamp(100px, 30vw, 156px);
-  }
-}
 

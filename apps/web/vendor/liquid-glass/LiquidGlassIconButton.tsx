@@ -14,6 +14,9 @@ export interface LiquidGlassIconButtonProps {
   variant?: LiquidGlassVariant;
   shape?: "circle" | "squircle" | "rounded" | "capsule";
   size?: "regular" | "compact";
+  /** 是否创建 WebGL 玻璃渲染层（默认 true）。由宿主应用按主题能力传入
+   *  （见 themes/<id>/theme.ts 的 capabilities.glass）——vendor 不感知主题名。 */
+  glassEnabled?: boolean;
   /**
    * 显式指定按钮的像素尺寸（宽/高），覆盖 shape 内置的固定几何。
    * 组件的 WebGL 画布显示尺寸被 renderer 用内联样式锁定为几何尺寸，CSS 改不动；
@@ -50,6 +53,7 @@ export function LiquidGlassIconButton({
   width,
   height,
   settings,
+  glassEnabled = true,
   onActiveChange,
   className = "",
   children,
@@ -57,6 +61,11 @@ export function LiquidGlassIconButton({
 }: LiquidGlassIconButtonProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<LiquidGlassRenderer | null>(null);
+  // glassEnabled = false 时不建 WebGL 渲染器（由宿主按主题能力传入，如
+  // 纯色平铺主题：globals.css 的主题覆盖把玻璃控件接管为半透白实底按钮）。
+  // 本组件与开关不同，渲染器**挂载即建、常驻到卸载**，不跳过的话每个图标
+  // 按钮都独占一个 WebGL 上下文（浏览器每页上限约 16 个，见 LiquidGlassButton
+  // 里 issue #89 的注释）。vendor 不感知主题名。
   const [internalActive, setInternalActive] = useState(defaultActive);
   const [pressed, setPressed] = useState(false);
   const currentActive = active ?? internalActive;
@@ -113,6 +122,9 @@ export function LiquidGlassIconButton({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // Netflix 主题：整体停用玻璃层（见上方 useTheme 处的注释），不创建渲染器；
+    // theme.id 进依赖保证银玻璃 ⇄ Netflix 实时切换时旧渲染器被正确 dispose。
+    if (!glassEnabled) return;
     try {
       const renderer = new LiquidGlassRenderer(canvas, backgroundImage, mergedSettings);
       renderer.setBackgroundSampling(true);
@@ -127,7 +139,7 @@ export function LiquidGlassIconButton({
       rendererRef.current?.dispose();
       rendererRef.current = null;
     };
-  }, [geometry.height, geometry.width]);
+  }, [geometry.height, geometry.width, glassEnabled]);
 
   useEffect(() => {
     rendererRef.current?.setImage(backgroundImage);

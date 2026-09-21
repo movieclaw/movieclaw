@@ -67,8 +67,10 @@ export function ConsentDialog({
       className="pointer-events-auto absolute inset-0 z-30 flex items-center justify-center bg-black/75 px-6"
     >
       {/* 面板外观照抄站内 Modal（components/modal.tsx）：同一个圆角、描边、
-          底色与投影——它就是一个模态，不该长得像另一套系统 */}
-      <div className="w-full max-w-[460px] rounded-2xl border border-white/10 bg-[rgba(16,18,26,0.92)] p-7 text-white shadow-[0_32px_90px_rgba(0,0,0,0.7)] backdrop-blur-2xl">
+          底色与投影——它就是一个模态，不该长得像另一套系统。solid-popover：
+          Netflix 主题由钩子接管为 #181818 实底 + --line 描边 + 关 blur（圆角
+          走 rounded-2xl 换档），银玻璃下无基样式零变化 */}
+      <div className="solid-popover w-full max-w-[460px] rounded-2xl border border-white/10 bg-[rgba(16,18,26,0.92)] p-7 text-white shadow-[0_32px_90px_rgba(0,0,0,0.7)] backdrop-blur-2xl">
         <h2 className="text-[19px] font-semibold leading-snug">这部片需要软件转码才能在浏览器里播放</h2>
 
         <dl className="mt-4 space-y-3 text-[13px] leading-relaxed text-white/70">
