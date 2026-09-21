@@ -1,252 +1,300 @@
-# 反馈到上游：诊断包、issue 草稿与一键提报（响应 #434）
+# 反馈到上游：把 Agent 的诊断结论变成维护者能用的 issue（响应 #434）
 
-> 背景：#434 描述的现场——字幕生成失败 → 「交给 Agent 处理」→ Agent 翻日志、
-> 跑 mclaw、定位出两个 bug，最后只能说「我没有提交 issue 的入口，给你一份报告
-> 自己去贴」。Agent 握着全部证据却在最后一步断了；非开发者用户到这里多半放弃。
-> 本文回答两个问题：① 没有 GitHub 账号/未登录的用户，从产品点一下能走到哪；
-> ② Agent 会话里的「上报问题」交互应该长什么样、后端要补什么。
+> #434 的现场：字幕生成失败 → 「交给 Agent 处理」→ Agent 翻日志、跑 mclaw、
+> 定位出两个 bug，最后只能说「我没有提交入口，给你一份报告自己去贴」。
+> Agent 握着全部证据却在最后一步断了；非开发者用户到这里多半放弃。
+>
+> 本文先把**产品定义**想清楚（§1–§7），再谈实现（§8 与附录）。实现层面的
+> 结论一句话：Agent 只「起草」不「提交」，提交靠 GitHub 预填链接 + 一份
+> 脱敏诊断文件，用户是唯一的发布者。
 
 ---
 
-## 0. 结论先行
+## 0. 一句话定义
 
-1. **提交 issue 必须有 GitHub 账号，没有任何绕过方式**——GitHub 不接受匿名
-   issue。产品能做到的极限是：把「登录/注册」之外的所有步骤都替用户做完，
-   让用户点开链接后只剩「登录 → 看一眼 → 点提交」三步。
-2. **零配置档用 GitHub 的预填链接**（`/issues/new?template=…&<字段id>=…`）。
-   实测（2026-09-21，未登录访问 movieclaw/movieclaw）：
-   - 链接总长 ≤ 约 7.5 KB：302 到登录页，`return_to` 带着完整链接，登录后
-     回到预填好的表单；
-   - 7.8 KB 左右：仍 302 登录页，但 **`return_to` 被丢弃**，登录后落在首页、
-     预填全丢；
-   - ≥ 8.1 KB：直接 `414 URI Too Long`。
+**当 Agent 在一次诊断会话里判定「这是产品缺陷」时，产品把它已经核实的证据和
+判断整理成一份 issue 草稿，用户过目后一键跳到 GitHub 提交。**
 
-   因此**预填链接只能装「摘要」，装不下诊断包**（一个中文字符 URL 编码后
-   9 字节，7 KB 大约只够 600 个汉字加少量 ASCII）。完整证据必须走别的通道
-   （§3.3）。
-3. **Agent 侧不新增「提交」能力，只新增「起草」能力**：草稿由服务端按诊断包
-   与 Agent 的分析拼装，人在会话里过目、改、点「去 GitHub 提交」。issue 是
-   公开的，Agent 不能替用户决定公开什么——这一条与 #434 的立场一致，也是
-   本设计的硬边界。
-4. **自动档（PAT / Device Flow 直接建 issue）不在本期**：它解决的是「用户
-   已有账号但不想切浏览器」的便利问题，不解决「没账号」问题，而且引入令牌
-   保管面。先把零配置档做扎实，看真实使用再决定。
+三个关键词各对应一条硬规则：
 
-## 1. 未登录 / 无账号用户的可达路径（研究结论）
+- **判定**：没有判定就没有反馈。反馈不是一个随时可点的按钮，而是诊断的
+  终点动作之一（§2）。
+- **核实的证据**：进 issue 的证据从工具结果原文摘录，不是模型的转述（§5）。
+- **用户过目**：issue 是公开的，Agent 永远不替用户决定公开什么（§6）。
 
-### 1.1 GitHub 侧的机制
+## 1. 概念与角色
+
+| 概念 | 定义 |
+|---|---|
+| 诊断会话 | 网页端的 Agent 会话，用户在其中让 Agent 排查一个具体问题。入口有二：待办/任务卡上的「交给 AI 分析」，或用户直接描述问题 |
+| 判定（verdict） | Agent 排查后对问题性质的结论，四选一：`defect` 产品缺陷 / `config` 配置或环境问题 / `unsupported` 功能或站点未支持 / `unknown` 查不出来 |
+| 反馈草稿（draft） | 一份按 bug 表单字段组织的结构化对象，由服务端组装，绑定到会话与判定。三段：机器事实、核实证据、Agent 判断 |
+| 诊断包（bundle） | 草稿对应的一个 Markdown 文件，含脱敏日志与任务记录。生成即不可变，保留 7 天 |
+| 提交 | 用户的动作：打开预填链接，在 GitHub 上完成表单。产品不参与、也不持有任何 GitHub 凭据 |
+
+四个角色：
+
+- **用户**：唯一的发布者。决定改什么、发不发。
+- **Agent（模型）**：负责判定、写判断、指出哪些工具结果是证据。**不负责**
+  报版本号、不负责脱敏、不负责提交。
+- **产品（服务端 + 界面）**：负责机器事实、证据摘录、脱敏、查重、草稿与
+  诊断包的生成、链接的拼装与长度控制。
+- **维护者**：消费者。设计目标是让维护者第一条回复不再是「请补版本和日志」。
+
+## 2. 什么时候可以反馈
+
+### 2.1 前置条件（缺一不可）
+
+1. 网页端会话（IM 通道没有卡片界面，不装配这个工具）；
+2. 会话里存在一个**具体问题**（一个任务、一个文件、一条告警，或用户描述的
+   一次失败）。「推荐部电影」这类会话没有反馈一说；
+3. Agent **已经排查过**：至少有一次工具调用的结果与该问题相关。零证据不能起草。
+
+### 2.2 触发方式（两种，语义不同）
+
+**Agent 主动提议**——满足以下全部条件时，Agent 在给出结论的同一轮里提出：
+
+- 判定为 `defect`，或 `unsupported`；
+- 界面上可用的动作（诊断工单里「你可以执行的动作」那份清单）解决不了它；
+- 已列出「排除了哪些配置/环境原因」。列不出来就还没到提议的时候，先继续查。
+
+`unknown` 不主动提议：查不出来的问题让用户背一次公开发帖的成本，多数时候
+不值；但用户要求时可以起草，草稿里如实标「未定位」。
+`config` 永不主动提议：直接帮用户修，或告诉用户怎么修。
+
+**用户主动要求**——用户任何时候说「帮我反馈/提个 issue」，Agent 必须照做：
+
+- 还没排查的，先做最小排查（相关任务、版本、日志片段），再起草；
+- Agent 认为是 `config` 的，照样起草，但在「Agent 判断」段写明自己的看法。
+  用户可能知道 Agent 不知道的事，最终判断权在用户。
+
+### 2.3 什么时候不该反馈
+
+- 问题在会话里已经被修好了（改了配置、重试成功）——除非修的过程暴露了
+  产品缺陷（例如默认值就是错的），那是 Agent 的判断题；
+- 同一会话里已经为同一个问题起过草——新的判断以**修订**的方式替换旧草稿，
+  不产生第二份；
+- 3 天内已经为同一任务/文件提交过（草稿有回填的 issue 编号，见 §3 第 5 步）
+  ——卡片直接显示「已反馈 #N」，不再起草。
+
+## 3. 反馈流程（五步，用户只在第 3、4 步动手）
+
+```
+① 排查         Agent 用 mclaw / 日志 / 源码查证，形成判定
+      │
+② 起草         Agent 调用 propose_issue_report_v1（只描述，不执行）
+      │         服务端：机器事实 + 从转录摘证据 + 脱敏 + 查重 → 草稿 + 诊断包
+      │         会话页出现「问题反馈卡片」
+      ▼
+③ 过目与修改    用户读卡片；可直接改标题/描述/复现步骤，或让 Agent 改（→ 修订）
+      │
+④ 提交         点「去 GitHub 提交」：下载诊断包 + 新标签页打开预填链接
+      │         GitHub 上：登录 → 选两个下拉、勾两个确认 → 拖入诊断包 → 提交
+      ▼
+⑤ 回填（可选）  用户把 issue 链接贴回会话 → 草稿标记「已提交 #N」
+```
+
+每一步的产品定义：
+
+**① 排查**：现状已有，不改。唯一要求：Agent 别再自己去源码里找版本号——
+版本、部署形态这些机器事实由第 ② 步的服务端提供。
+
+**② 起草**：Agent 提供的只有「判断类」内容：标题、问题描述、复现步骤、
+建议的功能分区、根因判断、已排除项、已尝试项，以及**哪几次工具调用是证据**
+（引用 tool_call 编号）和关联的任务/文件编号。其余全部服务端填。起草是幂等
+的：同一会话同一问题再次调用即修订。
+
+**③ 过目**：卡片必须把**将要公开的全部内容**摊开：链接里的字段直接可编辑，
+诊断包内容可展开预览，顶部一行「脱敏说明：已替换 N 处站点域名、M 处路径…」。
+没有任何「用户看不到但会发出去」的内容。卡片同时显示查重结果：
+「可能已有：#432 …」，点开是 issue 页面。
+
+**④ 提交**：一个按钮做两件事——先触发诊断包下载，再打开预填链接。链接
+只装摘要（标题、描述、复现步骤、版本、根因一句话），编码后不超过 6 KB；
+证据全在诊断包里。按钮旁固定四行说明：
+
+1. 登录 GitHub（没有账号要先注册）
+2. 「部署方式」「问题涉及的功能」两个下拉需要自己选，建议值卡片上有
+3. 把刚下载的 `movieclaw-diagnostics-….md` 拖进最后一个输入框
+4. 手机装了 GitHub App 的话，用浏览器打开链接
+
+**⑤ 回填**：用户贴回 issue 链接，或者不贴。贴了：草稿状态变为「已提交 #N」，
+以后再问「那个反馈怎么样了」Agent 能匿名查状态；同一问题不再重复起草。
+不贴：草稿 7 天后随诊断包一起过期。产品**不追踪**用户在 GitHub 上是否真的
+提交了——零配置档拿不到这个信息，也不需要。
+
+## 4. 用户需要做什么
+
+| 场景 | 用户动作 | 产品替他做的 |
+|---|---|---|
+| 有 GitHub 账号 | 读卡片 → 点提交 → 登录 → 选两个下拉、勾两个框 → 拖文件 → 提交 | 排查、起草、脱敏、查重、版本与环境、日志摘录、链接拼装 |
+| 没有账号、愿意注册 | 同上，多一步注册 | 同上 |
+| 没有账号、不想注册 | 点「下载诊断包」或「复制全文」，发到群/论坛请人代提 | 同上；诊断包自带完整草稿正文 |
+| 已有类似 issue | 点「查看 #432」，把诊断包拖进评论 | 查重、诊断包 |
+
+最少动作是 6 次点击加一次拖拽。其中「选下拉、勾确认」是 GitHub 表单的限制
+（预填做不了，见附录 A），也恰好是人过目的停顿点，不另设确认弹窗。
+
+## 5. 提交什么
+
+草稿分三段，issue 里也按这三段分开，让维护者一眼知道「谁说的」：
+
+### 5.1 机器事实（服务端填，模型改不了）
+
+- 运行中的版本（`build_status().current_version`）、代码来源（镜像基线 /
+  overlay / 源码）、runtime 版本、NER 模型 tag
+- 部署形态（Docker / 源码）、平台与架构、Python 版本
+- 转码后端类型、远程转码是否启用；LLM 供应商类型与模型名（不带 key、不带
+  自建地址）
+- 关联任务：类型、状态、错误码与错误文本、脱敏后的 `input_data`、事件时间线
+- 该任务前后的日志片段（按任务 id 抽取，默认前后各 200 行，总量 ≤ 64 KB）
+- 近 7 天的异常退出记录、当前活跃告警的标题
+
+这一段的存在理由就是 #434 里的版本号事故：让模型报版本，它会把 overlay 与
+基线两份 `__version__` 弄混。
+
+### 5.2 核实的证据（从转录的工具结果原文摘录）
+
+Agent 起草时引用「哪几次工具调用是关键证据」，服务端从会话转录里把这些
+tool_result 的**原文**摘出来（每条 ≤ 4 KB，超出截断并标注），脱敏后放进
+诊断包。维护者看到的是 mclaw 的真实输出、grep 到的真实日志行，不是模型
+记忆里的版本；模型引用错了，原文也会暴露这一点。
+
+### 5.3 Agent 的判断（明确标注为判断）
+
+- 根因判断：一句话
+- 已排除的原因及依据：这是手写 issue 从来没有、维护者最省时间的一段
+- 已尝试的动作与结果
+- 建议的修复方向（可选）
+
+### 5.4 不提交的
+
+- 完整会话转录：有用户原话、片名、同一会话里的其他任务
+- 模型的思考过程
+- 站点名与域名、cookie、passkey、API key、下载器地址、外部访问地址、宿主机
+  用户目录——脱敏层统一替换为 `<site-1>`、`<downloader-1>`、`<user-dir>`
+  这类占位符
+- 媒体库里的文件名与片名：默认替换为 `<title>`（文件名常含用户目录与站点
+  制作组信息）；Agent 认为片名是复现的必要条件时可在判断段单独写出，由
+  用户过目
+
+### 5.5 落到哪里
+
+| 内容 | 预填链接（≤ 6 KB） | 诊断包文件 |
+|---|---|---|
+| 标题、问题描述、复现步骤 | ✅ | ✅ |
+| 版本 | ✅（表单 `version` 字段） | ✅ |
+| 根因判断一句话 | ✅（放在描述末尾） | ✅ |
+| 已排除、已尝试、修复建议 | ❌ | ✅ |
+| 机器事实全文、证据原文、日志片段 | ❌（`logs` 字段只放前 1.5 KB） | ✅ |
+| 「完整内容见附件」提示 | ✅（`extra` 字段） | — |
+
+## 6. 硬规则
+
+1. **Agent 不提交、不持有 GitHub 凭据。** 提交工具（`propose_issue_report_v1`）
+   是 render-only：handler 只校验参数、返回 ok，不写文件、不发网络请求。
+2. **公开的内容 = 用户看到的内容。** 链接字段和诊断包全文都在卡片上可见；
+   产品不往 issue 里塞任何用户没看过的东西。
+3. **机器事实模型改不了，判断段必须标注为判断。** 两段在 issue 里不混排。
+4. **脱敏在服务端、永远开启、没有「原始模式」。** 用户自己编辑后的字段在
+   生成诊断包时再过一次正则层。
+5. **一个问题一份草稿。** 修订替换，不堆叠。
+6. **草稿与诊断包 7 天过期。** 落在 `data/diagnostics/`，在存储登记表登记
+   为可清理。
+7. **判定为 `config` 的不主动提议；用户要求时照做但如实写明。**
+
+## 7. 边缘情况
+
+| 情况 | 处理 |
+|---|---|
+| Agent 把配置问题误判为缺陷 | 工具要求必填「已排除的配置原因」；填不出来的提议会被 handler 打回，模型继续查。维护者侧仍可能收到误判，但至少带着排除依据 |
+| Agent 引用的工具结果并不支持它的结论 | 证据段是原文摘录，维护者能直接看出；这是「摘原文而非转述」的设计目的 |
+| 证据很长（整份任务事件、大段日志） | 每条证据 ≤ 4 KB、诊断包总量 ≤ 256 KB，超出截断并在文件里标注 |
+| 链接超长 | 编码后按 `logs` → `reproduce` → `description` 顺序截断到 6 KB，`extra` 写「完整内容见附件」 |
+| GitHub 不可达（国内网络） | 查重静默跳过，链接照常生成——用户浏览器可能走别的网络；诊断包不依赖网络 |
+| 用户没有账号且不想注册 | 诊断包 + 「复制全文」，发到社群请人代提；文案里明说这条路 |
+| 手机上打开链接被 GitHub App 拦截 | 说明文案第 4 行；卡片上的链接可长按复制 |
+| 同一缺陷多次触发 | 3 天内已回填 issue 编号的直接显示「已反馈 #N」；未回填的只查重提示 |
+| 用户在草稿里手写进了密钥 | 正则层再过一次；字典层（站点域名等）只认数据库里有的，手写的新值挡不住，卡片顶部提醒「请自行检查」 |
+| 会话被压缩，被引用的 tool_call 已不在上下文里 | 证据从**转录文件**摘，不从模型上下文摘；压缩不影响 |
+
+## 8. 分期与验收
+
+**P0：跑通主路径**
+`GET /system/diagnostics`（机器事实 + 按任务抽日志 + 脱敏）、
+`POST /feedback/draft`（组装 + 证据摘录 + 查重 + 诊断包）、Agent 工具、
+会话页卡片、预填链接与长度控制、诊断包下载。
+
+验收：
+1. 复现 #434（字幕任务失败 → 交给 Agent）：模型定位后调用工具，卡片出现，
+   版本号与「更新与维护」页一致；
+2. 无痕窗口点提交：登录后落在 bug 表单，标题/描述/版本/日志已填，两个下拉与
+   勾选框为空；构造 20 KB 日志的草稿，链接仍 ≤ 6 KB；
+3. 诊断包里搜不到站点域名、cookie、passkey、下载器地址、宿主机用户目录（单测
+   用含这些字段的假日志与假转录断言）；
+4. 判定为 `config` 的会话模型不主动提议；用户说「帮我反馈」后照常起草；
+5. 缺「已排除项」的提议被打回，模型补查后再提；
+6. IM 通道工具集不含该工具。
+
+**P1：闭环**
+回填 issue 编号、匿名查 issue 状态、本地去重（3 天内同任务）、
+`unsupported` 走功能请求/站点请求模板（无日志）。
+
+**P2：视数据决定**
+自动提交（PAT 或 Device Flow）——只有当 P0 数据显示「下载了诊断包但没有
+回填编号」的比例很高、且原因是「切浏览器太麻烦」而非「没有账号」时才值得做。
+
+## 9. 待验证 / 待拍板
+
+- [ ] GitHub 注册流是否保留 `return_to`（沙箱访问登录页 403，需人工无痕验证；
+      不保留则文案改为「先注册再点链接」）；
+- [ ] issue form 字段按 id 预填在当前 GitHub 上的表现（社区有时好时坏的反馈；
+      不可用时退回 `title=&body=` 纯 Markdown，分诊工作流改为从正文标题解析）；
+- [ ] 片名默认脱敏是否过度（维护者有时需要片名判断识别问题）——倾向默认脱敏、
+      Agent 判断必要时在判断段单独写出；
+- [ ] `unknown` 判定是否允许用户要求起草（本文倾向允许并如实标注）。
+
+---
+
+## 附录 A：GitHub 侧的机制（实测 2026-09-21，未登录访问 movieclaw/movieclaw）
 
 | 机制 | 是否可用 | 说明 |
 |---|---|---|
-| `issues/new?title=&body=` | ✅ 官方文档明确支持 | 最稳的两个参数；`labels`/`template`/`assignees`/`milestone`/`projects` 同级 |
-| `issues/new?template=01-bug-report.yml&<字段id>=值` | ⚠️ 可用但非官方承诺 | 官方文档只有一句「issue form 字段的查询参数也可以传给模板选择器」；社区实测 `input`/`textarea` 字段按 `id` 预填有效，`dropdown` 不生效，`checkboxes` 无法预填（community #15477、#32200） |
-| 未登录访问预填链接 | ✅ | 302 到 `/login?return_to=<完整链接>`，登录后回到预填表单（§0 实测，链接 ≤ 7.5 KB 才成立） |
-| 无账号 → 注册后回到预填表单 | ❓ 未验证 | 登录页有「Create an account」入口，本仓库沙箱访问 GitHub 登录页被 403，无法确认注册流是否保留 `return_to`。需要人工用无痕窗口验证一次 |
-| 手机装了 GitHub App | ⚠️ 已知坑 | 点链接会被 App 拦截，App 不处理预填参数（community #113726）。NAS 用户很多在手机上操作，文案里要提醒「用浏览器打开」 |
-| 匿名 `GET /search/issues` | ✅ | 未认证 10 次/分钟，够做「可能已有 #xxx」的去重提示；走 `UPDATE_API_BASE_URL` 同一通道（用户可自建反代） |
+| `issues/new?title=&body=` | ✅ 官方文档明确支持 | `labels`/`template`/`assignees`/`milestone`/`projects` 同级 |
+| `issues/new?template=01-bug-report.yml&<字段id>=值` | ⚠️ 可用但非官方承诺 | 官方只有一句「issue form 字段的查询参数也可以传给模板选择器」；社区实测 `input`/`textarea` 按 `id` 预填有效，`dropdown` 不生效，`checkboxes` 无法预填（community #15477、#32200） |
+| 链接总长 ≤ 约 7.5 KB | ✅ | 302 到 `/login?return_to=<完整链接>`，登录后回到预填表单 |
+| 约 7.8 KB | ❌ | 仍 302 登录页，但 `return_to` 被丢弃，登录后预填全丢 |
+| ≥ 8.1 KB | ❌ | `414 URI Too Long` |
+| 注册后回到预填表单 | ❓ | 未验证（§9） |
+| 手机装了 GitHub App | ⚠️ | 链接被 App 拦截且不处理预填参数（community #113726） |
+| 匿名 `GET /search/issues` | ✅ | 未认证 10 次/分钟，够做查重；走 `UPDATE_API_BASE_URL` + `movieclaw_net.egress` 的 `github` 出口 |
 
-### 1.2 对本产品的含义
+一个中文字符 URL 编码后 9 字节，6 KB 大约只够 500 个汉字加少量 ASCII——
+这是「链接装摘要、文件装证据」分法的直接依据。
 
-- **`blank_issues_enabled: false` 不影响预填**：查询参数会跟着进入模板
-  选择器，选中 bug 表单后各字段仍按 `id` 落位。但保险起见，链接里**显式带
-  `template=01-bug-report.yml`**，跳过选择器直达表单。
-- **表单字段只预填 `input`/`textarea` 类**：`title`、`description`、
-  `reproduce`、`version`、`logs`、`extra` 可填；`deploy`、`area` 两个下拉
-  与「提交前确认」两个勾选框**必须用户手点**——这三个恰好是「人必须过目」
-  的天然停顿点，不用额外设计确认步骤。分诊工作流依赖的 `version`/`deploy`
-  字段（`claude-issue-triage.yml`）因此仍能拿到值。
-- **预填的 `version` 用运行中的版本**：#434 里 Agent 把 0.23.0 报成 0.26.0，
-  原因就是让模型自己去 grep 源码里的 `__version__`（overlay 与镜像基线各有
-  一份）。诊断包必须给 `build_status().current_version`（`services/app_update.py`）
-  这个**运行中进程**的值，模型不再自己找。
-- **没有账号的用户**：产品无法替他们提交。唯一的「无账号」方案是维护者自建
-  一个中转（Cloudflare Worker + 仓库机器人令牌，收匿名 POST 后代建 issue），
-  代价是垃圾/滥用面和运维一个公网服务，**本期不做**；但诊断包与草稿的产物
-  设计成「一份可下载的 Markdown 文件」，无账号用户至少能把它发给群友/维护者
-  代提（§3.3）。
+`blank_issues_enabled: false` 不影响预填，但链接显式带 `template=` 跳过
+选择器直达表单。分诊工作流（`claude-issue-triage.yml`）依赖的 `version`
+字段可预填；`deploy` 由用户手选。
 
-## 2. 总体方案：三层，只做前两层
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│ ① 诊断包  GET /system/diagnostics（服务端脱敏，机器可读）          │
-│    版本/部署/平台/LLM 类型 + 按 job/file/session 抽日志片段        │
-├──────────────────────────────────────────────────────────────┤
-│ ② 草稿    POST /feedback/draft（诊断包 + Agent 分析 → 表单字段）   │
-│    Agent 工具 propose_issue_report_v1（render-only，前端画卡片）   │
-│    设置页「反馈问题」按钮（不经 Agent，直接起草）                  │
-├──────────────────────────────────────────────────────────────┤
-│ ③ 提交    零配置档：预填链接（摘要）+ 诊断包文件（拖进表单）        │
-│           自动档：PAT / Device Flow ——本期不做                    │
-└──────────────────────────────────────────────────────────────┘
-```
-
-与现有架构的对应关系（不引入新模式，全部沿用已有的三条先例）：
+## 附录 B：与现有架构的对应
 
 | 本设计 | 沿用的先例 | 出处 |
 |---|---|---|
-| 服务端组装证据、前端只拿文本 | 「交给 AI 分析」诊断工单 | `services/diagnosis_handoff.py`、`routes/agent_handoff.py` |
+| 服务端组装证据、前端只拿结构化结果 | 「交给 AI 分析」诊断工单 | `services/diagnosis_handoff.py`、`routes/agent_handoff.py`、`components/handoff-button.tsx` |
 | Agent 工具只描述、不执行，前端按工具名拦截绘制 | `show_media_cards_v1` | `movieclaw_agent/tools/media_ui.py`、`docs/design/agent-generative-ui.md` |
 | 按通道决定是否装配工具 | `get_agent_tools(generative_ui=…)` | `routes/agent.py` |
+| 证据从转录文件摘录 | 转录即事实源（JSONL） | `services/agent_sessions.py` |
+| 版本与代码来源 | 「更新与维护」状态 | `services/app_update.py::build_status` |
 
-## 3. 各层设计
-
-### 3.1 诊断包 `GET /system/diagnostics`
-
-新增 `services/diagnostics.py`（纯函数，可被路由、mclaw、Agent 工具共用），
-返回结构化 JSON；`mclaw system diagnose` 由 spec 自动生成命令面。
-
-**内容**（全部是「不带密钥」的事实）：
-
-| 段 | 字段 | 来源 |
-|---|---|---|
-| 版本 | `version`、`code_source`（baseline/overlay/dev）、`overlay_version`、`runtime_version`、`model_tag` | `app_update.build_status()`，一律取运行中的值 |
-| 部署 | `deploy`：Docker（`MOVIECLAW_RUNTIME_VERSION` 存在）/ 源码；`platform`（`platform.platform()`、`machine`）；`python`；`web_port` | 环境变量 + `platform` 模块 |
-| 转码 | 硬件转码后端、远程 Worker 是否启用 | `transcode_worker` 配置（只给类型，不给地址） |
-| LLM | 供应商类型与模型名 | `llm_config`（**不带 key、不带自建 base_url**） |
-| 站点/下载器 | 各自的数量、类型、启用状态 | 只给 `site_id` 类型与数量，不给站点名（PT 站点名本身是敏感信息） |
-| 日志片段 | `logs[]`：按 `job_id` / `file_id` / `session_id` / 时间窗抽取 | 复用 `routes/logs.py` 的按天文件读取，加过滤。现状：日志页只有查看，没有导出/脱敏 |
-| 关联任务 | `jobs[]`：`job_type`、`status`、`error`、`input_data`（脱敏后） | `Job` 表 |
-| 近期异常 | `last_abnormal_exit`、活跃 `notices` 标题 | `build_status()`、`system_notice` |
-
-**过滤参数**：`?job_id=&file_id=&session_id=&since=&until=&log_lines=`。
-按资源过滤时，从 `JobResource` 反查任务 id 与时间窗，再在日志里按
-任务 id / 关键字抽取，默认前后各 200 行、总量上限 64 KB——Agent 不再需要
-自己 `grep` 整个日志文件（这正是 #434 里「Agent 自己翻日志」的替代）。
-
-**脱敏在服务端做，不靠 Agent 自觉**（#434 原话，作为硬约束）：
-
-- 正则层：`cookie=`/`Cookie:`、`passkey`、`api_key`/`apikey`、`token`、
-  `Authorization:`、`secret`、`password` 的取值整体替换为 `***`；
-  `magnet:`/`.torrent?…passkey=` 链接整体替换；
-- 字典层：从数据库现读 `SiteCredential`（站点 id → 站点域名/名称）、
-  下载器 URL、外部访问地址、路径映射里的宿主机目录，逐个整词替换为
-  `<site-1>`、`<downloader-1>`、`<external-url>`、`<host-path-1>`；
-- 路径层：`/home/<用户>`、`/Users/<用户>`、`/volume1/<共享名>` 这类用户目录
-  统一为 `<user-dir>`；
-- 输出末尾附「脱敏说明」一段，告诉用户替换了哪几类，方便他判断是否还有
-  漏网之鱼。
-
-诊断包接口本身**管理员专属**（与 `agent-handoff` 同口径）：即使脱敏了，
-它仍是一份运维视角的全景。
-
-### 3.2 草稿 `POST /feedback/draft` 与 Agent 工具
-
-**草稿的形状 = bug 表单的字段**（`.github/ISSUE_TEMPLATE/01-bug-report.yml`），
-不是一段自由 Markdown。这样前端渲染、预填链接、文件导出三条出口共用一份
-数据，字段 id 与表单一一对应：
-
-```json
-{
-  "title": "字幕生成失败：大文件预检挂住请求",
-  "description": "实际发生：……\n期望行为：……",
-  "reproduce": "1. …\n2. …",
-  "version": "0.23.0",
-  "area": "AI 助手",
-  "logs": "<脱敏后的日志片段，≤ 2 KB 摘要>",
-  "extra": "环境摘要（部署方式/平台/转码后端/LLM 类型）+ 「完整诊断包见附件」",
-  "similar_issues": [{"number": 432, "title": "…", "state": "open"}],
-  "diagnostics_id": "diag-20260921-153012"
-}
-```
-
-- `area` 只是给用户的建议值（下拉预填不了，见 §1.2），前端在卡片里显示
-  「建议选：AI 助手」；
-- `similar_issues` 来自匿名 `GET /search/issues?q=repo:movieclaw/movieclaw+<标题关键词>`
-  （未认证 10 次/分钟），请求与更新检查同一条路：`update_api_base_url` +
-  `movieclaw_net.egress` 的 `github` 出口标签（走用户配置的代理/镜像）；
-  失败（离线、限流）静默为空，不阻塞起草；
-- `diagnostics_id` 指向本次生成的诊断包文件（落在 `data/diagnostics/`，需在
-  `storage/registry.py` 登记，可清理，保留 7 天）。
-
-**两个入口共用同一个服务函数** `build_feedback_draft(session, *, summary, analysis, job_id, file_id, agent_session_id)`：
-
-1. **Agent 工具 `propose_issue_report_v1`**（`movieclaw_agent/tools/feedback.py`）：
-   - 参数：`title`、`description`、`reproduce`（可选）、`area`（枚举，取
-     表单的选项文本）、`job_id`/`file_id`（可选，决定日志按什么抽）；
-   - handler **不写文件、不发网络请求**，只做参数校验并返回 `ok`（与
-     `show_media_cards_v1` 完全同一模式）。前端拦截到 tool_call 后调
-     `POST /feedback/draft` 拿到完整草稿（服务端此时才拼诊断包、脱敏、
-     查重），画成「问题反馈卡片」；
-   - 为什么 handler 不直接生成草稿：草稿内含脱敏后的日志与查重结果，是
-     给人看的；进转录只会占上下文、且转录里落一份可能过期的日志快照。
-     卡片按 `diagnostics_id` 现取，和媒体卡片「不留过期快照」同一取舍；
-   - description 里的触发条件：**Agent 判断问题是产品缺陷（而非配置错误/
-     环境问题）且已完成分析时**主动提出；用户明确说「帮我反馈/提个 issue」
-     时必须用；不要在还没定位的时候就提；
-   - 与 `show_media_cards_v1` 同样只在网页会话装配（`get_agent_tools(feedback=True)`），
-     IM 通道没有卡片界面，不带。
-2. **设置页按钮**（「设置 → 更新与维护」的版本区，`components/app-update-section.tsx`
-   → 「反馈问题」）：不经 Agent，
-   `POST /feedback/draft` 只带 `summary`（用户自己填一句话），其余由诊断包
-   填充。这是「Agent 没配 LLM」的用户也能走的路。
-
-### 3.3 提交：零配置档
-
-前端「问题反馈卡片」（`components/agent-feedback-card.tsx`）上三个动作：
-
-1. **「去 GitHub 提交」**：打开预填链接。链接只装**摘要**：
-   `template=01-bug-report.yml&title=&description=&reproduce=&version=&logs=<前 1.5 KB>&extra=`，
-   前端拼完后**校验编码后总长 ≤ 6 KB**（留出登录页 `return_to` 的裕量），
-   超出则按 `logs` → `reproduce` → `description` 的顺序截断并在 `extra`
-   里写「完整内容见附件诊断包」；
-2. **「下载诊断包」**：`GET /feedback/drafts/{diagnostics_id}/bundle` 得到
-   `movieclaw-diagnostics-<时间>.md`（草稿全文 + 脱敏日志 + 环境）。表单的
-   「补充信息」框支持拖文件上传，文案明确写「把这个文件拖进最后一个输入框」。
-   没有账号的用户拿着这个文件也能请人代提；
-3. **「复制全文」**：剪贴板兜底（手机上文件拖拽不方便）。
-
-卡片顶部固定一段提醒：「issue 是公开的，提交前请通读一遍」+ 「若手机装了
-GitHub App，请用浏览器打开链接」。查重结果非空时在卡片里列「可能已有：
-#432 …」，点击直达。
-
-**为什么不在链接里塞完整正文**：§0 的实测——超过 7.5 KB 登录后就丢，超过
-8 KB 直接 414；而一份有价值的日志片段轻易过 10 KB。
-
-### 3.4 自动档（记录，不做）
-
-设置里填 `public_repo` 权限的 PAT，或走 Device Flow，服务端调
-`POST /repos/{owner}/{repo}/issues`。复用 `UPDATE_API_BASE_URL` 通道。
-草稿数据结构已按表单字段组织，届时只需把字段拼成 Markdown 正文
-（issue forms 提交后的正文就是「### 字段标题\n\n值」的固定格式，机器分诊
-仍可解析）。不做的原因见 §0 第 4 条。
-
-## 4. 实现清单
+## 附录 C：实现清单
 
 | # | 改动 | 位置 | 备注 |
 |---|---|---|---|
-| 1 | `DIAGNOSTICS_DIR` 配置 + registry 登记 | `core/config.py`、`services/storage/registry.py` | CLAUDE.md 第 4 条硬约束 |
-| 2 | 诊断包组装与脱敏 | 新 `services/diagnostics.py` | 纯函数；脱敏单测覆盖每一类 |
+| 1 | `DIAGNOSTICS_DIR` 配置 + 存储登记 | `core/config.py`、`services/storage/registry.py` | CLAUDE.md 第 4 条硬约束 |
+| 2 | 机器事实组装 + 按任务抽日志 + 脱敏 | 新 `services/diagnostics.py` | 纯函数；脱敏单测覆盖每一类 |
 | 3 | `GET /system/diagnostics` | 新 `routes/diagnostics.py` | 管理员；spec 自动生成 `mclaw system diagnose` |
-| 4 | 草稿组装 + 查重 + 文件导出 | 新 `services/feedback.py` | 查重走 `update_api_base_url`，失败静默 |
-| 5 | `POST /feedback/draft`、`GET /feedback/drafts/{id}/bundle` | 新 `routes/feedback.py` | `x-cli-hidden`（与 handoff 同） |
-| 6 | Agent 工具 `propose_issue_report_v1` + 装配开关 | `movieclaw_agent/tools/feedback.py`、`routes/agent.py` | 守护测试同 `test_media_ui_tool_wiring.py` |
-| 7 | 前端卡片 + 拦截 + 设置页按钮 | 新 `components/agent-feedback-card.tsx`、`lib/agent-feedback.ts`（纯解析，仿 `lib/agent-media-cards.ts`）；接入点 `agent-conversation-view.tsx` 的 `TurnView`（媒体卡片组之后）与 `ProcessBlock` 的过滤清单；按钮放 `app-update-section.tsx` 版本区 | 链接长度校验有 node --test |
-| 8 | 系统提示词环境段加一句 | `routes/agent.py::_agent_system_prompt` | 「确认是产品缺陷后用 propose_issue_report 提出反馈，不要让用户自己去复制粘贴」 |
-
-分期：**P0 = 1–5 + 设置页按钮**（无 Agent 也能用，先把诊断包与预填链接跑通，
-人工验证注册流 `return_to` 与表单字段预填）；**P1 = 6–8**（Agent 卡片）。
-
-## 5. 验收标准
-
-1. 无痕窗口点「去 GitHub 提交」：登录后落在 bug 表单，`title`/`description`/
-   `version`/`logs` 已填、两个下拉与勾选框为空待填；
-2. 同一链接在已登录状态直接打开表单，不出现 414；构造 20 KB 日志的草稿，
-   链接仍 ≤ 6 KB 且 `extra` 提示见附件；
-3. 诊断包里搜不到任何站点域名、cookie、passkey、下载器地址、宿主机用户目录
-   （单测用含这些字段的假日志断言）；
-4. Agent 会话：复现 #434 场景（字幕任务失败 → 交给 Agent），模型在定位后
-   调用 `propose_issue_report_v1`，卡片出现、版本号与「关于与更新」页一致；
-5. 未配置 LLM 时设置页「反馈问题」按钮仍可用；
-6. IM 通道的工具集不含 `propose_issue_report_v1`。
-
-## 6. 待验证 / 待拍板
-
-- [ ] 注册流是否保留 `return_to`（人工无痕验证；不保留则文案改为「先注册再点链接」）；
-- [ ] issue forms 字段预填在当前 GitHub 版本上的实际表现（社区有「时好时坏」
-      的反馈，需用真实账号点一次；不可用时退回 `title=&body=` + Markdown
-      正文，分诊工作流改为从正文标题解析）；
-- [ ] 诊断包是否要包含 Agent 会话转录摘要（会话里可能有用户的个人表述，默认
-      不带，只带 Agent 最后一轮的结论文本）；
-- [ ] 自动档是否值得做：看 P0 上线后「下载诊断包」与「去 GitHub 提交」的
-      使用比例。
+| 4 | 草稿组装 + 转录证据摘录 + 查重 + 诊断包 | 新 `services/feedback.py` | 查重失败静默 |
+| 5 | `POST /feedback/draft`、`GET /feedback/drafts/{id}`、`…/bundle`、`PATCH …`（回填编号与用户编辑） | 新 `routes/feedback.py` | `x-cli-hidden` |
+| 6 | Agent 工具 `propose_issue_report_v1`（含「已排除项」必填校验）+ 装配开关 | `movieclaw_agent/tools/feedback.py`、`routes/agent.py` | 守护测试同 `test_media_ui_tool_wiring.py` |
+| 7 | 前端卡片 + 拦截 + 链接拼装与长度控制 | 新 `components/agent-feedback-card.tsx`、`lib/agent-feedback.ts`（纯解析，仿 `lib/agent-media-cards.ts`）；接入 `agent-conversation-view.tsx` 的 `TurnView` 与 `ProcessBlock` 过滤清单 | 长度控制有 node --test |
+| 8 | 工具 description 与系统提示词环境段 | `tools/feedback.py`、`routes/agent.py::_agent_system_prompt` | 写清 §2 的触发条件与 §5.3 的判断段结构 |
