@@ -7,6 +7,14 @@ import type { MediaImage } from "@/lib/api/discover";
 
 const ROTATE_INTERVAL_MS = 8000;
 const FADE_MS = 1600;
+// 与 themes/netflix/tokens.css 的 .detail-slideshow img 起步延迟（700ms）同源：
+// 每张图挂载后先静止这么久才开始推镜，改两处必须一起改。
+const KB_START_DELAY_MS = 700;
+// 换底接续延迟的兜底换算值：仅在顶层动画读不到时使用（正常路径直接读顶层
+// 动画的真实进度，见 cycle 内注释——定时器在标签页被节流时会大幅延迟，
+// 按常数换算累计误差可达秒级，2026-09-21 节流环境下实测）。
+const BOTTOM_CARRY_DELAY_S =
+  (60 + FADE_MS + 100 - KB_START_DELAY_MS) / 1000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -98,6 +106,10 @@ export function DetailBackdropSlideshow({
     if (elapsed <= 0) return undefined;
     return `${(-elapsed).toFixed(3)}s`;
   });
+  // 底层图的动画负延迟：首图 = 覆盖层相位锁（firstPushDelay）；之后每次换底
+  // 都换成「接续顶层相位」的换算值（BOTTOM_CARRY_DELAY_S），保证落底瞬间
+  // 底层与顶层逐像素一致、顶层淡出完全不可见。
+  const [bottomDelay, setBottomDelay] = useState(firstPushDelay);
   // 首图预加载解码完成才把整层显示出来：挂载即渲染会先透黑、图到了再突然
   // 出现，加上覆盖层同步被隐藏——两次硬切就是闪烁。
   const [ready, setReady] = useState(false);
@@ -106,6 +118,8 @@ export function DetailBackdropSlideshow({
     images.map((img) => img.fullUrl).slice(0, 5),
   );
   const indexRef = useRef(0);
+  // 顶层图的引用：换底瞬间读它的动画真实进度，给新底层算接续负延迟
+  const topImgRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
     if (!bottom) return;
@@ -157,7 +171,19 @@ export function DetailBackdropSlideshow({
             setTopOn(true);
             await sleep(FADE_MS + 100);
             if (cancelled) return;
-            // 顶层已完全不透明：把同一张图落到底层、顶层摘掉，回到初始态
+            // 顶层已完全不透明：把同一张图落到底层、顶层摘掉，回到初始态。
+            // 底层元素随 key 换图而新建、动画从零起算，会先冻在 scale 1.0，
+            // 顶层淡出露出的冻结帧读成一次「回缩」——所以换底前先读顶层动画
+            // 此刻的真实进度（currentTime 含起步静止期，减掉即已推时长），换算
+            // 成新底层的负延迟，落底瞬间两层逐像素一致。读不到动画才退回
+            // BOTTOM_CARRY_DELAY_S 兜底换算。
+            const topAnim = topImgRef.current
+              ?.getAnimations()
+              .find((a) => (a as CSSAnimation).animationName === "nf-kenburns");
+            let progressMs = BOTTOM_CARRY_DELAY_S * 1000;
+            const cur = topAnim?.currentTime;
+            if (typeof cur === "number") progressMs = cur - KB_START_DELAY_MS;
+            setBottomDelay(`-${(Math.max(0, progressMs) / 1000).toFixed(3)}s`);
             setBottom(url);
             setTopOn(false);
             await sleep(FADE_MS + 100);
@@ -186,22 +212,20 @@ export function DetailBackdropSlideshow({
       {/* key=src（加层前缀）：换图即新元素，Ken Burns 动画从头起播。
           前缀必须有——溶解收尾时 bottom 会短暂与 top 同 URL，裸 URL 作 key
           会触发 React 重复 key 报错（每次轮换一条）。
-          首图（与覆盖层同一张）挂相位锁定的负延迟；首轮换之后就回默认 700ms。 */}
+          首图挂覆盖层相位锁定的负延迟；此后每次换底挂接续顶层相位的换算
+          负延迟（见 BOTTOM_CARRY_DELAY_S），落底瞬间与顶层逐像素一致。 */}
       <img
         key={`b:${bottom}`}
         src={bottom}
         alt=""
         draggable={false}
-        style={
-          bottom === initialUrl && firstPushDelay
-            ? { animationDelay: firstPushDelay }
-            : undefined
-        }
+        style={bottomDelay ? { animationDelay: bottomDelay } : undefined}
         className="absolute inset-0 size-full object-cover object-top"
       />
       {top && (
         <img
           key={`t:${top}`}
+          ref={topImgRef}
           src={top}
           alt=""
           draggable={false}
