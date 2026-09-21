@@ -20,7 +20,7 @@ import { SubscribeEntryProvider } from "@/components/subscribe-entry";
 import { NetflixSettingsNav, NetflixTabBar } from "@/components/netflix/tab-bar";
 import { NetflixSettingsSidebar } from "@/components/netflix/settings-sidebar";
 import { NetflixTopNav } from "@/components/netflix/top-nav";
-import { MovieclawMark } from "@/components/netflix/brand";
+import { MovieclawMark } from "@/components/brand";
 import { AgentConversationsProvider } from "@/lib/agent-conversations";
 import { useAppNavigationTracking } from "@/lib/back-navigation";
 import { BackdropProvider } from "@/lib/backdrop";
