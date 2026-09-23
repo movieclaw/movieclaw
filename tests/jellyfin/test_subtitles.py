@@ -219,7 +219,7 @@ def test_subtitle_stream_accepts_jellyfin_codec_aliases(
 
 
 def test_subtitle_stream_embedded_index_404(sclient: TestClient, subtitle_env: dict) -> None:
-    """内封轨 v1 不做服务端抽取：404 空 body。"""
+    """内封轨抽取失败（假文件 ffmpeg 读不出）：404 空 body，不泄露任何细节。"""
     token = jf_login(sclient)
     guid = item_guid(subtitle_env["movie"])
     ms_id = _playback_info(sclient, token, guid)["MediaSources"][0]["Id"]

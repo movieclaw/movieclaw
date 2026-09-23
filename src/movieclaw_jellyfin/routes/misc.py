@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from movieclaw_jellyfin.security import require_device
+from movieclaw_api.services.playback.session import get_session_manager
+from movieclaw_jellyfin.security import RequestIdentity, require_device
+from movieclaw_jellyfin.transcode import take_play_session
 
 router = APIRouter()
 
@@ -133,14 +135,27 @@ async def sessions() -> JSONResponse:
     dependencies=[Depends(require_device)],
 )
 async def sessions_capabilities() -> Response:
-    # 204 且不存储 DeviceProfile：PlaybackInfo 因此永远无 profile 可回退，
-    # 等价于"无转码权限的 Jellyfin"（设计文档 6.1）
+    # 204 且不存储 DeviceProfile：PlaybackInfo 因此永远无 profile 可回退。
+    # 码率协商只看 PlaybackInfo 自己带的 MaxStreamingBitrate（Infuse 每次
+    # PlaybackInfo 都带完整 profile），不依赖这里缓存（jellyfin-transcode.md §3）
     return Response(status_code=204)
 
 
-@router.delete(
-    "/Videos/ActiveEncodings", status_code=204, dependencies=[Depends(require_device)]
-)
-async def active_encodings() -> Response:
-    # 部分客户端退出时无条件发一次转码清理；我们无转码，204 即可
+@router.delete("/Videos/ActiveEncodings", status_code=204)
+async def active_encodings(
+    request: Request, identity: RequestIdentity = Depends(require_device)
+) -> Response:
+    """停掉本设备的转码会话（客户端退出/换清晰度时调）。
+
+    带 playSessionId 只停它对应的会话（换清晰度时新会话可能已起来，按设备
+    停会误杀），没带就按设备停；无会话时是空操作。
+    """
+    manager = get_session_manager()
+    play_session_id = request.query_params.get("playSessionId")
+    if play_session_id:
+        session_id = take_play_session(play_session_id)
+        if session_id is not None:
+            await manager.stop(session_id)
+        return Response(status_code=204)
+    await manager.stop_for_device(identity.device.device_id)
     return Response(status_code=204)

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.services.media_probe import probe_keyframe_interval
 from movieclaw_api.services.playback.disc_source import disc_source_for_file
+from movieclaw_api.services.playback.ffmpeg_args import effective_hw_backend
 from movieclaw_api.services.playback.hwprobe import hardware_available
 from movieclaw_api.services.playback.limits import MAX_TRANSCODE_HEIGHT
 from movieclaw_api.settings import PlaybackPolicySetting
@@ -91,7 +92,7 @@ async def decide_for_files(
     """
     if not files:
         return None
-    policy = await _load_policy()
+    policy = await load_policy()
     decisions = []
     for file in files:
         # 关键帧密度只服务于档 1/2 的视频复制。先用不需要源片 IO 的纯判定
@@ -151,8 +152,8 @@ async def decide_for_files(
     return _best(decisions)
 
 
-async def _load_policy() -> PlaybackPolicy:
-    """把持久化配置翻成引擎输入。
+async def load_policy() -> PlaybackPolicy:
+    """把持久化配置翻成引擎输入（网页端决策与 Jellyfin 兼容层的转码协商共用）。
 
     ``hardware_available`` 不来自配置而来自实测——用户改不了自己有没有显卡，
     把它做成开关只会让人误配。转码高度上限不再是配置项，按最佳定值取
@@ -164,6 +165,40 @@ async def _load_policy() -> PlaybackPolicy:
         hardware_available=await asyncio.to_thread(hardware_available),
         max_transcode_height=MAX_TRANSCODE_HEIGHT,
     )
+
+
+def select_execution_backend(
+    decision: PlaybackPlan,
+    *,
+    available: tuple[str, ...],
+    local_backends: tuple[str, ...],
+    remote_video_available: bool,
+) -> tuple[str | None, bool]:
+    """为当前播放计划选择真正能执行的后端。
+
+    ``available`` 是给决策层用的合并能力快照，``local_backends`` 则只包含
+    NAS 本机实际探测通过的后端。两者不能按列表首项直接使用：列表顺序是
+    全局优先级，不代表该计划（尤其是 PGS 烧录）的滤镜链兼容性。先选能在
+    NAS 执行当前计划的后端；只有本地都不兼容时，才把在线 VideoToolbox
+    Worker 作为候选。返回值的第二项明确标出是否需要远程会话。
+
+    网页播放器与 Jellyfin 兼容层的转码入口共用这一个函数——两条链路起的是
+    同一种会话，执行后端的选法不能有两套。
+    """
+    if decision.tier is not Tier.HARDWARE_TRANSCODE or decision.video.action != "transcode":
+        return None, False
+
+    for backend in local_backends:
+        if effective_hw_backend(decision, backend) is not None:
+            return backend, False
+
+    if (
+        remote_video_available
+        and "videotoolbox" in available
+        and effective_hw_backend(decision, "videotoolbox") is not None
+    ):
+        return "videotoolbox", True
+    return None, False
 
 
 def _best(decisions: list[tuple[PlaybackDecision, int | None]]) -> PlaybackDecision:

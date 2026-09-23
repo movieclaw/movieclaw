@@ -42,6 +42,13 @@
    > `TranscodingUrl` → `/Videos/{id}/master.m3u8`），视频与音频都不重编码。
    > 设计与取舍见 [disc-playback.md](disc-playback.md)。
 
+   > **2026-09-23 修订（码率协商）**：「不转码」改为「**不主动转码**」。
+   > 播放器通过协议明确要求时（`MaxStreamingBitrate` 装不下源码率，或
+   > `EnableDirectPlay=false`），普通本地文件按要求转码降码率，复用网页播放器
+   > 的会话与分片流水线；strm、原盘、转码能力不可用时行为不变。设计见
+   > [jellyfin-transcode.md](jellyfin-transcode.md)。下文凡「本层不转码」
+   > 均按此理解。
+
    > **修订说明**：原文写的是产品级的"不转码"，并把网页端列为"不在支持范围、
    > 播放失败是预期行为"。[web-player.md](web-player.md) §0.3 起，转码在**网页
    > 播放器**上是允许的，"不转码"降为**本兼容层的局部策略**。
@@ -62,14 +69,15 @@
    使用 302 直链配合 Infuse，可行性经过验证。
 
 **有意偏离清单**（模仿不是复刻，所有偏离集中声明，实现与评审对照用）：
-① 本兼容层不转码（上；网页播放器另有决策路径，见 web-player.md）；
+① 本兼容层不主动转码（上；播放器要求时按 jellyfin-transcode.md 转码，网页播放器另有决策路径，见 web-player.md）；
 ② strm 直连/302 不代理（上）；③ `/Videos/*/stream` 与字幕
 接口**要求 token**（真 Jellyfin 匿名，见 6.4）；④ 发现与 `LocalAddress` 的
 地址策略（见 3.1/3.2）；⑤ QuickConnect/Enabled 恒 `false`（真默认 true）；
 ⑥ Latest 聚合简化为两态（见 5.5）；⑦ strm 条目的 `Container` 从 URL 猜而非
 Jellyfin 的 `"strm"` 字面量、`ETag` 省略（见 6.4）；⑧ 未知 `parentId` 返回
 404（Jellyfin 是 400，见 5.2）；⑨ `stream` 无 `static=true` 时返回 400
-（Jellyfin 会走 ffmpeg 转码；原盘多剪辑例外——走 `master.m3u8`，见偏离⑬）；⑩ 「其他」库（`homevideos`）**平铺不建
+（Jellyfin 会走 ffmpeg 转码；我们的转码入口只有 `master.m3u8`——原盘多剪辑
+见偏离⑬，普通文件见 jellyfin-transcode.md）；⑩ 「其他」库（`homevideos`）**平铺不建
 `Folder` 层级、不收 `Photo`**：真 Jellyfin 的家庭录像库把子目录映射成
 Folder、图片映射成 Photo，我们的库模型一文件一条目、只收视频，视图下直接
 列 `Video` 叶子（docs/design/library-other-kind.md 5.1）；⑪ `Video` 条目没有
@@ -583,8 +591,9 @@ Backdrop 数组下标即 index，本设计每条目至多 1 张背景，只需�
 
 - POST body 可为空（`EmptyBodyBehavior.Allow`），同名 query 参数优先于 body；
   GET 版只有 `userId` 参数，转调同一实现；
-- **我们不解析也不缓存 `DeviceProfile`**，永远返回未经设备适配的
-  MediaSources。**准确的协议事实**（v1.1 修正）：真 Jellyfin 并非"profile
+- **我们不解析 `DeviceProfile` 的编码条件、也不缓存它**，只取其中的
+  `MaxStreamingBitrate` 做码率协商（2026-09-23 起，见 jellyfin-transcode.md
+  §3）；除此之外永远返回未经设备适配的 MediaSources。**准确的协议事实**（v1.1 修正）：真 Jellyfin 并非"profile
   为 null 就跳过适配"——body 无 profile 时它会从
   `_deviceManager.GetCapabilities(deviceId)` 回退取 `/Sessions/Capabilities/
   Full` 上报过的缓存 profile（MediaInfoController.cs:137-147）。我们对
@@ -630,7 +639,9 @@ Backdrop 数组下标即 index，本设计每条目至多 1 张背景，只需�
  "HasSegments": false}
 ```
 
-不转码的正确姿势（源码确认合法，无客户端报错风险）：
+不转码的正确姿势（源码确认合法，无客户端报错风险；2026-09-23 起转码能力
+可用时 `SupportsTranscoding` 为 true、播放器要求转码时才给 `TranscodingUrl`，
+见 jellyfin-transcode.md §3）：
 
 - `SupportsTranscoding: false` + **不输出** `TranscodingUrl`；
   `TranscodingSubProtocol` 是非可空枚举、恒输出，给 `"Http"`；

@@ -1728,6 +1728,23 @@ class TranscodeSessionManager:
             session.activity_meter = None
         return True
 
+    def touch_for_device(self, device_id: str) -> int:
+        """给一台设备名下的全部会话续命，返回续命的会话数。
+
+        Jellyfin 协议的播放器不打网页端的 ``/sessions/{id}/ping``；它们的心跳
+        是 ``/Sessions/Playing/Progress`` 与 ``/Sessions/Playing/Ping``——暂停时
+        分片请求停了，这两条上报仍在，靠它们把转码会话保活，否则暂停超过
+        180 秒再继续就撞上「会话不存在」（docs/design/jellyfin-transcode.md §5）。
+        """
+        if not device_id:
+            return 0
+        count = 0
+        for session in self._sessions.values():
+            if session.device_id == device_id:
+                session.touch()
+                count += 1
+        return count
+
     async def stop_for_device(self, device_id: str) -> int:
         """停掉一台浏览器设备的全部会话（管理员「结束播放」）。"""
         if not device_id:

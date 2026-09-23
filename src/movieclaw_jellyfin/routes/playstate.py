@@ -38,6 +38,7 @@ from movieclaw_jellyfin.catalog import (
 from movieclaw_jellyfin.errors import bad_request_text, not_found
 from movieclaw_jellyfin.ids import EntityKind, EntityRef, decode_guid
 from movieclaw_jellyfin.security import RequestIdentity, require_device
+from movieclaw_jellyfin.transcode import take_play_session
 from movieclaw_playback import state as playback_state
 from movieclaw_playback.events import ClientInfo
 from movieclaw_playback.subtitles import SUBTITLE_OFF
@@ -236,6 +237,9 @@ async def playing_progress(
     request: Request, identity: RequestIdentity = Depends(require_device)
 ) -> Response:
     body = await _read_body(request)
+    # 转码会话的心跳：Jellyfin 播放器不打网页端的 ping，暂停时分片请求也停了，
+    # 靠 Progress 保活（jellyfin-transcode.md §5）；无会话时是空操作
+    get_session_manager().touch_for_device(identity.device.device_id)
     ref = _decode_item_ref(body.get("itemid"))
     if ref is not None:
         position = _position_ms(body)
@@ -270,9 +274,7 @@ async def playing_stopped(
     request: Request, identity: RequestIdentity = Depends(require_device)
 ) -> Response:
     body = await _read_body(request)
-    # 原盘多剪辑走 HLS remux 会话（disc-playback.md §3.5）：播放器停了就把这台
-    # 设备的 ffmpeg 收掉，不等 180 秒无心跳回收；无会话时是空操作
-    await get_session_manager().stop_for_device(identity.device.device_id)
+    await _stop_transcode_session(body, identity)
     failed = body.get("failed")
     if failed is True or (isinstance(failed, str) and failed.lower() == "true"):
         # 播放失败的上报不落库（SessionManager.cs:1164-1167）；字符串 "true"
@@ -300,10 +302,32 @@ async def playing_stopped(
 
 
 @router.post("/Sessions/Playing/Ping", status_code=204)
-async def playing_ping(request: Request) -> Response:
+async def playing_ping(
+    request: Request, identity: RequestIdentity = Depends(require_device)
+) -> Response:
     if "playSessionId" not in request.query_params:
         raise bad_request_text()
+    # 转码期间官方 SDK 客户端每 10 秒打一次，是最可靠的会话保活信号
+    get_session_manager().touch_for_device(identity.device.device_id)
     return Response(status_code=204)
+
+
+async def _stop_transcode_session(body: dict[str, Any], identity: RequestIdentity) -> None:
+    """停播时收掉转码/remux 会话，不等 180 秒无心跳回收。
+
+    带 PlaySessionId 就只停它对应的那个会话：播放器换清晰度是「新 PlaybackInfo
+    → 打新 master.m3u8 → 给旧 PlaySessionId 发 Stopped」，此时新会话已经起来，
+    按设备一锅端会把新会话误杀；旧会话多半已被开新会话时的 stop_for_file 收掉，
+    这里是空操作。不带 PlaySessionId 的客户端退回按设备停（原有行为）。
+    """
+    manager = get_session_manager()
+    raw = body.get("playsessionid")
+    if raw:
+        session_id = take_play_session(str(raw))
+        if session_id is not None:
+            await manager.stop(session_id)
+        return
+    await manager.stop_for_device(identity.device.device_id)
 
 
 # ---------------------------------------------------------------------------
