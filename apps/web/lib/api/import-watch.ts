@@ -56,6 +56,8 @@ export interface IngestEntryRow {
   message: string | null;
   imported_count: number;
   attempted_at: string;
+  /** 电影合集里识别不出、待逐个认领的视频（条目内相对路径）；普通条目为空 */
+  unresolved_files: string[];
 }
 
 /** 一条规则的台账清单 + 各状态计数。 */
@@ -142,12 +144,19 @@ export function restoreIngestEntry(entryId: number): Promise<IngestEntryRow> {
   );
 }
 
-/** 认领条目：钉到指定 TMDB 身份并立即入库；返回处理后的台账行（含结论）。 */
-export function claimIngestEntry(entryId: number, tmdbId: number): Promise<IngestEntryRow> {
+/**
+ * 认领条目：钉到指定 TMDB 身份并立即入库；返回处理后的台账行（含结论）。
+ * 电影合集按文件认领：file 取 unresolved_files 里的一项（请求体字段 entry_file）。
+ */
+export function claimIngestEntry(
+  entryId: number,
+  tmdbId: number,
+  file?: string,
+): Promise<IngestEntryRow> {
   return unwrap(
     request<ApiEnvelope<IngestEntryRow>>(`/import-watch/entries/${entryId}/claim`, {
       method: "POST",
-      body: JSON.stringify({ tmdb_id: tmdbId }),
+      body: JSON.stringify({ tmdb_id: tmdbId, entry_file: file }),
     }),
   );
 }

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Column, ForeignKey, Integer, Text
+from sqlalchemy import JSON, Column, ForeignKey, Integer, Text
 from sqlmodel import Field
 
 from movieclaw_db.models.base import TimestampMixin, utcnow
@@ -95,4 +95,29 @@ class IngestEntry(TimestampMixin, table=True):
     claimed_kind: str | None = Field(
         default=None,
         description="认领时的媒体类型（movie/tv），与 claimed_tmdb_id 一起还原认领身份",
+    )
+    # —— 电影合集（issue #438）：一个条目目录里装着多部电影 ——————————————
+    # 台账仍是「一次下载一行」（清单、统计、认领都以顶层条目为单位），合集里
+    # 各部电影的身份按文件记在下面两列：识别不出的文件列出来供人工逐个认领，
+    # 认领结论按文件钉住（与 claimed_tmdb_id 同理，重试时直接还原，不再重识别）
+    unresolved_files: list[str] | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description=(
+            "合集条目里识别不出身份的正片文件（条目内相对路径）；NULL/空=没有。"
+            "每轮处理结论重写：不再是合集或都已识别时清空"
+        ),
+    )
+    claimed_files: dict[str, int] | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description="合集条目的逐文件人工认领：条目内相对路径 → TMDB id（类型同规则先验）",
+    )
+    collection_item_ids: list[int] | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description=(
+            "合集条目已入库的各部作品（media_item.id）；NULL=不是合集。合集没有单一"
+            "身份（media_item_id 为 NULL），摘要行的「已入库 N 部」靠这一列按部计数"
+        ),
     )

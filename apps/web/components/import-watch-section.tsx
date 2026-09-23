@@ -366,9 +366,10 @@ function EntryRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [panel, setPanel] = useState<{ view: "search" } | { view: "confirm"; seed: ClaimSeed } | null>(
-    null,
-  );
+  // file：电影合集里正在认领的那个视频；普通条目整条认领时为 undefined
+  const [panel, setPanel] = useState<
+    { view: "search"; file?: string } | { view: "confirm"; seed: ClaimSeed; file?: string } | null
+  >(null);
 
   const act = (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -381,8 +382,13 @@ function EntryRow({
       .catch((e) => setError((e as Error).message))
       .finally(() => setBusy(false));
   };
-  const searchOpen = panel?.view === "search";
+  const searchOpen = panel?.view === "search" && panel.file === undefined;
   const actionable = entry.status === "pending" || entry.status === "failed";
+  // 电影合集（issue #438）：已认出的几部已入库，剩下识别不出的视频逐个认领；
+  // 整条认领会把整个合集钉成同一部片，所以此时不给条目级「认领」按钮
+  const unresolved = actionable ? (entry.unresolved_files ?? []) : [];
+  const toggleSearch = (file?: string) =>
+    setPanel((p) => (p?.view === "search" && p.file === file ? null : { view: "search", file }));
 
   return (
     <div className="rounded-lg bg-white/[0.03] px-3 py-2">
@@ -393,11 +399,11 @@ function EntryRow({
         >
           {entry.name}
         </span>
-        {actionable && (
+        {actionable && unresolved.length === 0 && (
           <button
             type="button"
             disabled={busy}
-            onClick={() => setPanel((p) => (p?.view === "search" ? null : { view: "search" }))}
+            onClick={() => toggleSearch()}
             className={`shrink-0 rounded-full px-2.5 py-1 text-sub font-medium transition disabled:opacity-40 ${
               searchOpen ? "bg-white/[0.14] text-white" : "btn-glass"
             }`}
@@ -431,13 +437,43 @@ function EntryRow({
           {entry.message}
         </p>
       )}
+      {unresolved.length > 0 && (
+        <ul className="mt-1.5 space-y-1">
+          {unresolved.map((file) => {
+            const open = panel !== null && panel.file === file;
+            return (
+              <li key={file} className="flex items-center gap-2">
+                <span
+                  className="min-w-0 flex-1 truncate font-mono text-caption text-white/70"
+                  title={file}
+                >
+                  {file}
+                </span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => toggleSearch(file)}
+                  className={`shrink-0 rounded-full px-2.5 py-0.5 text-caption font-medium transition disabled:opacity-40 ${
+                    open ? "bg-white/[0.14] text-white" : "btn-glass"
+                  }`}
+                >
+                  认领
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {error && <p className="mt-1 text-caption text-red-300">{error}</p>}
 
       {panel?.view === "search" && (
         <ClaimSearchPanel
+          key={panel.file ?? ""}
           movie={movie}
-          initialQuery={searchSeedFromLabel(entry.name)}
-          onPick={(seed) => setPanel({ view: "confirm", seed })}
+          initialQuery={searchSeedFromLabel(
+            panel.file ? (panel.file.split("/").pop() ?? panel.file).replace(/\.[^.]+$/, "") : entry.name,
+          )}
+          onPick={(seed) => setPanel({ view: "confirm", seed, file: panel.file })}
         />
       )}
       {panel?.view === "confirm" && (
@@ -447,7 +483,7 @@ function EntryRow({
           movie={movie}
           fileCount={1}
           busy={busy}
-          onConfirm={() => act(() => claimIngestEntry(entry.id, panel.seed.tmdbId))}
+          onConfirm={() => act(() => claimIngestEntry(entry.id, panel.seed.tmdbId, panel.file))}
           onCancel={() => setPanel(null)}
         />
       )}
