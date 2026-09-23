@@ -264,7 +264,8 @@ class ClaimPayload(BaseModel):
     """人工认领请求：把条目钉到指定 TMDB 条目并恢复后台入库作业。"""
 
     tmdb_id: int = Field(description="TMDB 条目 id（类型按规则先验：库类型或规则声明）")
-    file: str | None = Field(
+    # 不叫 file：mclaw 的 --file 是内置标志（cli/internal/tree/guards_test.go）
+    entry_file: str | None = Field(
         default=None,
         description=(
             "电影合集按文件认领：取 unresolved_files 里的一项；普通条目或只剩一个待认领文件时可省略"
@@ -333,7 +334,7 @@ async def claim_entry(
     payload: ClaimPayload,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[IngestEntryView]:
-    row = await ingest.claim_entry(session, entry_id, payload.tmdb_id, file=payload.file)
+    row = await ingest.claim_entry(session, entry_id, payload.tmdb_id, file=payload.entry_file)
     view = IngestEntryView.from_model(row)
     if row.status == IngestStatus.IMPORTED:
         return ok(view, message=row.message or "已入库")

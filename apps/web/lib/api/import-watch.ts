@@ -146,7 +146,7 @@ export function restoreIngestEntry(entryId: number): Promise<IngestEntryRow> {
 
 /**
  * 认领条目：钉到指定 TMDB 身份并立即入库；返回处理后的台账行（含结论）。
- * 电影合集按文件认领：file 取 unresolved_files 里的一项。
+ * 电影合集按文件认领：file 取 unresolved_files 里的一项（请求体字段 entry_file）。
  */
 export function claimIngestEntry(
   entryId: number,
@@ -156,7 +156,7 @@ export function claimIngestEntry(
   return unwrap(
     request<ApiEnvelope<IngestEntryRow>>(`/import-watch/entries/${entryId}/claim`, {
       method: "POST",
-      body: JSON.stringify({ tmdb_id: tmdbId, file }),
+      body: JSON.stringify({ tmdb_id: tmdbId, entry_file: file }),
     }),
   );
 }
