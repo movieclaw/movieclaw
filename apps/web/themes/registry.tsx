@@ -1,9 +1,20 @@
+import { GlassTabBar } from "@/components/glass-tab-bar";
+import { MobileSettingsNav } from "@/components/mobile-settings-nav";
+import { MorePage } from "@/components/more-page";
 import { PageNav } from "@/components/page-nav";
+import { SettingsIndex } from "@/components/settings-index";
 import { SettingsSidebar } from "@/components/settings-view";
 import { DEFAULT_THEME_ID, normalizeThemeId, themeMeta } from "@/lib/themes";
 import { useTheme } from "@/lib/ui-prefs";
 
-import type { DetailNavProps, ResolvedSlots, ResolvedTheme, ThemeDefinition, ThemeSlots } from "./types";
+import type {
+  DetailNavProps,
+  ResolvedSlots,
+  ResolvedTheme,
+  ThemeDefinition,
+  ThemePages,
+  ThemeSlots,
+} from "./types";
 import netflixTheme from "./netflix/theme";
 
 /**
@@ -22,12 +33,24 @@ import netflixTheme from "./netflix/theme";
 
 /**
  * 基础坑位缺省：银玻璃（默认主题）的实现就是「基础实现」本身。
- * 有基础实现的坑位才登记；没有基础实现的坑位（如 mobileTabBar）不在表里，
+ * 有基础实现的坑位才登记；没有基础实现的坑位（如 desktopTopNav）不在表里，
  * 解析结果为 undefined，消费方按「没有就不渲染」处理。
+ *
+ * 移动端三件套（底栏 / 设置返回条 / 设置分区列表页，见 BASE_PAGES）2026-09-23
+ * 起有了基础实现：银玻璃移动端从「☰ 抽屉」改为 iOS 26 液态玻璃底栏
+ * （docs/design/web-themes-mobile/04），Netflix 覆盖底栏、沿用后两者。
  */
 const BASE_SLOTS: Partial<ThemeSlots> = {
   settingsNav: SettingsSidebar,
   detailNav: PageNavAdapter,
+  mobileTabBar: GlassTabBar,
+  mobileSettingsNav: MobileSettingsNav,
+};
+
+/** 基础整页：/my =「更多」页（底栏末位页签），/settings 移动端 = 分区列表页 */
+const BASE_PAGES: ThemePages = {
+  my: MorePage,
+  settingsIndex: SettingsIndex,
 };
 
 /** 基础详情页返回导航：整条 PageNav 工具条（消费 title/fallback，忽略浮动键语义） */
@@ -66,7 +89,7 @@ if (process.env.NODE_ENV !== "production") {
 /**
  * 解析主题：capabilities / slots / pages 全部归并基础缺省。
  * - 未知主题 id → normalizeThemeId 兜底为默认主题（缓存被改坏也不崩）；
- * - 缺失坑位 → BASE_SLOTS 基础实现；
+ * - 缺失坑位 / 整页 → BASE_SLOTS / BASE_PAGES 基础实现；
  * - 无定义的主题（如下载未就绪）→ 纯基础实现，页面照常渲染。
  */
 export function getResolvedTheme(id: string): ResolvedTheme {
@@ -75,7 +98,7 @@ export function getResolvedTheme(id: string): ResolvedTheme {
     meta: def?.meta ?? themeMeta(DEFAULT_THEME_ID),
     capabilities: { glass: def?.capabilities.glass ?? true },
     slots: { ...BASE_SLOTS, ...def?.slots } as ResolvedSlots,
-    pages: { ...def?.pages },
+    pages: { ...BASE_PAGES, ...def?.pages },
   };
 }
 

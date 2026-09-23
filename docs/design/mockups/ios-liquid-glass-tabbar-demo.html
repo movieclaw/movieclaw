@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0c11">
+<title>Movieclaw 液态玻璃底栏</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* ──────────────────────────────────────────────────────────────
+   单主题（暗）样稿。外框是评审台（--quill 批注色，与 docs/design/mockups
+   的其他样稿同一套），框内是 Movieclaw 银玻璃主题在 iPhone 上的
+   iOS 26 液态玻璃底栏方案。手机宽度下评审台隐藏、框内界面铺满整屏。
+   ────────────────────────────────────────────────────────────── */
+:root{
+  color-scheme:dark;
+  --ink:#0b0c11; --text:#eef2fb; --muted:rgba(238,242,251,.62); --faint:rgba(238,242,251,.36);
+  --line:rgba(238,242,251,.09); --quill:#d9a441;
+  --f-ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",system-ui,sans-serif;
+  --f-sans:"Inter",-apple-system,"PingFang SC","Noto Sans SC",system-ui,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;height:100%}
+body{margin:0;min-height:100%;background:var(--ink);color:var(--text);font-family:var(--f-sans);font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+:focus-visible{outline:2px solid var(--quill);outline-offset:2px}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ── 评审台（≥720px） ── */
+.stage{display:flex;gap:44px;justify-content:center;align-items:flex-start;padding:40px 24px 64px}
+.notes{width:min(400px,100%);flex:0 1 400px;padding-top:6px}
+.notes h1{font-size:22px;font-weight:600;letter-spacing:-.01em;margin:0 0 4px;text-wrap:balance}
+.notes .sub{color:var(--muted);margin:0 0 22px}
+.notes h2{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--quill);margin:26px 0 10px}
+.notes p,.notes li{color:var(--muted);margin:0 0 8px}
+.notes ul{padding-left:18px;margin:0}
+.notes b{color:var(--text);font-weight:500}
+.spec{width:100%;border-collapse:collapse;font-size:13px}
+.spec td{padding:6px 0;border-bottom:1px solid var(--line);vertical-align:top}
+.spec td:first-child{color:var(--muted);width:46%}
+.spec td:last-child{font-family:var(--f-mono);font-size:12px;color:var(--text)}
+.spec .src{color:var(--faint);font-family:var(--f-sans);font-size:11px;margin-left:6px}
+.toggles{display:flex;flex-direction:column;gap:8px}
+.tg{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;text-align:left;width:100%}
+.tg .sw{width:34px;height:20px;border-radius:10px;background:rgba(238,242,251,.14);position:relative;flex:0 0 auto;transition:background .2s}
+.tg .sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .2s}
+.tg[aria-pressed="true"] .sw{background:var(--quill)}
+.tg[aria-pressed="true"] .sw::after{transform:translateX(14px)}
+.tg span:last-child{color:var(--muted);font-size:12px;margin-left:auto}
+.hint-mobile{display:none}
+
+/* ── 手机外框（桌面）／整屏（手机） ── */
+.phone{
+  --sa-top:59px; --sa-bottom:34px;
+  --bar-h:62px; --bar-inset:21px; --bar-gap:8px;
+  --bar-bottom:max(16px, calc(var(--sa-bottom) - 12px));
+  --dock-h:calc(var(--bar-h) + var(--bar-bottom));
+  /* 银玻璃主题 token（与 apps/web/app/globals.css 同名同值） */
+  --bg:#0a0b10; --t:#f3f5f9; --t-muted:rgba(243,245,249,.62); --t-faint:rgba(243,245,249,.36);
+  --ln:rgba(255,255,255,.08); --accent:#cdd6e6; --accent-strong:#eef2f8;
+  --ok:#4ade80; --info:#7fb0ff; --warn:#f5c451;
+  /* 玻璃 token：Regular 变体 */
+  --glass-bg:rgba(22,25,34,.42); --glass-blur:22px; --glass-sat:170%;
+  --glass-line:rgba(255,255,255,.13); --glass-hi:rgba(255,255,255,.30);
+  --glass-sel:rgba(255,255,255,.13);
+  position:relative;flex:0 0 402px;width:402px;height:874px;border-radius:56px;overflow:hidden;
+  background:var(--bg);box-shadow:0 0 0 10px #1a1c22,0 0 0 12px #2a2d35,0 40px 90px -30px rgba(0,0,0,.9);
+  font-family:var(--f-ui);color:var(--t);font-size:15px;line-height:1.45;
+  isolation:isolate;
+}
+.phone.flat{--glass-bg:rgba(22,25,34,.86);--glass-blur:10px;--glass-sat:120%}
+.island{position:absolute;top:11px;left:50%;transform:translateX(-50%);width:126px;height:37px;border-radius:20px;background:#000;z-index:60}
+.home-ind{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);width:134px;height:5px;border-radius:3px;background:rgba(255,255,255,.85);z-index:60;pointer-events:none}
+.screen{position:absolute;inset:0;overflow:hidden}
+
+/* ── 顶栏：沿用现有 .mobile-topbar 的「向下渐隐的雾」 ── */
+.topbar{position:absolute;inset:0 0 auto 0;z-index:30;padding-top:var(--sa-top);pointer-events:none;
+  background:linear-gradient(180deg,rgba(9,11,16,.86),rgba(9,11,16,.6) 58%,rgba(9,11,16,0));
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  -webkit-mask-image:linear-gradient(180deg,#000 0,#000 62%,transparent);mask-image:linear-gradient(180deg,#000 0,#000 62%,transparent)}
+.topbar .row{pointer-events:auto;display:flex;align-items:center;gap:10px;height:52px;padding:0 14px 0 16px}
+.mark{width:26px;height:26px;border-radius:7px;background:linear-gradient(145deg,#eef2f8,#9fb0c9);color:#0a0b10;font-weight:700;font-size:15px;display:grid;place-items:center;letter-spacing:-.04em;flex:0 0 auto}
+.topbar h1{font-size:17px;font-weight:600;margin:0;letter-spacing:-.01em;flex:1;min-width:0}
+.avatar{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;color:var(--accent-strong);
+  background:var(--glass-bg);-webkit-backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-sat));backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-sat));
+  box-shadow:inset 0 1px 0 var(--glass-hi),inset 0 0 0 1px var(--glass-line),0 6px 16px -8px rgba(0,0,0,.7);transition:transform .15s}
+.avatar:active{transform:scale(.92)}
+.avatar svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+/* ── 页面滚动容器：内容通铺到底栏之下，只在末尾留出让位空白 ── */
+.page{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;
+  padding:calc(var(--sa-top) + 52px) 0 calc(var(--dock-h) + 20px);display:none}
+.page.on{display:block}
+.page::-webkit-scrollbar{display:none}
+.sec{padding:0 16px;margin:22px 0 0}
+.sec h2{font-size:15px;font-weight:600;margin:0 0 10px;display:flex;align-items:baseline;gap:8px}
+.sec h2 small{font-weight:400;color:var(--t-faint);font-size:12px;margin-left:auto}
+.rowx{display:flex;gap:8px;overflow-x:auto;padding:0 16px 4px;margin:0 -16px;scroll-padding:16px;scrollbar-width:none}
+.rowx::-webkit-scrollbar{display:none}
+.poster{flex:0 0 auto;width:112px;aspect-ratio:2/3;border-radius:8px;position:relative;overflow:hidden;color:#fff;
+  box-shadow:0 8px 20px -10px rgba(0,0,0,.8)}
+.poster.wide{width:220px;aspect-ratio:16/9}
+.poster .t{position:absolute;left:8px;right:8px;bottom:8px;font-size:12px;font-weight:600;line-height:1.25;text-shadow:0 1px 8px rgba(0,0,0,.6)}
+.poster .badge{position:absolute;top:6px;left:6px;font-size:10px;font-weight:600;padding:2px 6px;border-radius:5px;background:rgba(0,0,0,.45);letter-spacing:.02em}
+.poster .prog{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.25)}
+.poster .prog i{display:block;height:100%;background:#fff}
+.poster::after{content:"";position:absolute;inset:0;background:radial-gradient(90% 60% at 20% 0%,rgba(255,255,255,.28),transparent 60%),linear-gradient(180deg,transparent 45%,rgba(0,0,0,.55))}
+.hero{margin:-6px 0 0;padding:0 16px}
+.hero .art{aspect-ratio:3/4;border-radius:16px;position:relative;overflow:hidden;box-shadow:0 20px 50px -20px rgba(0,0,0,.9)}
+.hero .art::after{content:"";position:absolute;inset:0;background:radial-gradient(70% 50% at 30% 10%,rgba(255,255,255,.3),transparent),linear-gradient(180deg,transparent 40%,rgba(10,11,16,.95))}
+.hero .cap{position:absolute;left:18px;right:18px;bottom:18px;z-index:1}
+.hero .cap .k{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--t-muted);margin-bottom:6px}
+.hero .cap h3{font-size:26px;margin:0 0 4px;line-height:1.15;letter-spacing:-.02em;font-weight:700}
+.hero .cap p{margin:0 0 12px;color:var(--t-muted);font-size:13px}
+.btns{display:flex;gap:8px}
+.btn{height:40px;padding:0 18px;border-radius:12px;font-weight:600;font-size:14px;display:inline-flex;align-items:center;gap:6px}
+.btn.pri{background:var(--accent-strong);color:#0a0b10}
+.btn.sec2{background:rgba(255,255,255,.12);color:var(--t)}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.grid .poster{width:auto}
+.seg{display:inline-flex;background:rgba(255,255,255,.08);border-radius:10px;padding:3px;margin:0 16px 4px}
+.seg button{padding:6px 16px;border-radius:8px;font-size:13px;font-weight:500;color:var(--t-muted)}
+.seg button[aria-pressed="true"]{background:rgba(255,255,255,.16);color:var(--t)}
+.list{display:flex;flex-direction:column;gap:2px;margin:0 16px}
+.li{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--ln)}
+.li .th{width:44px;aspect-ratio:2/3;border-radius:6px;flex:0 0 auto}
+.li .m{flex:1;min-width:0}
+.li .m b{display:block;font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li .m span{font-size:12px;color:var(--t-faint)}
+.pill{font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.08);color:var(--t-muted);white-space:nowrap}
+.pill.ok{color:var(--ok);background:rgba(74,222,128,.12)}
+.pill.info{color:var(--info);background:rgba(127,176,255,.14)}
+.pill.warn{color:var(--warn);background:rgba(245,196,81,.14)}
+/* 新会话氛围页：背景直出 + 冷光斑，对齐现有首页 */
+.ambient{background:
+  radial-gradient(60% 40% at 20% 20%,rgba(120,150,220,.28),transparent 70%),
+  radial-gradient(50% 40% at 85% 60%,rgba(205,214,230,.16),transparent 70%),
+  radial-gradient(70% 50% at 50% 100%,rgba(70,90,150,.35),transparent 70%),var(--bg)}
+.greet{padding:70px 22px 0}
+.greet h3{font-size:30px;line-height:1.15;margin:0 0 8px;letter-spacing:-.02em;font-weight:700;text-wrap:balance}
+.greet p{color:var(--t-muted);margin:0 0 22px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;padding:0 22px}
+.chip{padding:9px 14px;border-radius:999px;border:1px solid var(--ln);background:rgba(255,255,255,.05);font-size:13px}
+.recent{margin:24px 22px 0}
+.recent h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--t-faint);margin:0 0 6px;font-weight:600}
+.recent div{padding:11px 0;border-bottom:1px solid var(--ln);font-size:14px;display:flex;gap:10px;color:var(--t-muted)}
+.recent div span{margin-left:auto;font-size:12px;color:var(--t-faint)}
+
+/* ── 滚动边缘效果（Apple scroll edge effect 的 CSS 近似）：
+      内容层底部一段渐进模糊 + 压暗，让玻璃在视觉上「浮起来」。
+      它属于内容层而不是玻璃层，避免玻璃叠玻璃。 ── */
+.edge{position:absolute;left:0;right:0;bottom:0;height:calc(var(--dock-h) + 48px);pointer-events:none;z-index:20}
+.edge i{position:absolute;inset:0}
+.edge i:nth-child(1){-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);-webkit-mask-image:linear-gradient(180deg,transparent,#000 40%);mask-image:linear-gradient(180deg,transparent,#000 40%)}
+.edge i:nth-child(2){-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);-webkit-mask-image:linear-gradient(180deg,transparent 35%,#000 70%);mask-image:linear-gradient(180deg,transparent 35%,#000 70%)}
+.edge i:nth-child(3){background:linear-gradient(180deg,transparent,rgba(10,11,16,.55))}
+
+/* ── 底栏（Dock）：胶囊 Tab Bar + 独立搜索圆钮 ── */
+.dock{position:absolute;left:var(--bar-inset);right:var(--bar-inset);bottom:var(--bar-bottom);height:var(--bar-h);z-index:40;
+  display:flex;align-items:stretch;gap:var(--bar-gap)}
+.glass{position:relative;border-radius:999px;background:var(--glass-bg);
+  -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-sat));backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-sat));
+  box-shadow:inset 0 1px 0 var(--glass-hi),inset 0 -1px 0 rgba(255,255,255,.06),inset 0 0 0 1px var(--glass-line),
+             0 18px 40px -18px rgba(0,0,0,.75),0 2px 6px rgba(0,0,0,.25)}
+/* 边缘「透镜」高光：Safari 不支持 SVG 位移折射，用沿边缘的径向亮环近似 lensing */
+.glass::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:radial-gradient(120% 180% at 50% 130%,transparent 62%,rgba(255,255,255,.10) 78%,rgba(255,255,255,.02)),
+             linear-gradient(135deg,rgba(255,255,255,.16),rgba(255,255,255,.03) 30%,transparent 55%)}
+.bar{flex:1 1 auto;min-width:0;overflow:hidden;margin-right:auto;transition:flex-basis .42s cubic-bezier(.34,1.3,.5,1),opacity .25s}
+.tabs{position:absolute;inset:4px;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;transition:opacity .2s}
+.ind{position:absolute;top:0;bottom:0;left:0;width:var(--cell,25%);border-radius:999px;background:var(--glass-sel);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.22),inset 0 0 0 1px rgba(255,255,255,.06),0 4px 12px -6px rgba(0,0,0,.6);
+  transform:translateX(calc(var(--i,0) * 100%));transition:transform .48s cubic-bezier(.34,1.4,.5,1)}
+.ind.stretch{animation:stretch .48s cubic-bezier(.34,1.4,.5,1)}
+@keyframes stretch{30%{transform:translateX(calc(var(--i,0) * 100%)) scaleX(1.12) scaleY(.94)}}
+.tab{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;color:var(--t-muted);
+  -webkit-tap-highlight-color:transparent;transition:color .2s,transform .15s}
+.tab:active{transform:scale(.94)}
+.tab[aria-selected="true"]{color:var(--accent-strong)}
+.tab svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.tab[aria-selected="true"] svg{stroke-width:2.1}
+.tab[aria-selected="true"] svg .f{fill:currentColor}
+.tab span{font-size:10.5px;font-weight:600;letter-spacing:.01em;line-height:1}
+.mini{position:absolute;inset:0;display:grid;place-items:center;color:var(--accent-strong);opacity:0;pointer-events:none;transition:opacity .2s}
+.mini svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:2.1;stroke-linecap:round;stroke-linejoin:round}
+.mini svg .f{fill:currentColor}
+/* 最小化：向下滚动时只剩当前 tab 的图标圆钮（iOS 26 tabBarMinimizeBehavior.onScrollDown） */
+.dock.min .bar{flex:0 0 var(--bar-h)}
+.dock.min .tabs{opacity:0;pointer-events:none}
+.dock.min .mini{opacity:1;pointer-events:auto}
+.search{flex:0 0 var(--bar-h);display:flex;align-items:center;gap:8px;padding:0 0 0 0;color:var(--accent-strong);overflow:hidden;
+  transition:flex-basis .42s cubic-bezier(.34,1.3,.5,1)}
+.search .ic{width:var(--bar-h);height:100%;display:grid;place-items:center;flex:0 0 auto}
+.search svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2.1;stroke-linecap:round}
+.search input{flex:1;min-width:0;background:none;border:0;color:var(--t);font:inherit;font-size:16px;outline:none;display:none}
+.search input::placeholder{color:var(--t-faint)}
+.search .cancel{display:none;font-size:15px;font-weight:500;padding:0 18px 0 6px;color:var(--accent-strong);white-space:nowrap}
+/* 搜索展开：搜索框取代整条 Tab Bar 的位置（WWDC25：其他按钮折叠） */
+.dock.searching .bar{flex:0 0 0px;opacity:0;margin-right:calc(-1 * var(--bar-gap))}
+.dock.searching .search{flex:1 1 auto}
+.dock.searching .search input,.dock.searching .search .cancel{display:block}
+
+/* ── 新会话撰写面板：从底部升起的模态 sheet，盖住底栏（iOS compose 惯例） ── */
+.scrim{position:absolute;inset:0;z-index:48;background:rgba(4,6,10,.55);opacity:0;pointer-events:none;transition:opacity .3s;cursor:default}
+.sheet{position:absolute;left:0;right:0;bottom:0;top:calc(var(--sa-top) + 10px);z-index:49;border-radius:22px 22px 0 0;
+  display:flex;flex-direction:column;box-shadow:0 -20px 60px -20px rgba(0,0,0,.9),inset 0 1px 0 rgba(255,255,255,.08);
+  transform:translateY(104%);transition:transform .48s cubic-bezier(.32,.98,.36,1);visibility:hidden}
+.screen.sheeted .scrim{opacity:1;pointer-events:auto}
+.screen.sheeted .sheet{transform:none;visibility:visible}
+.grab{width:36px;height:5px;border-radius:3px;background:rgba(255,255,255,.28);margin:8px auto 0;flex:0 0 auto}
+.sheet-head{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:6px 16px 0;flex:0 0 auto}
+.sheet-head button{justify-self:start;font-size:16px;color:var(--accent);padding:8px 0}
+.sheet-head b{font-size:16px;font-weight:600}
+.sheet-body{flex:1;min-height:0;overflow-y:auto;padding-bottom:16px}
+.composer{flex:0 0 auto;margin:8px 16px calc(var(--sa-bottom) + 12px);height:52px;border-radius:999px;display:flex;align-items:center;gap:8px;padding:0 6px 0 18px;
+  color:var(--t-faint);font-size:15px;background:rgba(255,255,255,.08);box-shadow:inset 0 0 0 1px var(--ln)}
+.composer .ph{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.composer .go{width:40px;height:40px;border-radius:50%;background:var(--accent-strong);color:#0a0b10;display:grid;place-items:center;flex:0 0 auto}
+.composer .go svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.greet{padding:26px 22px 0}
+
+/* ── 更多页：iOS「More」惯例的分组列表 ── */
+.me{display:flex;align-items:center;gap:14px;padding:6px 20px 18px}
+.me-av{width:56px;height:56px;border-radius:50%;background:linear-gradient(145deg,#cdd6e6,#6f7f9c);color:#0a0b10;font-weight:700;font-size:18px;display:grid;place-items:center}
+.me b{display:block;font-size:20px;font-weight:700;letter-spacing:-.01em}
+.me span{font-size:13px;color:var(--t-faint)}
+.group{margin:0 16px 18px;border-radius:14px;background:rgba(255,255,255,.055);box-shadow:inset 0 0 0 1px var(--ln);overflow:hidden}
+.group-t{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--t-faint);margin:0 32px 6px}
+.mrow{display:flex;align-items:center;gap:12px;width:100%;min-height:48px;padding:0 16px;text-align:left;font-size:16px;color:var(--t);
+  border-bottom:1px solid var(--ln);-webkit-tap-highlight-color:transparent}
+.mrow:last-child{border-bottom:0}
+.mrow:active{background:rgba(255,255,255,.08)}
+.mrow em{margin-left:auto;font-style:normal;color:var(--t-faint);font-size:14px}
+.mrow .mi{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-style:normal;font-size:15px;background:rgba(255,255,255,.1);flex:0 0 auto}
+.mrow.sub{color:var(--accent);font-size:15px}
+.mrow.quiet{color:var(--t-muted);justify-content:center}
+.badge-n{font-size:12px;font-weight:700;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:#c73838;color:#fff;display:grid;place-items:center}
+.ver{text-align:center;font-size:12px;color:var(--t-faint);margin:0}
+
+/* ── 尺寸标注（评审台开关） ── */
+.ann{display:none;position:absolute;z-index:70;font:600 10px/1 var(--f-mono);color:var(--quill);pointer-events:none}
+.phone.annot .ann{display:block}
+.ann i{position:absolute;background:var(--quill)}
+.ann-h{left:5px;bottom:var(--bar-bottom);height:var(--bar-h);width:12px}
+.ann-h i{left:5px;top:0;bottom:0;width:1px}
+.ann-h em{position:absolute;left:0;top:50%;transform:translateY(-50%) rotate(-90deg);transform-origin:center;font-style:normal;background:var(--ink);padding:1px 2px}
+.ann-b{left:6px;bottom:0;height:var(--bar-bottom);width:12px}
+.ann-b i{left:4px;top:0;bottom:0;width:1px}
+.ann-b em{position:absolute;left:10px;top:50%;transform:translateY(-50%);font-style:normal}
+.ann-l{left:0;width:var(--bar-inset);bottom:calc(var(--bar-bottom) + var(--bar-h) + 6px);height:10px}
+.ann-l i{left:0;right:0;top:5px;height:1px}
+.ann-l em{position:absolute;left:0;top:-13px;font-style:normal}
+.ann-g{right:calc(var(--bar-inset) + var(--bar-h));width:var(--bar-gap);bottom:calc(var(--bar-bottom) + var(--bar-h) + 6px);height:10px}
+.ann-g i{left:0;right:0;top:5px;height:1px}
+.ann-g em{position:absolute;left:-4px;top:-13px;font-style:normal}
+.ann-r{right:var(--bar-inset);bottom:calc(var(--bar-bottom) + var(--bar-h) - 4px);transform:translateX(50%)}
+.ann-r em{font-style:normal;background:var(--ink);padding:2px 4px;border-radius:3px}
+
+/* ── 手机宽度：评审台隐藏，界面铺满整屏，安全区改读真实 env() ── */
+@media (max-width:719px){
+  .stage{display:block;padding:0}
+  .notes{display:none}
+  .phone{position:fixed;inset:0;width:auto;height:auto;border-radius:0;box-shadow:none;
+    --sa-top:env(safe-area-inset-top,0px);--sa-bottom:env(safe-area-inset-bottom,0px)}
+  .island,.home-ind{display:none}
+  body{overflow:hidden}
+  .hint-mobile{display:block;position:fixed;z-index:80;top:calc(env(safe-area-inset-top,0px) + 8px);left:50%;transform:translateX(-50%);
+    font:500 11px/1 var(--f-sans);color:var(--quill);background:rgba(11,12,17,.7);padding:6px 10px;border-radius:999px;pointer-events:none;
+    animation:hint 6s ease forwards}
+  @keyframes hint{0%,70%{opacity:1}100%{opacity:0}}
+}
+@media (prefers-reduced-transparency:reduce){
+  .phone{--glass-bg:rgba(22,25,34,.86);--glass-blur:10px;--glass-sat:120%}
+}
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <div class="phone" id="phone">
+    <div class="island" aria-hidden="true"></div>
+    <div class="screen">
+
+      <header class="topbar">
+        <div class="row">
+          <div class="mark" aria-hidden="true">M</div>
+          <h1 id="ptitle">媒体库</h1>
+          <button class="avatar" id="compose" type="button" aria-label="新会话">
+            <svg viewBox="0 0 24 24"><path d="M12 20h8"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- 媒体库 -->
+      <section class="page on" data-id="library" aria-label="媒体库">
+        <div class="hero">
+          <div class="art" id="heroArt">
+            <div class="cap">
+              <div class="k">继续观看 · 第 2 集</div>
+              <h3>漫长的季节</h3>
+              <p>2023 · 12 集 · 剩 41 分钟</p>
+              <div class="btns"><span class="btn pri">▶ 继续播放</span><span class="btn sec2">详情</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="sec"><h2>继续观看<small>4 部</small></h2><div class="rowx" data-row="continue"></div></div>
+        <div class="sec"><h2>最近入库<small>本周 9 部</small></h2><div class="rowx" data-row="recent"></div></div>
+        <div class="sec"><h2>剧集</h2><div class="rowx" data-row="tv"></div></div>
+        <div class="sec"><h2>电影</h2><div class="rowx" data-row="movie"></div></div>
+        <div class="sec"><h2>合集 · 诺兰</h2><div class="rowx" data-row="nolan"></div></div>
+      </section>
+
+      <!-- 发现 -->
+      <section class="page" data-id="discover" aria-label="发现">
+        <div class="seg" role="group" aria-label="类型">
+          <button type="button" aria-pressed="true">电影</button><button type="button" aria-pressed="false">剧集</button>
+        </div>
+        <div class="sec" style="margin-top:12px"><h2>正在热映<small>TMDB</small></h2><div class="grid" data-grid="hot"></div></div>
+        <div class="sec"><h2>高分经典</h2><div class="grid" data-grid="classic"></div></div>
+      </section>
+
+      <!-- 订阅 -->
+      <section class="page" data-id="subs" aria-label="订阅">
+        <div class="sec" style="margin-top:6px"><h2>追踪中<small>6 项</small></h2></div>
+        <div class="list" data-list="subs"></div>
+      </section>
+
+      <!-- 更多：低频入口与账号操作 -->
+      <section class="page" data-id="more" aria-label="更多">
+        <div class="me">
+          <div class="me-av">PF</div>
+          <div><b>pofey</b><span>管理员 · movieclaw.local</span></div>
+        </div>
+        <div class="group">
+          <button type="button" class="mrow" id="moreCompose"><i class="mi">✎</i>新会话<em>›</em></button>
+          <button type="button" class="mrow"><i class="mi">◔</i>活动<span class="badge-n">3</span><em>›</em></button>
+          <button type="button" class="mrow"><i class="mi">⚙</i>设置<em>›</em></button>
+        </div>
+        <div class="group-t">最近会话</div>
+        <div class="group">
+          <button type="button" class="mrow">《漫长的季节》补全字幕<em>昨天</em></button>
+          <button type="button" class="mrow">找一部像《坠落的审判》的片<em>周一</em></button>
+          <button type="button" class="mrow">媒体库重复文件清理<em>上周</em></button>
+          <button type="button" class="mrow sub">全部会话<em>›</em></button>
+        </div>
+        <div class="group">
+          <button type="button" class="mrow"><i class="mi">⇄</i>切换账号<em>›</em></button>
+          <button type="button" class="mrow quiet">退出登录</button>
+        </div>
+        <p class="ver">Movieclaw 0.9 · PWA</p>
+      </section>
+
+      <!-- 滚动边缘效果（内容层） -->
+      <div class="edge" aria-hidden="true"><i></i><i></i><i></i></div>
+
+      <!-- 底栏 -->
+      <nav class="dock" id="dock" aria-label="主导航">
+        <div class="bar glass">
+          <div class="tabs" role="tablist" id="tabs"><div class="ind" id="ind" aria-hidden="true"></div></div>
+          <button class="mini" id="mini" type="button" aria-label="展开标签栏"></button>
+        </div>
+        <div class="search glass" id="search">
+          <button class="ic" id="searchBtn" type="button" aria-label="搜索">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>
+          </button>
+          <input id="q" type="search" placeholder="搜索片名、演员、导演" autocomplete="off">
+          <button class="cancel" id="cancel" type="button">取消</button>
+        </div>
+      </nav>
+
+      <!-- 新会话：撰写面板（iOS 的 compose 是模态 sheet，盖住底栏，不占页签位） -->
+      <button class="scrim" id="scrim" type="button" aria-label="关闭新会话" tabindex="-1"></button>
+      <section class="sheet ambient" id="sheet" aria-label="新会话" aria-hidden="true">
+        <div class="grab" aria-hidden="true"></div>
+        <div class="sheet-head">
+          <button type="button" id="sheetClose">取消</button>
+          <b>新会话</b>
+          <span></span>
+        </div>
+        <div class="sheet-body">
+          <div class="greet">
+            <h3>今天想看点什么？</h3>
+            <p>说一句话，帮你找片、追剧、整理媒体库。</p>
+          </div>
+          <div class="chips">
+            <span class="chip">追一部今年的悬疑剧</span>
+            <span class="chip">把《沙丘》两部补齐 4K</span>
+            <span class="chip">最近入库有什么没看</span>
+            <span class="chip">给影集补中文字幕</span>
+          </div>
+          <div class="recent">
+            <h2>最近会话</h2>
+            <div>《漫长的季节》补全字幕<span>昨天</span></div>
+            <div>找一部像《坠落的审判》的片<span>周一</span></div>
+          </div>
+        </div>
+        <div class="composer">
+          <span class="ph">想看什么？告诉我…</span>
+          <span class="go" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span>
+        </div>
+      </section>
+
+      <!-- 尺寸标注 -->
+      <div class="ann ann-h"><i></i><em>62</em></div>
+      <div class="ann ann-b"><i></i><em id="annB">22</em></div>
+      <div class="ann ann-l"><i></i><em>21</em></div>
+      <div class="ann ann-g"><i></i><em>8</em></div>
+      <div class="ann ann-r"><em>R31</em></div>
+    </div>
+    <div class="home-ind" aria-hidden="true"></div>
+  </div>
+
+  <aside class="notes">
+    <h1>iOS 26 液态玻璃底栏</h1>
+    <p class="sub">Movieclaw 银玻璃主题 · iPhone PWA 的底部导航方案样稿。左边可以直接操作：切页签、往下滑、点搜索。</p>
+
+    <h2>能做什么</h2>
+    <ul>
+      <li><b>悬浮胶囊</b>：底栏离开屏幕边缘，内容从它底下通铺到屏幕物理底边。</li>
+      <li><b>选中态滑动</b>：高亮胶囊在页签间弹性滑动，而不是换色。</li>
+      <li><b>下滑收缩</b>：内容往下滚时收成只剩当前图标的圆钮，回滚或点击即展开。</li>
+      <li><b>搜索独立</b>：搜索是尾端单独的圆钮，点开后搜索框取代整条底栏。</li>
+      <li><b>更多</b>：活动、设置、最近会话、切换账号、退出登录收进末位页签，iOS「More」惯例。</li>
+      <li><b>新会话收起</b>：不占页签，做成右上角的玻璃「撰写」圆钮（iOS 信息、邮件的惯例），点开是底部升起的面板；「更多」里也留一行入口。</li>
+    </ul>
+
+    <h2>样稿开关</h2>
+    <div class="toggles">
+      <button class="tg" id="tgAnnot" type="button" aria-pressed="false"><span class="sw"></span>显示尺寸标注<span>pt</span></button>
+      <button class="tg" id="tgFlat" type="button" aria-pressed="false"><span class="sw"></span>减少透明度<span>无障碍回退</span></button>
+    </div>
+
+    <h2>规格</h2>
+    <table class="spec">
+      <tr><td>胶囊高度</td><td>62<span class="src">社区实测</span></td></tr>
+      <tr><td>左右缩进</td><td>21<span class="src">社区实测</span></td></tr>
+      <tr><td>距屏幕底边</td><td>safe-bottom − 12 ≈ 22<span class="src">社区实测</span></td></tr>
+      <tr><td>圆角</td><td>高度 / 2 = 31<span class="src">Apple 胶囊定义</span></td></tr>
+      <tr><td>图标 / 标签</td><td>28 字形框 / SF 11<span class="src">社区实测</span></td></tr>
+      <tr><td>与搜索圆钮间距</td><td>8<span class="src">社区实测</span></td></tr>
+      <tr><td>玻璃变体</td><td>Regular<span class="src">Apple：文字多、任何内容之上</span></td></tr>
+      <tr><td>Web 实现</td><td>blur 22 · saturate 170% · α .42</td></tr>
+    </table>
+    <p style="margin-top:10px;font-size:12px;color:var(--faint)">Apple 只公布了规则（浮在内容之上、胶囊、Regular 玻璃、最小化行为、搜索尾端独立），没有公布 pt 数值；数值来自社区对 iOS 26 截图的量测。</p>
+
+    <h2>与现在的差别</h2>
+    <p>银玻璃主题在手机上目前没有底栏，导航靠顶栏 ☰ 打开抽屉。这版把高频内容入口（发现、媒体库、订阅）搬到底栏，低频与账号操作收进「更多」，新会话退到右上角撰写键。抽屉整个退役。主题框架已有 <b>mobileTabBar</b> 坑位，接入不改外壳结构。</p>
+  </aside>
+</div>
+<div class="hint-mobile" aria-hidden="true">下滑收缩 · 右下搜索 · 右上新会话</div>
+
+<script>
+(function(){
+  var ICONS={
+    library:'<svg viewBox="0 0 24 24"><rect class="f" x="3" y="4" width="4.5" height="16" rx="1"/><rect class="f" x="9.5" y="4" width="4.5" height="16" rx="1"/><path class="f" d="M15.6 5.3l3.9-1a1 1 0 0 1 1.2.7l3.4 13.5a1 1 0 0 1-.7 1.2l-3.9 1a1 1 0 0 1-1.2-.7L14.9 6.5a1 1 0 0 1 .7-1.2z"/></svg>',
+    discover:'<svg viewBox="0 0 24 24"><circle class="f" cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z" style="fill:var(--ink-on,none);stroke:var(--ink-on,currentColor)"/></svg>',
+    subs:'<svg viewBox="0 0 24 24"><path class="f" d="M6 3.5h12a1 1 0 0 1 1 1V21l-7-4.2L5 21V4.5a1 1 0 0 1 1-1z"/></svg>',
+    more:'<svg viewBox="0 0 24 24"><circle class="f" cx="12" cy="12" r="9"/><g style="fill:var(--ink-on,currentColor);stroke:none"><circle cx="7.5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="16.5" cy="12" r="1.4"/></g></svg>'
+  };
+  var TABS=[
+    {id:'discover',label:'发现',title:'发现'},
+    {id:'library',label:'媒体库',title:'媒体库'},
+    {id:'subs',label:'订阅',title:'我的订阅'},
+    {id:'more',label:'更多',title:'更多'}
+  ];
+  var phone=document.getElementById('phone'),dock=document.getElementById('dock'),tabs=document.getElementById('tabs'),
+      ind=document.getElementById('ind'),mini=document.getElementById('mini'),screen=document.querySelector('.screen'),
+      ptitle=document.getElementById('ptitle'),q=document.getElementById('q');
+  tabs.style.setProperty('--cell',(100/TABS.length)+'%');
+  var current='discover',lastY={},minimized=false;
+
+  /* 选中态图标：填充符号里挖出来的线条要用底栏色，而不是继续用字色 */
+  var style=document.createElement('style');
+  style.textContent='.tab[aria-selected="true"]{--ink-on:#0a0b10}.mini{--ink-on:#0a0b10}';
+  document.head.appendChild(style);
+
+  TABS.forEach(function(t,i){
+    var b=document.createElement('button');
+    b.type='button';b.className='tab';b.setAttribute('role','tab');b.dataset.id=t.id;
+    b.setAttribute('aria-selected',t.id===current?'true':'false');
+    b.innerHTML=ICONS[t.id]+'<span>'+t.label+'</span>';
+    b.addEventListener('click',function(){select(t.id,i);});
+    tabs.appendChild(b);
+  });
+
+  function select(id,i){
+    var prev=current;current=id;
+    tabs.querySelectorAll('.tab').forEach(function(b){b.setAttribute('aria-selected',b.dataset.id===id?'true':'false');});
+    ind.style.setProperty('--i',i);
+    if(prev!==id){ind.classList.remove('stretch');void ind.offsetWidth;ind.classList.add('stretch');}
+    document.querySelectorAll('.page').forEach(function(p){p.classList.toggle('on',p.dataset.id===id);});
+    var t=TABS[i];ptitle.textContent=t.title;
+    mini.innerHTML=ICONS[id];
+    setMin(false);
+  }
+  function setMin(v){
+    if(v===minimized)return;
+    minimized=v;dock.classList.toggle('min',v);
+  }
+  select('discover',0);
+
+  /* 滚动最小化：向下滚且离顶超过 40px 才收，向上滚 10px 或回到顶部即展开 */
+  document.querySelectorAll('.page').forEach(function(p){
+    lastY[p.dataset.id]=0;
+    p.addEventListener('scroll',function(){
+      var y=p.scrollTop,dy=y-lastY[p.dataset.id];
+      if(y<=8)setMin(false);
+      else if(dy>6&&y>40)setMin(true);
+      else if(dy<-10)setMin(false);
+      lastY[p.dataset.id]=y;
+    },{passive:true});
+  });
+  mini.addEventListener('click',function(){setMin(false);});
+
+  /* 搜索：圆钮展开为搜索框，取代整条底栏；取消复原 */
+  var searchBtn=document.getElementById('searchBtn');
+  searchBtn.addEventListener('click',function(){
+    if(dock.classList.contains('searching'))return;
+    setMin(false);dock.classList.add('searching');
+    setTimeout(function(){q.focus();},80);
+  });
+  document.getElementById('cancel').addEventListener('click',function(){
+    dock.classList.remove('searching');q.value='';q.blur();
+  });
+  q.addEventListener('keydown',function(e){if(e.key==='Escape'){document.getElementById('cancel').click();}});
+
+  /* 新会话：右上角撰写键 / 更多页入口 → 底部升起的面板 */
+  function openSheet(){setMin(false);dock.classList.remove('searching');screen.classList.add('sheeted');document.getElementById('sheet').setAttribute('aria-hidden','false');}
+  function closeSheet(){screen.classList.remove('sheeted');document.getElementById('sheet').setAttribute('aria-hidden','true');}
+  document.getElementById('compose').addEventListener('click',openSheet);
+  document.getElementById('moreCompose').addEventListener('click',openSheet);
+  document.getElementById('sheetClose').addEventListener('click',closeSheet);
+  document.getElementById('scrim').addEventListener('click',closeSheet);
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeSheet();});
+
+  /* 评审台开关 */
+  function toggle(btn,cls){btn.addEventListener('click',function(){
+    var on=btn.getAttribute('aria-pressed')!=='true';btn.setAttribute('aria-pressed',on);phone.classList.toggle(cls,on);});}
+  toggle(document.getElementById('tgAnnot'),'annot');
+  toggle(document.getElementById('tgFlat'),'flat');
+  document.querySelectorAll('.seg button').forEach(function(b){b.addEventListener('click',function(){
+    b.parentNode.querySelectorAll('button').forEach(function(x){x.setAttribute('aria-pressed',x===b);});});});
+
+  /* 示例内容：海报用渐变色块生成，色相分散以便看清玻璃对背景的取样与饱和 */
+  var FILMS=[
+    ['漫长的季节',205],['沙丘：第二部',28],['奥本海默',12],['怪奇物语',348],['繁花',330],['星际穿越',215],
+    ['流浪地球 2',195],['绝命毒师',80],['三体',160],['瞬息全宇宙',300],['银翼杀手 2049',22],['周处除三害',0],
+    ['坠落的审判',48],['疯狂的麦克斯：狂暴女神',20],['蝙蝠侠：黑暗骑士',230],['盗梦空间',250],['信条',190],['致命魔术',35]
+  ];
+  function grad(h,s){return 'linear-gradient(160deg,hsl('+h+' '+(s||62)+'% 52%),hsl('+((h+40)%360)+' 58% 22%))';}
+  function poster(f,opt){
+    opt=opt||{};
+    var d=document.createElement('div');d.className='poster'+(opt.wide?' wide':'');d.style.background=grad(f[1]);
+    var html='';
+    if(opt.badge)html+='<span class="badge">'+opt.badge+'</span>';
+    html+='<div class="t">'+f[0]+'</div>';
+    if(opt.prog!=null)html+='<div class="prog"><i style="width:'+opt.prog+'%"></i></div>';
+    d.innerHTML=html;return d;
+  }
+  function fill(sel,items,fn){var el=document.querySelector(sel);if(!el)return;items.forEach(function(f,i){el.appendChild(fn(f,i));});}
+  document.getElementById('heroArt').style.background=grad(205,55);
+  fill('[data-row="continue"]',[FILMS[0],FILMS[3],FILMS[7],FILMS[8]],function(f,i){return poster(f,{wide:true,prog:[62,18,85,40][i]});});
+  fill('[data-row="recent"]',FILMS.slice(1,10),function(f,i){return poster(f,{badge:i<3?'4K':(i<6?'新':'')});});
+  fill('[data-row="tv"]',[FILMS[0],FILMS[3],FILMS[4],FILMS[7],FILMS[8]],function(f){return poster(f);});
+  fill('[data-row="movie"]',[FILMS[1],FILMS[2],FILMS[5],FILMS[9],FILMS[10],FILMS[11],FILMS[12]],function(f){return poster(f);});
+  fill('[data-row="nolan"]',[FILMS[2],FILMS[5],FILMS[14],FILMS[15],FILMS[16],FILMS[17]],function(f){return poster(f);});
+  fill('[data-grid="hot"]',[FILMS[1],FILMS[13],FILMS[11],FILMS[12],FILMS[9],FILMS[6]],function(f,i){return poster(f,{badge:(8.9-i*.3).toFixed(1)});});
+  fill('[data-grid="classic"]',[FILMS[15],FILMS[14],FILMS[5],FILMS[10],FILMS[2],FILMS[17]],function(f,i){return poster(f,{badge:(9.3-i*.2).toFixed(1)});});
+  var STATES=[['ok','已收齐'],['info','追踪中'],['warn','等待资源'],['info','追踪中'],['ok','已收齐'],['warn','等待资源']];
+  fill('[data-list="subs"]',[FILMS[8],FILMS[3],FILMS[1],FILMS[0],FILMS[4],FILMS[6]],function(f,i){
+    var d=document.createElement('div');d.className='li';
+    d.innerHTML='<div class="th" style="background:'+grad(f[1])+'"></div><div class="m"><b>'+f[0]+'</b><span>'+['S02 · 每周三更新','S05 · 完结','4K HDR · 中字','S01 · 完结','S01 · 完结','4K · 国语'][i]+'</span></div><span class="pill '+STATES[i][0]+'">'+STATES[i][1]+'</span>';
+    return d;
+  });
+
+  /* 标注里的「距底」随真实安全区变化（手机上读 env()，桌面框固定 34） */
+  try{
+    var cs=getComputedStyle(phone);var bb=parseFloat(cs.getPropertyValue('--sa-bottom'))||0;
+    document.getElementById('annB').textContent=Math.max(16,Math.round(bb-12));
+  }catch(e){}
+})();
+</script>
+</body>
+</html>

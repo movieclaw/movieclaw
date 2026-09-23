@@ -8,16 +8,16 @@ import { settingsSectionGroupsFor } from "@/lib/mock-data";
 import { useSession } from "@/lib/session";
 
 /**
- * Netflix 主题移动端的设置分区列表页（路由 /settings，2026-09 修订）。
+ * 移动端的设置分区列表页（路由 /settings，基础实现，两个主题共用）。
  *
- * 原实现是 NetflixSettingsNav 页顶的分区下拉浮层——分区一多（管理员 19 个）
- * 浮层高过视口又不能滚，长列表在触屏上滑不动；换分区的入口也藏在二级交互
- * 里。改为独立页面后：本页按组列出全部分区（glass-row 行，与 /my 同一套
- * 皮肤），点行进 /settings/[section]，页顶返回键回本页（见 NetflixSettingsNav）。
- * 桌面端不用本页（分区菜单在常驻侧栏）；银玻璃走重定向到首个分区，同样到不了
- * 这里。
+ * 原为 Netflix 主题专属（2026-09 修订：NetflixSettingsNav 页顶的分区下拉浮层
+ * 在分区一多时高过视口又不能滚）；银玻璃移动端的抽屉侧栏随液态玻璃底栏退役
+ * （docs/design/web-themes-mobile/04），分区切换同样需要一个列表页，于是上移为
+ * 基础实现：本页按组列出全部分区（glass-row 行，主题 CSS 自动换皮），点行进
+ * /settings/[section]，页顶返回键回本页（见 components/mobile-settings-nav.tsx）。
+ * 桌面端不用本页（分区菜单在常驻侧栏，/settings 直接重定向到首个分区）。
  */
-export function NetflixSettingsIndex() {
+export function SettingsIndex() {
   const router = useRouter();
   const { session } = useSession();
   // 分区清单按角色过滤：成员只看到通用组，管理分区没有入口（后端 403 兜底）

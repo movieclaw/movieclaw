@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import type { Route } from "next";
 import { usePathname } from "next/navigation";
 
-import { ChevronLeftIcon, MenuIcon } from "@/components/icons";
+import { ChevronLeftIcon } from "@/components/icons";
 import { SearchCommand } from "@/components/search-command";
 import { useBackNavigation } from "@/lib/back-navigation";
 import { isHomeRoute, usePageChrome } from "@/lib/page-chrome";
@@ -190,22 +190,11 @@ export function PageNav({
         }}
       />
       <div className="relative flex h-[52px] items-center gap-3">
-        {/* 左侧控件组：银玻璃移动端补一颗 ☰ 排在返回键左边（本页顶栏顶掉了
-            外壳那条全局顶栏，抽屉入口不在这儿补回来，详情页就只能先返回才能
-            换区）。Netflix 主题不放 ☰：导航全在底部页签，「我的」是 /my 路由，
-            这颗键只会在 390px 宽的一行里白占一格。组内 gap-2 与右侧控件组
-            一致，组与标题之间才是外层的 gap-3。 */}
+        {/* 左侧控件组：只有返回键。两个主题的移动端导航都在底部页签里
+            （银玻璃 = 液态玻璃底栏，Netflix = 实底标签栏），原银玻璃补在这里的
+            ☰（开抽屉侧栏）随抽屉退役移除。组内 gap-2 与右侧控件组一致，
+            组与标题之间才是外层的 gap-3。 */}
         <div className="flex shrink-0 items-center gap-2">
-          {isMobile && chrome && !isNetflix && (
-            <button
-              type="button"
-              onClick={chrome.openDrawer}
-              aria-label="打开侧边栏"
-              className={backClass}
-            >
-              <MenuIcon className="size-[18px] max-md:size-[22px]" />
-            </button>
-          )}
           <button
             type="button"
             onClick={back}
@@ -233,13 +222,13 @@ export function PageNav({
         {/* 页面操作靠右：与返回键同一行，页面首屏不再单独占一条工具栏，
             滚动后又随顶栏留在原地——操作入口的位置从头到尾不动。
             移动端还要在这里补一颗搜索——本页顶栏顶掉了外壳那条全局顶栏，
-            搜索是其中唯一无处安放的入口（导航在抽屉里、字标只是回首页），
-            排在页面操作左侧。必须条件渲染而不是 CSS 隐藏：SearchCommand 自带
-            全局 ⌘K 监听，桌面上再挂一份会让一次快捷键把面板开了又关。 */}
-        {(toolbar || actions || (isMobile && chrome)) && (
+            搜索是其中唯一无处安放的入口，排在页面操作左侧；底栏已带搜索圆钮
+            （银玻璃液态玻璃底栏）时不补。必须条件渲染而不是 CSS 隐藏：
+            SearchCommand 自带全局 ⌘K 监听，再挂一份会让一次快捷键把面板开了又关。 */}
+        {(toolbar || actions || (isMobile && chrome && !chrome.searchInTabBar)) && (
           <div className="ml-auto flex shrink-0 items-center gap-2">
             {toolbar}
-            {isMobile && chrome && (
+            {isMobile && chrome && !chrome.searchInTabBar && (
               <SearchCommand onSearch={chrome.onSearch} triggerClassName={PAGE_NAV_BUTTON_CLASS} />
             )}
             {actions}
