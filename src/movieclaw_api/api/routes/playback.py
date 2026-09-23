@@ -137,7 +137,6 @@ from movieclaw_db.models.base import utcnow
 from movieclaw_db.repositories.media_repo import MediaItemRepository
 from movieclaw_playback import activity
 from movieclaw_playback import state as playback_state
-from movieclaw_playback.decide import PlaybackPlan
 from movieclaw_playback.decide import PlaybackTier as Tier
 from movieclaw_playback.hls_vod import (
     build_master_playlist,
@@ -741,37 +740,6 @@ _SEGMENT_NAME = re.compile(r"^(init\.mp4|seg\d{5}\.m4s)$")
 _TRICKPLAY_SHEET_NAME = re.compile(r"^sprite_\d{3}\.jpg$")
 
 
-def _select_execution_backend(
-    decision: PlaybackPlan,
-    *,
-    available: tuple[str, ...],
-    local_backends: tuple[str, ...],
-    remote_video_available: bool,
-) -> tuple[str | None, bool]:
-    """为当前播放计划选择真正能执行的后端。
-
-    ``available`` 是给决策层用的合并能力快照，``local_backends`` 则只包含
-    NAS 本机实际探测通过的后端。两者不能按列表首项直接使用：列表顺序是
-    全局优先级，不代表该计划（尤其是 PGS 烧录）的滤镜链兼容性。先选能在
-    NAS 执行当前计划的后端；只有本地都不兼容时，才把在线 VideoToolbox
-    Worker 作为候选。返回值的第二项明确标出是否需要远程会话。
-    """
-    if decision.tier is not Tier.HARDWARE_TRANSCODE or decision.video.action != "transcode":
-        return None, False
-
-    for backend in local_backends:
-        if effective_hw_backend(decision, backend) is not None:
-            return backend, False
-
-    if (
-        remote_video_available
-        and "videotoolbox" in available
-        and effective_hw_backend(decision, "videotoolbox") is not None
-    ):
-        return "videotoolbox", True
-    return None, False
-
-
 #: 播放列表里 `#EXT-X-MAP` 那行的初始化段地址，形如 `URI="init.mp4"`。
 _PLAYLIST_MAP_URI = re.compile(r'(#EXT-X-MAP:.*?URI=")([^"]+)(")')
 
@@ -1048,7 +1016,7 @@ async def start_playback_session(
     # 后端名只会让诊断面板骗人。烧录时 VAAPI/QSV 会退软件编码（overlay 是
     # 软件滤镜，这两家编码器吃不了软件帧），同样要报实际值。后端选择必须
     # 结合当前计划的滤镜兼容性，不能把合并能力列表的第一项当成可执行后端。
-    execution_backend, use_remote = _select_execution_backend(
+    execution_backend, use_remote = playback_plan.select_execution_backend(
         decision,
         available=backends,
         local_backends=local_backends,

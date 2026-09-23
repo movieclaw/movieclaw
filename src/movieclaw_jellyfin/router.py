@@ -86,6 +86,20 @@ _KNOWN_QUERY_KEYS = [
     "static",
     "container",
     "mediaSourceId",
+    # 转码协商（docs/design/jellyfin-transcode.md）：PlaybackInfo 的 query 形态
+    # 与我们自己生成的 TranscodingUrl / ActiveEncodings 参数
+    "maxStreamingBitrate",
+    "enableDirectPlay",
+    "enableDirectStream",
+    "enableTranscoding",
+    "allowVideoStreamCopy",
+    "allowAudioStreamCopy",
+    "startTimeTicks",
+    "audioStreamIndex",
+    "subtitleStreamIndex",
+    "videoBitrate",
+    "maxHeight",
+    "deviceId",
     # 字幕接口的 route 段同名覆盖参数（jellyfin-subtitle.md §4.4；
     # mediaSourceId/format 已在列）——漏登记 PascalCase 客户端就取不到
     "itemId",

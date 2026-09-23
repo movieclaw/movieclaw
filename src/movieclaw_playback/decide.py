@@ -62,6 +62,13 @@ _PGS_SUBTITLE_CODECS = frozenset({"hdmv_pgs_subtitle", "pgs"})
 #: TrueHD 流自带 AC-3 核心，ffmpeg 会把它拆成一条独立的 ac3 轨，回退总有得选。
 FMP4_COPY_AUDIO_CODECS = frozenset({"aac", "ac3", "eac3", "dts", "mp3", "flac", "alac", "opus"})
 
+#: 按码率上限转码时允许原样 copy 的音频编码：都是有损、单轨通常不过 640 kbps
+#: 的家族，留着不会把「降码率」的目的吃掉。DTS 核心 1.5 Mbps、TrueHD/FLAC/
+#: LPCM 动辄数 Mbps，在弱网场景下必须一起重编码。
+CAPPED_COPY_AUDIO_CODECS = frozenset({"aac", "ac3", "eac3", "mp3", "opus"})
+#: ffmpeg 的 eac3 编码器最多 5.1（6 声道），7.1 源要降到 5.1。
+_EAC3_MAX_CHANNELS = 6
+
 _POLICY_NAMESPACE = "playback.policy"
 _SOFTWARE_TRANSCODE_KEY = "software_transcode_enabled"
 
@@ -731,6 +738,102 @@ def _resolve_tier(
 
     container = "mp4" if tier is PlaybackTier.DIRECT_PLAY else "hls-fmp4"
     return tier, container, reason, degraded_from
+
+
+def plan_capped_transcode(
+    media: MediaProfile,
+    policy: PlaybackPolicy,
+    *,
+    preferred_audio: str | None = None,
+    max_height: int | None = None,
+) -> PlaybackPlan | PlaybackRejected:
+    """全解码播放器**主动要求**转码时的计划（docs/design/jellyfin-transcode.md §3）。
+
+    与 ``decide_playback`` 的 universal 分支互补：那条分支回答「播放器什么都能
+    解，服务端该不该转」（永远不该）；这里回答「播放器自己说线路装不下、要
+    服务端把码率压下来，该怎么转」。触发权在客户端（Jellyfin 协议的
+    ``MaxStreamingBitrate`` / ``EnableDirectPlay=false``），本函数不判断要不要，
+    只负责怎么做——所以它没有 ConsentRequired 一态：第三方播放器没有弹窗可
+    承载「同意软件转码」，软转未开且无硬件时直接拒绝，由协议层回落直连。
+
+    视频恒转 H.264（高度取源、服务端上限、``max_height`` 三者最小，HDR 一律
+    tone-map，与网页端转码档同一套 ``_build_video_plan``）；码率上限不在这里
+    定——由调用方按播放器给的总码率经 ``adaptive.adapt_to_downlink`` 套上，
+    与网页端「按实测线路收码率」走同一条规则。音轨：点选轨/默认轨的编码属于
+    ``CAPPED_COPY_AUDIO_CODECS`` 就 copy，否则多声道转 E-AC-3（最多 5.1）、
+    立体声转 AAC。
+    """
+    if media.is_strm:
+        return PlaybackRejected(
+            reason="网盘（strm）条目不支持转码：转码要先把云端内容拉到服务器。",
+            suggestion="请在播放器里选择原画直连播放。",
+        )
+    if media.disc_clips > 0:
+        return PlaybackRejected(
+            reason="原盘（BDMV）暂不支持按码率转码，仍按直连/原样封装播放。",
+            suggestion="请在播放器里选择原画播放。",
+        )
+    if policy.hardware_available:
+        tier = PlaybackTier.HARDWARE_TRANSCODE
+    elif policy.software_transcode_enabled:
+        tier = PlaybackTier.SOFTWARE_TRANSCODE
+    else:
+        return PlaybackRejected(
+            reason="未检测到可用的硬件加速，且软件转码未开启。",
+            suggestion=(
+                "在网页播放器里首次播放需要转码的影片时开启软件转码，或为容器"
+                "配置显卡后在「播放」诊断里重新检测硬件加速。"
+            ),
+        )
+    if media.hdr and not policy.hardware_available:
+        # 与网页端同一条底线：软件 tone-map 是幻灯片，不硬撑
+        return PlaybackRejected(
+            reason=f"这部片是 {media.hdr}，转码需要显卡做色调映射，但未检测到可用的硬件加速。",
+            suggestion="请选择原画直连播放，或为容器配置显卡。",
+        )
+
+    audio = _capped_audio_plan(media, preferred_audio)
+    label = (media.video_codec or "未知").upper()
+    reason = f"播放器要求限制码率，视频 {label} 按上限重新编码为 H.264；{audio_note(audio)}"
+    return PlaybackPlan(
+        tier=tier,
+        file_id=media.file_id,
+        container="hls-fmp4",
+        video=_build_video_plan(media, tier, policy, max_height),
+        audio=audio,
+        # 字幕不进计划：本函数只服务 Jellyfin 协议层，字幕由它按协议自己投递
+        subtitles=(),
+        audio_tracks=media.audio_tracks,
+        reason=reason,
+    )
+
+
+def audio_note(audio: AudioPlan) -> str:
+    """音频计划的一句中文说明（诊断/日志用）。"""
+    codec = (audio.codec or "未知").upper()
+    if audio.action == "copy":
+        return f"音轨 {codec} 原样保留" if audio.track_ref else "无音轨"
+    channels = f" {audio.channels} 声道" if audio.channels else ""
+    return f"音轨已转为 {codec}{channels}"
+
+
+def _capped_audio_plan(media: MediaProfile, preferred_audio: str | None) -> AudioPlan:
+    tracks = media.audio_tracks
+    if not tracks:
+        return AudioPlan(action="copy", track_ref=None)
+    track = next((t for t in tracks if t.ref == preferred_audio), None) or _preferred_audio(tracks)
+    if (track.codec or "").lower() in CAPPED_COPY_AUDIO_CODECS:
+        return _copy_audio_plan(track)
+    channels = track.channels or 2
+    if channels > 2:
+        return AudioPlan(
+            action="transcode",
+            track_ref=track.ref,
+            codec="eac3",
+            channels=min(channels, _EAC3_MAX_CHANNELS),
+            downmix=channels > _EAC3_MAX_CHANNELS,
+        )
+    return AudioPlan(action="transcode", track_ref=track.ref, codec="aac", channels=channels)
 
 
 def needs_keyframe_probe(

@@ -283,7 +283,7 @@ def test_execution_backend_uses_remote_when_local_backend_is_incompatible():
         audio=AudioPlan(action="copy"),
     )
 
-    assert routes_playback._select_execution_backend(
+    assert routes_playback.playback_plan.select_execution_backend(
         decision,
         available=("vaapi", "videotoolbox"),
         local_backends=("vaapi",),

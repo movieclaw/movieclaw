@@ -10,9 +10,10 @@
 播放器：自称「我全都能解」，因此决策引擎对它们必须恒输出档 0。
 
 它是这条**不变量的可执行表述**，由 ``tests/playback/test_decide.py`` 的守护
-用例持有——不是 Jellyfin 兼容层的实际入参。兼容层的判定是个常量，直接写在
+用例持有——不是 Jellyfin 兼容层的实际入参。兼容层的直连判定是个常量，直接写在
 它自己的 MediaSource DTO 里（``movieclaw_jellyfin/catalog.py``），没有绕经
-本引擎；理由见 web-player.md §12.9。
+本引擎；理由见 web-player.md §12.9。播放器**主动要求**转码（码率协商）时走的是
+``decide.plan_capped_transcode``，同样不经本快照（docs/design/jellyfin-transcode.md）。
 
 ⚠️ **已知偏差**：浏览器在没有本机统计数据前，会把所有 ``supported`` 的配置
 乐观报成 ``smooth=true`` / ``powerEfficient=true``。因此首次探测不可全信，

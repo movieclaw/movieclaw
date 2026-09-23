@@ -51,11 +51,13 @@ def quantize_cap(cap_bps: int) -> int:
 
 
 def adapt_to_downlink(
-    decision: PlaybackDecision, downlink_bps: int | None
+    decision: PlaybackDecision, downlink_bps: int | None, *, label: str = "实测线路"
 ) -> PlaybackDecision:
     """给转码计划套上线路能装下的码率上限，必要时连高度一起降。
 
     非计划（consent / rejected）、直通视频、没有带宽读数：原样返回。
+    ``label`` 只进 reason 文案：网页端传的是实测下行，Jellyfin 兼容层传的是
+    播放器声明的码率上限（``MaxStreamingBitrate``），规则完全相同。
     """
     if not isinstance(decision, PlaybackPlan):
         return decision
@@ -89,7 +91,7 @@ def adapt_to_downlink(
         return decision
 
     mbps = downlink_bps / 1_000_000
-    note = f"；实测线路约 {mbps:.1f} Mbps，码率限到 {cap / 1_000_000:.2f} Mbps"
+    note = f"；{label}约 {mbps:.1f} Mbps，码率限到 {cap / 1_000_000:.2f} Mbps"
     if height != target_height:
         note += f"，画质降到 {height}p"
     return replace(

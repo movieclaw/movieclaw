@@ -1719,6 +1719,12 @@ GitHub 的 .deb 直链——apt 按目标架构自己取包，交叉构建 amd64
 
 保留 `universal_capability()`：它不是兼容层的实际入参，而是**「全解码播放器
 必须恒得档 0」这条不变量的可执行表述**，由 `test_decide.py` 的守护用例持有。
+
+> 2026-09-23 补：兼容层后来接入了**由播放器发起**的码率协商
+> （[jellyfin-transcode.md](jellyfin-transcode.md)）。它仍然不走
+> `decide_playback`——那条引擎回答「该不该转」，对全解码播放器恒为不该；
+> 协商回答的是「播放器已要求转，怎么转」，用的是同模块里的
+> `plan_capped_transcode`，复用同一套视频计划装配与 `adapt_to_downlink`。
 真正的共用发生在更下面一层——两条链路的规格输入都是同一份 ffprobe 落库真值
 （`MediaStreams`），这才是「同一份事实」的实际所指。
 

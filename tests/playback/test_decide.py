@@ -1051,3 +1051,76 @@ def test_fmp4_copy_audio_track_avoids_truehd_and_prefers_same_language():
     assert isinstance(decision, PlaybackPlan)
     assert decision.audio.track_ref == "embedded:2" and decision.audio.codec == "ac3"
 
+
+
+# ---------------------------------------------------------------------------
+# 全解码播放器主动要求转码（Jellyfin 码率协商，docs/design/jellyfin-transcode.md §3）
+# ---------------------------------------------------------------------------
+
+
+def test_capped_transcode_uses_hardware_and_keeps_lossy_audio():
+    """有显卡：档 3，视频转 H.264、高度取源与 1080p 上限的较小值；AAC 音轨原样保留。"""
+    from movieclaw_playback.decide import plan_capped_transcode
+
+    decision = plan_capped_transcode(media(resolution="2160p", video_codec="hevc"), WITH_GPU)
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.HARDWARE_TRANSCODE
+    assert decision.container == "hls-fmp4"
+    assert decision.video.action == "transcode" and decision.video.codec == "h264"
+    assert decision.video.height == 1080
+    assert decision.video.tone_map is False
+    assert decision.audio.action == "copy" and decision.audio.codec == "aac"
+    assert decision.audio_tracks == (AAC_51,)
+
+
+def test_capped_transcode_reencodes_heavy_audio_and_maps_hdr():
+    """TrueHD 7.1 装不下码率上限：转 E-AC-3 并降到 5.1；HDR 源必带 tone-map。
+    点选的音轨优先于默认轨。"""
+    from movieclaw_playback.decide import plan_capped_transcode
+
+    flac_stereo = AudioTrack(ref="embedded:2", codec="flac", channels=2)
+    profile = media(hdr="HDR10", audio_tracks=(TRUEHD_71, flac_stereo))
+    decision = plan_capped_transcode(profile, WITH_GPU)
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.video.tone_map is True
+    assert decision.audio.action == "transcode"
+    assert decision.audio.codec == "eac3" and decision.audio.channels == 6
+    assert decision.audio.downmix is True
+    assert "E-AC3" not in decision.reason and "EAC3" in decision.reason
+
+    chosen = plan_capped_transcode(profile, WITH_GPU, preferred_audio="embedded:2")
+    assert isinstance(chosen, PlaybackPlan)
+    assert chosen.audio.codec == "aac" and chosen.audio.channels == 2
+    assert chosen.audio.track_ref == "embedded:2"
+
+
+def test_capped_transcode_max_height_and_software_fallback():
+    """无显卡但软转已开：档 4；max_height 是上限，只会把高度压得更低。"""
+    from movieclaw_playback.decide import plan_capped_transcode
+
+    decision = plan_capped_transcode(media(), NO_GPU_SOFT_ON, max_height=480)
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.SOFTWARE_TRANSCODE
+    assert decision.video.height == 480
+
+    taller = plan_capped_transcode(media(resolution="720p"), NO_GPU_SOFT_ON, max_height=1080)
+    assert isinstance(taller, PlaybackPlan)
+    assert taller.video.height == 720
+
+
+@pytest.mark.parametrize(
+    ("profile", "policy", "keyword"),
+    [
+        (media(), NO_GPU, "软件转码未开启"),
+        (media(hdr="HDR10"), NO_GPU_SOFT_ON, "色调映射"),
+        (media(is_strm=True), WITH_GPU, "strm"),
+        (media(container="bluray", disc_clips=1), WITH_GPU, "原盘"),
+    ],
+)
+def test_capped_transcode_rejections(profile, policy, keyword):
+    """拒绝的四种情形都要给出中文理由：协议层据此回落直连并写日志。"""
+    from movieclaw_playback.decide import plan_capped_transcode
+
+    decision = plan_capped_transcode(profile, policy)
+    assert isinstance(decision, PlaybackRejected)
+    assert keyword in decision.reason

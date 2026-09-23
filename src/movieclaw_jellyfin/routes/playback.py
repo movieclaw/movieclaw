@@ -1,18 +1,22 @@
 """播放链路（设计文档 §6）：PlaybackInfo、取流、整文件下载与外挂字幕。
 
-- PlaybackInfo：不解析 DeviceProfile，恒返回未经设备适配的 MediaSources
-  （等价于"无转码权限的 Jellyfin"，协议合法）；外挂字幕流带
-  DeliveryMethod/DeliveryUrl（无条件输出，jellyfin-subtitle.md §4.3），
-  DefaultAudio/SubtitleStreamIndex 记忆优先（§4.3/S3）；
+- PlaybackInfo：DeviceProfile 的编码条件一律不解析（全解码播放器的 profile
+  就是「我全都能解」），**只消费码率协商**（docs/design/jellyfin-transcode.md）：
+  播放器声明的 ``MaxStreamingBitrate`` 装不下源码率、或明确要求转码时，该版本
+  声明 ``SupportsDirectPlay=false`` 并给 ``TranscodingUrl``；否则照旧直连。
+  外挂字幕流带 DeliveryMethod/DeliveryUrl（无条件输出，jellyfin-subtitle.md
+  §4.3），DefaultAudio/SubtitleStreamIndex 记忆优先（§4.3/S3）；
 - /Videos/{id}/stream：本地文件走 FileResponse（原生 Range/206/HEAD）；
   strm 条目读内容后 302 到云端直链，不代理（零网盘流量）。
   鉴权：真 Jellyfin 此接口匿名，我们要求 token（偏离③，公网暴露考量）；
-- /Videos/{id}/{msId}/Subtitles/{idx}[/{ticks}]/Stream.{fmt}：外挂字幕
-  输出（§4.4）——内容与格式转换来自 movieclaw_playback.subtitles，
+- /Videos/{id}/{msId}/Subtitles/{idx}[/{ticks}]/Stream.{fmt}：字幕输出
+  （§4.4）——外挂轨直接读文件，内封文本轨按需抽出（转码时容器里的字幕进不了
+  HLS 分片，只能旁挂）；内容与格式转换来自 movieclaw_playback.subtitles，
   本层只做 GUID/编号反解与 HTTP 形态；
-- 原盘（docs/design/disc-playback.md）：单剪辑主片按 m2ts 文件直出；多剪辑
-  主片 PlaybackInfo 给 TranscodingUrl，/Videos/{id}/master.m3u8 起一个
-  copy remux 会话（复用网页播放器的 VOD 分片流水线），不重编码。
+- /Videos/{id}/master.m3u8：转码入口。普通文件按 TranscodingUrl 里的目标
+  高度/码率/音轨起一个 H.264 转码会话，原盘多剪辑主片起 copy remux 会话
+  （docs/design/disc-playback.md）；两者都复用网页播放器的会话管理器与 VOD
+  分片流水线，master 列表指到网页播放器的会话端点（带取流 token）。
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
@@ -28,12 +33,26 @@ from sqlalchemy import select
 
 from movieclaw_api.services.library.access import member_visible_ids
 from movieclaw_api.services.playback import watch as playback_watch
+from movieclaw_api.services.playback.adaptive import adapt_to_downlink
 from movieclaw_api.services.playback.disc_source import disc_source_for_file
+from movieclaw_api.services.playback.embedded_subs import (
+    embedded_subtitle_format,
+    extract_embedded_subtitle_async,
+)
 from movieclaw_api.services.playback.ffmpeg_args import SEGMENT_SECONDS
+from movieclaw_api.services.playback.hwprobe import (
+    available_backends,
+    available_local_backends,
+)
 from movieclaw_api.services.playback.limits import (
     MAX_REMUX_CONCURRENCY,
     auto_quota_bytes,
     auto_transcode_concurrency,
+)
+from movieclaw_api.services.playback.plan import load_policy, select_execution_backend
+from movieclaw_api.services.playback.remote_worker import (
+    effective_remote_transcode_config,
+    remote_worker_available,
 )
 from movieclaw_api.services.playback.session import (
     DiskQuotaError,
@@ -62,17 +81,33 @@ from movieclaw_jellyfin.ids import (
     media_source_guid,
 )
 from movieclaw_jellyfin.security import RequestIdentity, require_device
+from movieclaw_jellyfin.transcode import (
+    Negotiation,
+    TranscodeParams,
+    build_transcoding_url,
+    direct_play_allowed,
+    parse_negotiation,
+    parse_transcode_params,
+    register_play_session,
+)
 from movieclaw_playback import activity
 from movieclaw_playback import state as playback_state
 from movieclaw_playback.decide import (
     AudioPlan,
     PlaybackPlan,
+    PlaybackRejected,
     PlaybackTier,
     VideoPlan,
     fmp4_copy_audio_track,
+    plan_capped_transcode,
 )
 from movieclaw_playback.events import ClientInfo
-from movieclaw_playback.hls_vod import build_master_playlist, compute_segment_plan
+from movieclaw_playback.hls_vod import (
+    SegmentPlan,
+    build_master_playlist,
+    compute_segment_plan,
+    compute_uniform_plan,
+)
 from movieclaw_playback.profile import media_profile_from_file
 from movieclaw_playback.streaming import (
     DisconnectAwareFileResponse,
@@ -86,6 +121,8 @@ from movieclaw_playback.streaming import (
 from movieclaw_playback.subtitles import (
     SUBTITLE_OFF,
     SubtitleServeError,
+    embedded_track,
+    parse_embedded_track,
     resolve_default_audio,
     resolve_default_subtitle,
     resolve_external_subtitle,
@@ -151,10 +188,11 @@ async def playback_info(
     if ref is None or ref.kind not in (EntityKind.ITEM, EntityKind.EPISODE):
         raise not_found()
 
-    # query 优先于 body；DeviceProfile 与 LiveStreamId 一律忽略（后者会短路
-    # 源解析，绝不能当 mediaSourceId 用）
+    # query 优先于 body；LiveStreamId 一律忽略（它会短路源解析，绝不能当
+    # mediaSourceId 用）。DeviceProfile 只取 MaxStreamingBitrate（转码协商），
+    # 编码条件不解析——见 movieclaw_jellyfin.transcode
     media_source_id = request.query_params.get("mediaSourceId")
-    audio_stream_index = _int_or_none(_query_ci(request, "audioStreamIndex"))
+    body = None
     if request.method == "POST":
         try:
             body = await request.json()
@@ -165,8 +203,8 @@ async def playback_info(
             if media_source_id is None:
                 raw = lowered.get("mediasourceid")
                 media_source_id = str(raw) if raw else None
-            if audio_stream_index is None:
-                audio_stream_index = _int_or_none(lowered.get("audiostreamindex"))
+    negotiation = parse_negotiation(request.query_params, body)
+    audio_stream_index = negotiation.audio_stream_index
 
     files = await _files_for_ref(ref, identity.device.member_id)
     selected = _select_source(files, media_source_id, item_id)
@@ -189,34 +227,30 @@ async def playback_info(
             session, unit, member_id=identity.device.member_id
         )
     play_session_id = secrets.token_hex(16)
+    # 策略（硬件自检 + 软转开关）只在有普通本地文件时读一次：strm 与原盘
+    # 不走码率协商，纯 strm 条目不为此碰硬件探测
+    policy = (
+        await load_policy()
+        if any(not f.is_disc() and not is_strm(f.file_path) for f, _ in pairs)
+        else None
+    )
     for f, source in pairs:
         _apply_subtitle_delivery(source, f, ref, identity.device.token)
         _apply_default_tracks(source, f, audio_mem, subtitle_mem)
-        _apply_disc_transcoding(
-            source, f, ref, identity.device.token, play_session_id, audio_stream_index
-        )
+        if f.is_disc():
+            _apply_disc_transcoding(
+                source, f, ref, identity.device.token, play_session_id, audio_stream_index
+            )
+        elif policy is not None and not is_strm(f.file_path):
+            _apply_transcode_negotiation(
+                source, f, ref, identity.device.token, play_session_id, negotiation, policy
+            )
     return JSONResponse(
         {
             "MediaSources": [s for _, s in pairs],
             "PlaySessionId": play_session_id,
         }
     )
-
-
-def _query_ci(request: Request, key: str) -> str | None:
-    """取 query 参数，键名大小写不敏感（客户端方言：AudioStreamIndex / audioStreamIndex）。"""
-    wanted = key.lower()
-    for k, v in request.query_params.items():
-        if k.lower() == wanted:
-            return v
-    return None
-
-
-def _int_or_none(raw: object) -> int | None:
-    try:
-        return int(str(raw)) if raw is not None and str(raw).strip() != "" else None
-    except ValueError:
-        return None
 
 
 def _apply_disc_transcoding(
@@ -245,6 +279,128 @@ def _apply_disc_transcoding(
     if audio_index is not None:
         query += f"&AudioStreamIndex={audio_index}"
     source["TranscodingUrl"] = f"/Videos/{_unit_item_guid(ref)}/master.m3u8?{query}"
+
+
+def _audio_index_for_ref(f: LibraryFile, track_ref: str | None) -> int | None:
+    """中性音轨引用 → 协议合成编号（外挂字幕置前：外挂数 + 1 + k）。"""
+    k = parse_embedded_track(track_ref) if track_ref else None
+    if k is None:
+        return None
+    return len(f.external_subtitles or []) + 1 + k
+
+
+def _apply_transcode_negotiation(
+    source: dict,
+    f: LibraryFile,
+    ref: EntityRef,
+    token: str,
+    play_session_id: str,
+    negotiation: Negotiation,
+    policy,
+) -> None:
+    """普通本地文件的码率协商（docs/design/jellyfin-transcode.md §3）。
+
+    三种结局：
+    - 转码能力不可用（无硬件且软转未开 / HDR 无显卡）：一切照旧直连——与
+      加入协商之前的行为完全一致，只多一行说明原因的日志；
+    - 能转但线路装得下（或播放器没限码率）：仍然直连，但
+      ``SupportsTranscoding=true`` 让播放器知道可以要求转码；
+    - 能转且播放器要求（码率超限或 EnableDirectPlay=false）：声明不可直连，
+      给 TranscodingUrl，目标高度/码率按播放器给的总码率经与网页端同一条
+      规则（adapt_to_downlink）算出并写进 URL——master 路由只按 URL 起会话。
+    """
+    if not negotiation.enable_transcoding:
+        return
+    direct_ok = direct_play_allowed(f.bit_rate, negotiation)
+    requested_index = negotiation.audio_stream_index
+    audio_ref = audio_track_for_index(f, requested_index) if requested_index is not None else None
+    if audio_ref is None:
+        default_index = source.get("DefaultAudioStreamIndex")
+        audio_ref = audio_track_for_index(f, default_index) if default_index is not None else None
+    decision = plan_capped_transcode(media_profile_from_file(f), policy, preferred_audio=audio_ref)
+    if isinstance(decision, PlaybackRejected):
+        if not direct_ok:
+            logger.warning(
+                "播放器要求转码（码率上限 %s bps）但无法转码，按直连应答：%s（%s）",
+                negotiation.max_bitrate_bps,
+                f.file_path,
+                decision.reason,
+            )
+        return
+    source["SupportsTranscoding"] = True
+    if direct_ok:
+        return
+    decision = adapt_to_downlink(
+        decision, negotiation.max_bitrate_bps, label="播放器要求的码率上限"
+    )
+    bitrate_exceeded = (
+        negotiation.max_bitrate_bps is not None
+        and f.bit_rate is not None
+        and f.bit_rate > negotiation.max_bitrate_bps
+    )
+    audio_index = _audio_index_for_ref(f, decision.audio.track_ref)
+    source["SupportsDirectPlay"] = False
+    source["SupportsDirectStream"] = False
+    source["TranscodingContainer"] = "mp4"
+    source["TranscodingSubProtocol"] = "hls"
+    if audio_index is not None:
+        source["DefaultAudioStreamIndex"] = audio_index
+    source["TranscodingUrl"] = build_transcoding_url(
+        _unit_item_guid(ref),
+        media_source_id=media_source_guid(f.id),
+        play_session_id=play_session_id,
+        token=token,
+        video_bitrate_bps=decision.video.bitrate_cap_bps,
+        max_height=decision.video.height,
+        audio_stream_index=audio_index,
+        start_ms=negotiation.start_ms,
+        bitrate_exceeded=bitrate_exceeded,
+    )
+    _apply_embedded_subtitle_delivery(source, f, ref, token)
+    logger.info(
+        "播放协商：%s 按播放器要求转码（码率上限 %s bps，源 %s bps）→ %sp，%s",
+        Path(f.file_path).name,
+        negotiation.max_bitrate_bps,
+        f.bit_rate,
+        decision.video.height,
+        decision.reason,
+    )
+
+
+def _apply_embedded_subtitle_delivery(
+    source: dict, f: LibraryFile, ref: EntityRef, token: str
+) -> None:
+    """转码时内封字幕的投递：文本轨旁挂，位图轨撤掉。
+
+    直连时播放器自己解封装内封轨；转码后 HLS 分片里没有字幕流，文本轨只能
+    由服务端抽出来按外挂投递（与网页播放器同一份抽取缓存）。PGS/VobSub 抽不成
+    文本、又不烧录（硬边界 1），留在列表里只会让用户选中一条永远显示不出来的
+    轨——直接从流列表里撤掉，默认字幕指向它时一并清掉。
+    """
+    item_g = _unit_item_guid(ref)
+    ms_g = media_source_guid(f.id)
+    kept: list[dict] = []
+    for stream in source.get("MediaStreams", []):
+        if stream.get("Type") != "Subtitle" or stream.get("IsExternal"):
+            kept.append(stream)
+            continue
+        fmt = embedded_subtitle_format(stream.get("Codec"))
+        if fmt not in ("srt", "ass"):
+            continue
+        stream["DeliveryMethod"] = "External"
+        stream["IsExternalUrl"] = False
+        stream["SupportsExternalStream"] = True
+        stream["IsTextSubtitleStream"] = True
+        stream["DeliveryUrl"] = (
+            f"/Videos/{item_g}/{ms_g}/Subtitles/{stream['Index']}/0/Stream.{fmt}?ApiKey={token}"
+        )
+        kept.append(stream)
+    source["MediaStreams"] = kept
+    default = source.get("DefaultSubtitleStreamIndex")
+    if default is not None and default >= 0:
+        remaining = {s["Index"] for s in kept if s.get("Type") == "Subtitle"}
+        if default not in remaining:
+            source.pop("DefaultSubtitleStreamIndex", None)
 
 
 def _range_start(request: Request) -> int:
@@ -584,9 +740,18 @@ async def subtitle_stream(
         raise not_found()
     sub_ref = resolve_external_subtitle(f, track)
     if sub_ref is None:
-        # 指到内封轨：v1 不做服务端抽取（DirectPlay 播放器自行解封装）
-        logger.warning("字幕请求指向内封轨或台账已失效，无法输出：%s（%s）", f.file_path, track)
-        raise not_found()
+        # 内封轨：转码时容器里的字幕进不了 HLS，按需抽出旁挂（首次通读容器，
+        # 之后走与网页播放器共用的缓存）；直连播放器自行解封装，不会来请求
+        embedded = parse_embedded_track(track)
+        if embedded is not None:
+            sub_ref = await extract_embedded_subtitle_async(f, embedded)
+        if sub_ref is None or sub_ref.format == "sup":
+            logger.warning(
+                "字幕请求指向的内封轨无法作为文本输出（位图轨/抽取失败/台账已失效）：%s（%s）",
+                f.file_path,
+                track,
+            )
+            raise not_found()
     try:
         content, mime = await serve_subtitle_async(sub_ref, out_format)
     except SubtitleServeError as exc:
@@ -595,43 +760,188 @@ async def subtitle_stream(
     return Response(content=content, media_type=mime)
 
 
+@dataclass(frozen=True)
+class _SessionSpec:
+    """master.m3u8 两种来路（普通文件转码 / 原盘 remux）共用的开会话参数。"""
+
+    plan: PlaybackPlan
+    segment_plan: SegmentPlan | None
+    display_name: str
+    start_ms: int = 0
+    hw_backend: str | None = None
+    use_remote: bool = False
+    remote_base_url: str = ""
+    source_concat: str | None = None
+
+
 @router.get("/Videos/{item_id}/master.m3u8")
 async def video_hls_master(
     request: Request,
     item_id: str,
     identity: RequestIdentity = Depends(require_device),
 ) -> Response:
-    """原盘多剪辑的 HLS 入口（docs/design/disc-playback.md §3.5）。
+    """HLS 转码入口（docs/design/jellyfin-transcode.md §4；原盘见 disc-playback.md §3.5）。
 
-    只服务原盘：普通文件本层恒直连（偏离①）。做的事与网页播放器开会话同源：
-    按主播放列表写 concat 清单、CLPI 关键帧表预生成 VOD 分片规划、起一个
-    ``-c copy`` 的 HLS 会话，然后把 master 列表指到网页播放器的会话端点
-    （带取流 token，播放器媒体内核拉分片不带自定义头）。同片同成员的旧会话
-    先停掉——播放器换音轨/重开都会再打这一条，不清会积 ffmpeg。
+    做的事与网页播放器开会话同源：按 TranscodingUrl 里的目标（高度/码率/音轨）
+    装配计划，起一个 HLS 会话，把 master 列表指到网页播放器的会话端点（带取流
+    token，播放器媒体内核拉分片不带自定义头）。同片同成员的旧会话先停掉——
+    播放器换清晰度/换音轨/重开都会再打这一条，不清会积 ffmpeg。
     """
     ref = decode_guid(item_id)
     if ref is None or ref.kind not in (EntityKind.ITEM, EntityKind.EPISODE):
         raise not_found()
+    params = parse_transcode_params(request.query_params)
     files = await _files_for_ref(ref, identity.device.member_id)
-    selected = _select_source(files, request.query_params.get("mediaSourceId"), item_id)
+    selected = _select_source(files, params.media_source_id, item_id)
     if not selected:
         raise not_found()
     f = selected[0]
-    if not f.is_disc() or f.id is None:
-        raise not_found()
-    disc = disc_source_for_file(f)
-    if disc is None:
-        logger.warning("原盘 HLS 拒绝：主播放列表不可读：%s", f.file_path)
+    if f.id is None or is_strm(f.file_path):
+        # strm 只直连（硬边界：转码要先把云端内容拉到服务器）
         raise not_found()
     if activity.device_ended(identity.device.device_id):
         raise bad_request_text("播放已被管理员结束")
 
+    if f.is_disc():
+        spec = await _disc_remux_spec(f, params)
+    else:
+        spec = await _capped_transcode_spec(f, params)
+
+    member_id = identity.device.member_id
+    manager = get_session_manager()
+    policy = await get_setting_store().get(PlaybackPolicySetting)
+    await manager.stop_for_file(f.id, member_id)
+    try:
+        session = await manager.start(
+            spec.plan,
+            source_path=f.file_path,
+            member_id=member_id,
+            start_ms=spec.start_ms,
+            segment_plan=spec.segment_plan,
+            hw_backend=spec.hw_backend,
+            max_transcode=auto_transcode_concurrency(hardware=bool(spec.hw_backend)),
+            max_remux=MAX_REMUX_CONCURRENCY,
+            quota_bytes=auto_quota_bytes(manager.cache_root),
+            use_remote=spec.use_remote,
+            remote_base_url=spec.remote_base_url,
+            display_name=spec.display_name,
+            device_id=identity.device.device_id,
+            cache=policy.transcode_cache_enabled,
+            source_concat=spec.source_concat,
+        )
+    except (SessionLimitError, DiskQuotaError, SessionStartError) as exc:
+        logger.warning("Jellyfin HLS 会话启动失败：%s（%s）", f.file_path, exc)
+        raise not_found() from None
+    if params.play_session_id:
+        # 播放器停播/换清晰度时按 PlaySessionId 精确停这一个会话
+        register_play_session(
+            params.play_session_id, session.id, alive=lambda sid: manager.get(sid) is not None
+        )
+    token = await issue_stream_token(
+        member_id=member_id,
+        file_id=f.id,
+        session_id=session.id,
+        device_id=identity.device.device_id,
+    )
+    logger.info(
+        "Jellyfin HLS 会话就绪：档 %s · %s · session=%s（%s）",
+        int(spec.plan.tier),
+        spec.display_name,
+        session.id,
+        spec.plan.reason,
+    )
+    return Response(
+        content=build_master_playlist(
+            media_uri=f"/api/v1/playback/sessions/{session.id}/index.m3u8",
+            query=f"?token={token}",
+        ),
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _capped_transcode_spec(f: LibraryFile, params: TranscodeParams) -> _SessionSpec:
+    """普通文件：按 TranscodingUrl 的目标装配 H.264 转码计划。
+
+    计划与 PlaybackInfo 协商时算出的**必须一致**——高度与码率上限都从 URL 还原
+    （PlaybackInfo 把 adapt_to_downlink 的结果写进了 URL），本函数不再重算码率。
+    执行后端的选法与网页播放器同一个函数；硬件档在准备阶段落空（Worker 断线、
+    滤镜链不兼容）时按软转开关决定退软转还是拒绝，绝不把硬件档的计划悄悄交给
+    libx264。
+    """
+    policy = await load_policy()
+    audio_ref = (
+        audio_track_for_index(f, params.audio_stream_index)
+        if params.audio_stream_index is not None
+        else None
+    )
+    if audio_ref is None:
+        default_index = resolve_default_audio(f, None)
+        audio_ref = embedded_track(default_index if default_index is not None else 0)
+    decision = plan_capped_transcode(
+        media_profile_from_file(f), policy, preferred_audio=audio_ref, max_height=params.max_height
+    )
+    if isinstance(decision, PlaybackRejected):
+        logger.warning("Jellyfin 转码请求被拒绝：%s（%s）", f.file_path, decision.reason)
+        raise not_found()
+    if params.video_bitrate_bps:
+        decision = replace(
+            decision,
+            video=replace(decision.video, bitrate_cap_bps=params.video_bitrate_bps),
+            reason=f"{decision.reason}；码率限到 {params.video_bitrate_bps / 1_000_000:.2f} Mbps",
+        )
+    hw_backend: str | None = None
+    use_remote = False
+    if decision.tier is PlaybackTier.HARDWARE_TRANSCODE:
+        backends, local_backends = await asyncio.gather(
+            asyncio.to_thread(available_backends), asyncio.to_thread(available_local_backends)
+        )
+        hw_backend, use_remote = select_execution_backend(
+            decision,
+            available=backends,
+            local_backends=local_backends,
+            remote_video_available=remote_worker_available("videotoolbox"),
+        )
+        if hw_backend is None:
+            if not policy.software_transcode_enabled:
+                logger.warning(
+                    "Jellyfin 转码请求被拒绝：硬件加速当前不可用且软件转码未开启：%s", f.file_path
+                )
+                raise not_found()
+            decision = replace(
+                decision,
+                tier=PlaybackTier.SOFTWARE_TRANSCODE,
+                reason=f"{decision.reason}；硬件加速当前不可用，改为软件转码",
+            )
+    segment_plan = (
+        compute_uniform_plan(float(f.duration_seconds), target_s=SEGMENT_SECONDS)
+        if f.duration_seconds
+        else None
+    )
+    return _SessionSpec(
+        plan=decision,
+        segment_plan=segment_plan,
+        display_name=Path(f.file_path).name,
+        start_ms=params.start_ms,
+        hw_backend=hw_backend,
+        use_remote=use_remote,
+        remote_base_url=effective_remote_transcode_config().base_url if use_remote else "",
+    )
+
+
+async def _disc_remux_spec(f: LibraryFile, params: TranscodeParams) -> _SessionSpec:
+    """原盘多剪辑：按主播放列表 concat、CLPI 关键帧表预生成 VOD 规划，``-c copy``
+    封装为 HLS，不重编码（docs/design/disc-playback.md §3.5）。"""
+    disc = disc_source_for_file(f)
+    if disc is None:
+        logger.warning("原盘 HLS 拒绝：主播放列表不可读：%s", f.file_path)
+        raise not_found()
+
     # 音轨：协议编号 → 中性轨引用；没给/越界用默认轨。再按「能否原样封装进
     # fMP4」回退（TrueHD/LPCM 装不进 mp4，蓝光 TrueHD 自带的 AC-3 核心顶上）
     requested_ref = None
-    protocol_index = _int_or_none(_query_ci(request, "audioStreamIndex"))
-    if protocol_index is not None:
-        requested_ref = audio_track_for_index(f, protocol_index)
+    if params.audio_stream_index is not None:
+        requested_ref = audio_track_for_index(f, params.audio_stream_index)
     if requested_ref is None:
         default_index = resolve_default_audio(f, None)
         requested_ref = f"embedded:{default_index if default_index is not None else 0}"
@@ -645,7 +955,7 @@ async def video_hls_master(
         )
     plan = PlaybackPlan(
         tier=PlaybackTier.REMUX,
-        file_id=f.id,
+        file_id=f.id or 0,
         container="hls-fmp4",
         video=VideoPlan(action="copy", codec=f.video_codec, source_bit_depth=f.bit_depth),
         audio=AudioPlan(
@@ -665,39 +975,9 @@ async def video_hls_master(
         if keyframes is not None and duration_s > 0
         else None
     )
-    member_id = identity.device.member_id
-    manager = get_session_manager()
-    policy = await get_setting_store().get(PlaybackPolicySetting)
-    await manager.stop_for_file(f.id, member_id)
-    try:
-        session = await manager.start(
-            plan,
-            source_path=f.file_path,
-            member_id=member_id,
-            start_ms=0,
-            segment_plan=segment_plan,
-            max_transcode=auto_transcode_concurrency(hardware=False),
-            max_remux=MAX_REMUX_CONCURRENCY,
-            quota_bytes=auto_quota_bytes(manager.cache_root),
-            display_name=disc.display_name,
-            device_id=identity.device.device_id,
-            cache=policy.transcode_cache_enabled,
-            source_concat=disc.concat_list(),
-        )
-    except (SessionLimitError, DiskQuotaError, SessionStartError) as exc:
-        logger.warning("原盘 HLS 会话启动失败：%s（%s）", f.file_path, exc)
-        raise not_found() from None
-    token = await issue_stream_token(
-        member_id=member_id,
-        file_id=f.id,
-        session_id=session.id,
-        device_id=identity.device.device_id,
-    )
-    return Response(
-        content=build_master_playlist(
-            media_uri=f"/api/v1/playback/sessions/{session.id}/index.m3u8",
-            query=f"?token={token}",
-        ),
-        media_type="application/vnd.apple.mpegurl",
-        headers={"Cache-Control": "no-store"},
+    return _SessionSpec(
+        plan=plan,
+        segment_plan=segment_plan,
+        display_name=disc.display_name,
+        source_concat=disc.concat_list(),
     )
