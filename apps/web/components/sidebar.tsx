@@ -566,8 +566,8 @@ function RunRow({
           <div
             ref={menuRef}
             className="menu-surface w-44 overflow-hidden p-1.5"
-            // z 必须压过移动端抽屉（.mobile-drawer 是 60）：侧栏在窄屏上装进抽屉，
-            // 菜单虽 Portal 到 body，z 不够会被抽屉盖住——表现为点 ⋯ 毫无反应
+            // z 取菜单档 70：Portal 到 body 后与全站浮层同层比较，须压过 60 档的
+            // 全屏面板（原移动端抽屉，现为撰写面板），否则会被盖住、点 ⋯ 毫无反应
             style={{ position: "fixed", left: menuPos.left, top: menuPos.top, zIndex: 70 }}
           >
             <button

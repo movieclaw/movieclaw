@@ -449,7 +449,7 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
     <p style="margin-top:10px;font-size:12px;color:var(--faint)">Apple 只公布了规则（浮在内容之上、胶囊、Regular 玻璃、最小化行为、搜索尾端独立），没有公布 pt 数值；数值来自社区对 iOS 26 截图的量测。</p>
 
     <h2>与现在的差别</h2>
-    <p>银玻璃主题在手机上目前没有底栏，导航靠顶栏 ☰ 打开抽屉。这版把高频内容入口（媒体库、发现、订阅）搬到底栏，低频与账号操作收进「更多」，新会话退到右上角撰写键。抽屉整个退役。主题框架已有 <b>mobileTabBar</b> 坑位，接入不改外壳结构。</p>
+    <p>银玻璃主题在手机上目前没有底栏，导航靠顶栏 ☰ 打开抽屉。这版把高频内容入口（发现、媒体库、订阅）搬到底栏，低频与账号操作收进「更多」，新会话退到右上角撰写键。抽屉整个退役。主题框架已有 <b>mobileTabBar</b> 坑位，接入不改外壳结构。</p>
   </aside>
 </div>
 <div class="hint-mobile" aria-hidden="true">下滑收缩 · 右下搜索 · 右上新会话</div>
@@ -463,8 +463,8 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
     more:'<svg viewBox="0 0 24 24"><circle class="f" cx="12" cy="12" r="9"/><g style="fill:var(--ink-on,currentColor);stroke:none"><circle cx="7.5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="16.5" cy="12" r="1.4"/></g></svg>'
   };
   var TABS=[
-    {id:'library',label:'媒体库',title:'媒体库'},
     {id:'discover',label:'发现',title:'发现'},
+    {id:'library',label:'媒体库',title:'媒体库'},
     {id:'subs',label:'订阅',title:'我的订阅'},
     {id:'more',label:'更多',title:'更多'}
   ];
@@ -472,7 +472,7 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
       ind=document.getElementById('ind'),mini=document.getElementById('mini'),screen=document.querySelector('.screen'),
       ptitle=document.getElementById('ptitle'),q=document.getElementById('q');
   tabs.style.setProperty('--cell',(100/TABS.length)+'%');
-  var current='library',lastY={},minimized=false;
+  var current='discover',lastY={},minimized=false;
 
   /* 选中态图标：填充符号里挖出来的线条要用底栏色，而不是继续用字色 */
   var style=document.createElement('style');
@@ -502,7 +502,7 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
     if(v===minimized)return;
     minimized=v;dock.classList.toggle('min',v);
   }
-  select('library',0);
+  select('discover',0);
 
   /* 滚动最小化：向下滚且离顶超过 40px 才收，向上滚 10px 或回到顶部即展开 */
   document.querySelectorAll('.page').forEach(function(p){

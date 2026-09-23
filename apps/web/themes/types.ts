@@ -50,7 +50,7 @@ export interface PageActionsProps {
   children: ReactNode;
 }
 
-/** 移动端设置页「返回 + 标题」条 props（Netflix 专属坑位；银玻璃 undefined） */
+/** 移动端设置页「返回 + 标题」条 props（基础实现 components/mobile-settings-nav） */
 export interface MobileSettingsNavProps {
   title: string;
   backHref: Route;
@@ -63,9 +63,9 @@ export interface MobileSettingsNavProps {
 export interface ThemeSlots {
   /** 桌面顶栏。银玻璃 = undefined（内建侧栏布局，无全局顶栏） */
   desktopTopNav?: ComponentType<DesktopTopNavProps>;
-  /** 移动端底部标签栏。银玻璃 = undefined（抽屉 + 全局顶栏，无底栏） */
+  /** 移动端底部标签栏。基础实现 = GlassTabBar（iOS 26 液态玻璃悬浮胶囊）；Netflix = 实底黑条 */
   mobileTabBar?: ComponentType;
-  /** 移动端设置页「返回 + 标题」条。银玻璃 = undefined（/settings 重定向到分区） */
+  /** 移动端设置页「返回 + 标题」条。基础实现 = MobileSettingsNav */
   mobileSettingsNav?: ComponentType<MobileSettingsNavProps>;
   /** 设置分区菜单。基础实现 = SettingsSidebar（玻璃面板 SaaS 菜单） */
   settingsNav?: ComponentType<SettingsSidebarProps>;
@@ -79,7 +79,9 @@ export interface ThemeSlots {
 
 /** 主题专属整页（路由壳在 app/(app)/——App Router 路由是构建期静态的） */
 export interface ThemePages {
+  /** /my：基础实现 = MorePage（银玻璃底栏的「更多」）；Netflix = 「我的」 */
   my?: ComponentType;
+  /** /settings 移动端分区列表页：基础实现 = SettingsIndex */
   settingsIndex?: ComponentType;
   subscriptions?: ComponentType;
 }
@@ -105,4 +107,6 @@ export interface ResolvedTheme {
 export interface ResolvedSlots extends ThemeSlots {
   settingsNav: ComponentType<SettingsSidebarProps>;
   detailNav: ComponentType<DetailNavProps>;
+  mobileTabBar: ComponentType;
+  mobileSettingsNav: ComponentType<MobileSettingsNavProps>;
 }

@@ -11,7 +11,8 @@ const SIDEBAR_COLLAPSED_KEY = "movieclaw.sidebar-collapsed";
 const SETTINGS_RETURN_KEY = "movieclaw.settings-return";
 
 import { FeedbackProvider } from "@/components/feedback";
-import { MenuIcon } from "@/components/icons";
+import { ComposeSheet } from "@/components/compose-sheet";
+import { PencilIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS } from "@/components/page-nav";
 import { SearchCommand, type SearchSubmitOptions } from "@/components/search-command";
 import { Sidebar } from "@/components/sidebar";
@@ -89,7 +90,7 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   // PageNav 用这份会话标记在 Safari 判断「真实上一页是否仍在站内」；Chromium
   // 会直接读取 Navigation API，不依赖该兼容层。
   useAppNavigationTracking(pathname);
-  // 移动端（< 768px）走另一套骨架：单栏 + 顶栏 + 抽屉式侧栏，见文件末尾的分支渲染
+  // 移动端（< 768px）走另一套骨架：单栏 + 顶栏 + 底部标签栏，见文件末尾的分支渲染
   const isMobile = useIsMobile();
   // 结构层主题：解析自主题注册表（换外壳 = 提供桌面顶栏 / 底部标签栏等坑位）。
   // isNetflix 局部名沿用，语义 = 当前主题是结构级主题
@@ -98,9 +99,11 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   const { slots } = useResolvedTheme();
   const SettingsNav = slots.settingsNav;
   const MobileSettingsNav = slots.mobileSettingsNav;
-  // 抽屉开合（银玻璃移动端）。「我的」在 Netflix 主题下是独立路由页（/my），
-  // 不再是外壳管理的开合面板（原 NetflixMySheet 已退役）。
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  // 新会话撰写面板开合（银玻璃移动端，components/compose-sheet.tsx）。原移动端
+  // 抽屉侧栏已随液态玻璃底栏退役（docs/design/web-themes-mobile/04）：主导航进
+  // 底栏，低频入口进「更多」（/my），新会话收成顶栏撰写键 + 本面板。
+  const [composeOpen, setComposeOpen] = useState(false);
+  const { isAdmin } = usePermissions();
   // 本页是否自带顶栏（详情类页面的 PageNav 会自登记，见 lib/page-chrome.tsx）。
   // 计数而非布尔：路由切换时新旧页面短暂共存，先卸载的那个不能把状态清零。
   const [pageNavCount, setPageNavCount] = useState(0);
@@ -236,44 +239,54 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   // 移动端顶栏归属：详情类页面自带 PageNav（返回 + 标题 + 页面操作），
   // 全局顶栏再叠一条就成了两层顶栏，于是把这一行让给页面自己（见 lib/page-chrome.tsx）。
   const showMobileTopBar = isMobile && pageNavCount === 0;
-  // 导航浮层的唤起：银玻璃移动端开抽屉；Netflix 主题下「我的」已是路由页
-  // （/my），任何残留的唤起点（如旧书签脚本）统一改为跳转，chrome 契约不变。
-  const openDrawer = useCallback(() => {
-    if (isNetflix) router.push("/my");
-    else setDrawerOpen(true);
-  }, [isNetflix, router]);
-  const closeDrawer = useCallback(() => {
-    setDrawerOpen(false);
-  }, []);
+  // 银玻璃移动端的液态玻璃底栏：Agent 会话页（沉浸路由）不显示——页底是会话
+  // 输入行，底栏压上去就挡住了；iOS 信息的会话页同样收起标签栏。
+  const showGlassTabBar = isMobile && !isNetflix && !isImmersive;
+  // 新会话：银玻璃移动端打开撰写面板；其余形态（桌面、Netflix）直接进 /new 整页
+  const openCompose = useCallback(() => {
+    if (isMobile && !isNetflix) setComposeOpen(true);
+    else router.push("/new" as Route);
+  }, [isMobile, isNetflix, router]);
+  const closeCompose = useCallback(() => setComposeOpen(false), []);
   const pageChrome = useMemo(
     () => ({
       registerPageNav,
       onSearch: handleSearch,
-      openDrawer,
-      closeDrawer,
+      openCompose,
+      searchInTabBar: showGlassTabBar,
       setTopBarActions,
       setTopBarTitle,
     }),
-    [registerPageNav, handleSearch, openDrawer, closeDrawer, setTopBarActions, setTopBarTitle],
+    [registerPageNav, handleSearch, openCompose, showGlassTabBar, setTopBarActions, setTopBarTitle],
   );
 
-  // 移动端抽屉：切换路由即自动收起（点导航项跳走后浮层不该还盖着新页面），
+  // 撰写面板：切换路由即收起（发起任务后会跳会话页，面板不该还盖着新页面），
   // 回到桌面版式时也一并复位，避免再切回窄屏时莫名其妙已经开着。
   useEffect(() => {
-    setDrawerOpen(false);
+    setComposeOpen(false);
   }, [pathname, isMobile]);
 
-  // 抽屉打开时按 Esc 关闭（外接键盘 / 平板场景）
-  useEffect(() => {
-    if (!drawerOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDrawerOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [drawerOpen]);
+  // 移动端主区内容：设置路由挂「返回 + 标题」条（/settings 是分区列表页，
+  // /settings/[x] 是分区内容页，返回链固定 /settings/[x] → /settings → /my），
+  // 其余路由原样。两个主题的移动端共用这一段（设置返回条与列表页是基础实现）。
+  const mobileMainContent =
+    isSettings && MobileSettingsNav ? (
+      <div className="flex h-full flex-col">
+        <MobileSettingsNav
+          title={
+            isSettingsIndex
+              ? "设置"
+              : (settingsSections.find((s) => s.id === activeSettings)?.label ?? "设置")
+          }
+          backHref={(isSettingsIndex ? "/my" : "/settings") as Route}
+        />
+        <div className="min-h-0 flex-1">{children}</div>
+      </div>
+    ) : (
+      children
+    );
 
-  // 侧栏本体：桌面常驻左栏、移动端装进抽屉，两处共用同一份实例。
+  // 侧栏本体：只在桌面版式渲染（移动端导航在底部标签栏）。
   // 必须只渲染一份——面板是真实 WebGL 液态玻璃，多一份就多吃一个 WebGL 上下文。
   // （Netflix 主题下玻璃已停用，但侧栏仍只在设置模式出现，同样单实例。）
   const sidebarNode = isSettings ? (
@@ -291,9 +304,8 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
       onSelect={handleSelect}
       onSearch={handleSearch}
       onOpenSettings={openSettings}
-      // 移动端抽屉里没有「折叠成图标窄条」的意义（抽屉本身就是收起态）
-      collapsed={!isMobile && sidebarCollapsed}
-      onToggleCollapse={isMobile ? () => setDrawerOpen(false) : toggleSidebar}
+      collapsed={sidebarCollapsed}
+      onToggleCollapse={toggleSidebar}
       flat={isImmersive}
     />
   );
@@ -313,33 +325,14 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
           >
             {showMobileTopBar && (
               <MobileTopBar
-                onMenu={openDrawer}
                 onSearch={handleSearch}
+                showSearch
                 actions={topBarActions}
                 title={topBarTitle?.text}
               />
             )}
-            <main className="absolute inset-0">
-              {isSettings && MobileSettingsNav ? (
-                /* 设置：/settings 是分区列表页，/settings/[x] 是分区内容页，
-                   本条只承担「返回键 + 标题」（分区下拉浮层已退役——长清单
-                   在触屏上滑不动，见 themes/netflix/pages/settings-index.tsx）。 */
-                <div className="flex h-full flex-col">
-                  <MobileSettingsNav
-                    title={
-                      isSettingsIndex
-                        ? "设置"
-                        : (settingsSections.find((s) => s.id === activeSettings)?.label ?? "设置")
-                    }
-                    backHref={(isSettingsIndex ? "/my" : "/settings") as Route}
-                  />
-                  <div className="min-h-0 flex-1">{children}</div>
-                </div>
-              ) : (
-                children
-              )}
-            </main>
-            {slots.mobileTabBar ? <slots.mobileTabBar /> : null}
+            <main className="absolute inset-0">{mobileMainContent}</main>
+            <slots.mobileTabBar />
           </div>
         ) : (
           /* —— Netflix 桌面：顶栏 + 全宽内容 ——
@@ -381,7 +374,7 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
       <div className={isImmersive ? "page-solid" : "page-scrim"} aria-hidden="true" />
     )}
     {isMobile ? (
-      /* —— 移动端骨架：单栏 + 顶栏，侧栏收进覆盖式抽屉 ——
+      /* —— 移动端骨架：单栏 + 顶栏 + 液态玻璃底栏（docs/design/web-themes-mobile/04） ——
          高度用 100dvh 而非 100vh：移动浏览器的地址栏会收放，100vh 取的是
          「地址栏收起后」的大视口，底部输入区会被推到屏幕外；dvh 跟随实际
          可视高度，是移动端唯一正确的满屏单位。
@@ -389,15 +382,19 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
          外壳得自己按键盘占高收缩，否则贴底的输入行落在键盘底下
          （见 components/viewport-keyboard.tsx）。无键盘时该值为 0。 */
       /* data-topbar：主区要不要为全局顶栏空出那 52px，取决于这一行有没有被
-         页面自己的 PageNav 认领（对应 globals.css 的 .app-shell[data-topbar] 规则）。 */
+         页面自己的 PageNav 认领（对应 globals.css 的 .app-shell[data-topbar] 规则）。
+         data-tabbar：底栏在场时各页 .scroll-safe 的末尾空白加高到底栏之上
+         （globals.css 的 .glass-tabbar 组；主区本身不整体让位，内容从底栏下穿过）。 */
       <div
         className="app-shell viewport-app-height relative z-10 w-full"
         data-topbar={showMobileTopBar}
+        data-tabbar={showGlassTabBar}
       >
         {showMobileTopBar && (
           <MobileTopBar
-            onMenu={openDrawer}
             onSearch={handleSearch}
+            showSearch={!showGlassTabBar}
+            onCompose={isAdmin ? openCompose : undefined}
             actions={topBarActions}
             title={topBarTitle?.text}
           />
@@ -407,7 +404,7 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
             确定的父高度——absolute inset-0 给的是确定值，flex-1 得来的高度在
             百分比解析上是灰色地带。让位顶栏与安全区的内边距由 globals.css
             的 .app-shell > main 统一提供。 */}
-        <main className="absolute inset-0">{children}</main>
+        <main className="absolute inset-0">{mobileMainContent}</main>
       </div>
     ) : (
       /* 浮起圆角卡片布局（对齐参考站 liquid-glass-oss）：外层留 padding、两栏留间隙，
@@ -432,30 +429,11 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
       </div>
     )}
 
-    {/* —— 移动端抽屉 ——
-      作为 .app-shell 的兄弟节点固定定位：外壳有缩放变换与内容裁剪，
-      抽屉挂在里面会被一起缩放/裁掉。关闭时保持挂载（只做位移），
-      侧栏的 WebGL 玻璃与最近会话列表因此不必反复销毁重建。 */}
-    {isMobile && (
-      <>
-        {drawerOpen && (
-          <button
-            type="button"
-            aria-label="关闭侧边栏"
-            onClick={() => setDrawerOpen(false)}
-            className="mobile-drawer-scrim cursor-default"
-          />
-        )}
-        <div
-          className="mobile-drawer"
-          data-open={drawerOpen}
-          aria-hidden={!drawerOpen}
-          inert={!drawerOpen}
-        >
-          {sidebarNode}
-        </div>
-      </>
-    )}
+    {/* —— 移动端底栏与新会话面板 ——
+      作为 .app-shell 的兄弟节点固定定位：外壳在命令面板打开时有缩放变换，
+      fixed 元素挂在里面会被一起缩放、定位基准也会变（原抽屉同理挂在这里）。 */}
+    {showGlassTabBar && <slots.mobileTabBar />}
+    {isMobile && isAdmin && <ComposeSheet open={composeOpen} onClose={closeCompose} />}
     </PageChromeProvider>
   );
 }
@@ -493,7 +471,8 @@ function pathOfNavId(id: string): Route {
 }
 
 /**
- * 移动端顶栏：品牌字标（Netflix 主题回媒体库、银玻璃回新任务首页）+ 搜索。
+ * 移动端顶栏：品牌字标（Netflix 主题回媒体库、银玻璃回发现）+ 页面级控件 +
+ * 右侧按键（Netflix = 搜索；银玻璃 = 新会话撰写键，搜索在底栏尾端的圆钮里）。
  *
  * 为什么是「浮在内容之上」而不是「占一行把内容推下去」：全站有一半页面是
  * 大图氛围页与 Hero 大剧照，顶栏若占位会在画面顶端切出一条硬边。这里做成
@@ -501,18 +480,22 @@ function pathOfNavId(id: string): Route {
  * 一条 `.app-shell > main` 规则里（安全区 + --mobile-topbar-h），
  * 各页面不必各写各的 padding，新增路由自动继承。
  *
- * ☰ 只在银玻璃主题渲染（开侧栏抽屉）：Netflix 主题的导航全在底部页签与
- * 「我的」页里，顶栏每一格宽度都要留给页面级控件（发现页的电影/剧集 +
- * 数据源切换）——对齐 Netflix App 顶栏「左字标、右搜索」的极简形态。
+ * 两个主题都不再放 ☰：导航全在底部页签里（银玻璃的抽屉侧栏已随液态玻璃
+ * 底栏退役，docs/design/web-themes-mobile/04），顶栏每一格宽度都留给页面级
+ * 控件（发现页的电影/剧集 + 数据源切换）。
  */
 function MobileTopBar({
-  onMenu,
   onSearch,
+  showSearch,
+  onCompose,
   actions,
   title,
 }: {
-  onMenu: () => void;
   onSearch: (keyword: string, scope: SearchScope, options?: SearchSubmitOptions) => void;
+  /** 是否在顶栏放搜索键（底栏已有搜索圆钮时 false：SearchCommand 全站只能挂一份） */
+  showSearch: boolean;
+  /** 新会话撰写键的回调；不传则不渲染（成员没有 Agent 能力、Netflix 入口在「我的」） */
+  onCompose?: () => void;
   /** 当前页面挂上来的页面级控件（见 lib/page-chrome.tsx 的 setTopBarActions） */
   actions?: React.ReactNode;
   /** 当前页面挂上来的标题：有则顶替品牌字标（见 setTopBarTitle） */
@@ -520,31 +503,14 @@ function MobileTopBar({
 }) {
   const router = useRouter();
   const { canSearch } = usePermissions();
-  // 品牌与 ☰ 落点随主题分叉：Netflix 用红色 SVG 字标、不放 ☰（导航在底栏）；
-  // 银玻璃 = rotor 图片 logo + ☰ 开侧栏抽屉。雾层色由 globals.css 的
-  // html[data-theme="netflix"] .mobile-topbar 覆盖，组件里不用管。
+  // 品牌随主题分叉：Netflix 用红色 SVG 字标、银玻璃用 rotor 图片 logo。
+  // 雾层色由 globals.css 的 html[data-theme="netflix"] .mobile-topbar 覆盖，组件里不用管。
   const isNetflix = useTheme().structural;
   return (
     <header className="mobile-topbar pointer-events-none absolute inset-x-0 top-0 z-40">
       <div className="pointer-events-auto flex h-[52px] items-center gap-2 px-3">
-        {/* 复用子页面 PageNav 的圆形玻璃键（移动端 44px，iOS HIG 最小可点目标）：
-            全局顶栏与详情页顶栏是同一层级的导航条，控件必须同一副长相。
-            这里刻意不用真实 WebGL 液态玻璃（LiquidGlassIconButton）：每颗都是独立
-            WebGL 上下文（移动 Safari 上限个位数，超限静默丢弃最老的上下文），且它
-            只会折射静态背景大图——顶栏浮在滚动的海报墙上，CSS backdrop-blur 对真实
-            内容实时取样反而更接近真玻璃（2026-07 实测对比后的结论）。 */}
-        {!isNetflix && (
-          <button
-            type="button"
-            onClick={onMenu}
-            aria-label="打开侧边栏"
-            className={PAGE_NAV_BUTTON_CLASS}
-          >
-            <MenuIcon className="size-[22px]" />
-          </button>
-        )}
         {title ? (
-          // 页面标题顶替字标：min-w-0 + truncate 让超长标题在汉堡与右侧控件
+          // 页面标题顶替字标：min-w-0 + truncate 让超长标题在左缘与右侧控件
           // 之间安全截断成省略号，绝不把搜索键挤出屏幕或撑破顶栏
           <h1 className="min-w-0 flex-1 truncate text-body font-semibold tracking-[-0.01em] text-[var(--text)]">
             {title}
@@ -567,11 +533,13 @@ function MobileTopBar({
           </button>
         ) : (
           /* 字标可点区拉到 44px 高（与图标键同标准）——图片本身保持 h-7 的视觉
-             大小，命中区靠按钮撑起，否则 28px 高的字标在触屏上很难点中 */
+             大小，命中区靠按钮撑起，否则 28px 高的字标在触屏上很难点中。
+             银玻璃移动端的首页就是底栏首个页签「发现」（/ 在手机上 replace 到
+             /discover/movie，新任务收进撰写键），字标直达它，省一次重定向 */
           <button
             type="button"
-            onClick={() => router.push("/")}
-            aria-label="回到首页"
+            onClick={() => router.push("/discover/movie" as Route)}
+            aria-label="回到发现"
             className="flex h-11 shrink-0 items-center transition-opacity active:opacity-60"
           >
             <Image
@@ -593,10 +561,22 @@ function MobileTopBar({
             把布局占位原样收回——52px 顶栏的排版不变，角标不再被削顶。 */}
         <div className="ml-auto flex min-w-0 shrink items-center gap-2 overflow-x-auto scroll-none py-1.5 -my-1.5">
           {actions}
-          {canSearch && (
+          {showSearch && canSearch && (
             <div className="shrink-0">
               <SearchCommand onSearch={onSearch} triggerClassName={PAGE_NAV_BUTTON_CLASS} />
             </div>
+          )}
+          {/* 新会话撰写键：iOS 信息 / 邮件的 compose 惯例（液态玻璃下导航栏按钮
+              是独立圆钮），点开从底部升起撰写面板；与 PageNav 同一副圆形玻璃键 */}
+          {onCompose && (
+            <button
+              type="button"
+              onClick={onCompose}
+              aria-label="新会话"
+              className={`${PAGE_NAV_BUTTON_CLASS} shrink-0`}
+            >
+              <PencilIcon className="size-[20px]" />
+            </button>
           )}
         </div>
       </div>

@@ -1,7 +1,8 @@
 # 04 iOS 26 液态玻璃底栏——银玻璃主题移动端导航方案（调研 + 样稿）
 
-状态：**调研与样稿**，未落代码。样稿见 `docs/design/mockups/ios-liquid-glass-tabbar-demo.html`
-（手机上直接打开即整屏演示，桌面上是手机框 + 规格侧栏）。
+状态：**已落地第一版（2026-09-23）**，实现与原方案的差异见 §3.3。样稿见
+`docs/design/mockups/ios-liquid-glass-tabbar-demo.html`（手机上直接打开即整屏演示，
+桌面上是手机框 + 规格侧栏）。
 
 ## 0. 结论先行
 
@@ -103,20 +104,20 @@
 行为：向下滚且离顶 > 40px → 收缩；向上滚 10px 或回顶部或点页签 → 展开；搜索圆钮
 点开 → 底栏折叠、搜索框占满；右上角撰写键 → 新会话面板从底部升起、压暗底层。
 
-## 3. 接入本站的方案（未实施，供拍板）
+## 3. 接入本站的方案
 
 ### 3.1 页签映射（2026-09-23 用户拍板后修订）
 
 iOS 上算上搜索圆钮最多放 5 个元素，390pt 视口里 4 页签 + 搜索每格约 70pt，已是
-中文双字标签的下限。用户两条意见：**要有一个「更多」收纳切换账号这类操作**；
-**新会话不是高频操作，要收起来**。据此定为：
+中文双字标签的下限。用户三条意见：**要有一个「更多」收纳切换账号这类操作**；
+**新会话不是高频操作，要收起来**；**发现排第一**。据此定为：
 
 | 底栏 | 落点 | 备注 |
 |---|---|---|
+| 发现 | `/discover/movie` | 首个页签；手机上 `/` 与 PWA 冷启动都 replace 到这里。电影 / 剧集合并为一页签，页内用现有顶栏 actions 切换 |
 | 媒体库 | `/library` | |
-| 发现 | `/discover/movie` | 电影 / 剧集合并为一页签，页内用现有顶栏 actions 切换（与 Netflix 主题一致） |
 | 订阅 | `/subscriptions` | 按 `canSubscribe` 显隐，成员侧退化为 3 页签 |
-| 更多 | `/more`（新路由页） | iOS「More」惯例的分组列表：用户头 / 新会话 / 活动（角标）/ 设置 / 最近会话 / 切换账号 / 退出登录 |
+| 更多 | `/my`（复用既有路由） | iOS「More」惯例的分组列表：用户头 / 新会话 / 活动（角标）/ 设置 / 最近会话 / 切换账号 / 退出登录 |
 | 🔍（独立圆钮） | 唤起 `SearchCommand` | 搜索从顶栏移到底栏尾端 |
 
 **新会话的收法**：顶栏右侧一颗玻璃「撰写」圆钮（iOS 信息 / 邮件的 compose 惯例，
@@ -125,8 +126,9 @@ iOS 上算上搜索圆钮最多放 5 个元素，390pt 视口里 4 页签 + 搜�
 「新会话」作为第二入口。管理员专属，成员侧不渲染撰写键。
 
 **抽屉侧栏在移动端整个退役**：它承载的每一项都有了新落点（主导航 → 底栏；
-活动 / 设置 / 最近会话 / 切换账号 → 更多；新会话 → 撰写键）。`PageChrome.openDrawer`
-契约保留，银玻璃移动端改为跳 `/more`（与 Netflix 分支改跳 `/my` 同型）。
+活动 / 设置 / 最近会话 / 切换账号 → 更多；新会话 → 撰写键；设置分区 → /settings
+列表页）。`PageChrome.openDrawer / closeDrawer` 已无调用方，一并移除，换成
+`openCompose`（发起新会话）与 `searchInTabBar`（搜索是否已在底栏）。
 
 ### 3.2 代码落点
 
@@ -150,7 +152,24 @@ iOS 上算上搜索圆钮最多放 5 个元素，390pt 视口里 4 页签 + 搜�
 6. **无障碍 / 回退**：`prefers-reduced-transparency` 提高 alpha；`prefers-reduced-motion`
    关闭弹簧；「界面质感」滑杆若已有"减少透明"档，复用同一变量。
 
-### 3.3 验收
+### 3.3 落地实现（2026-09-23）
+
+| 文件 | 作用 |
+|---|---|
+| `components/glass-tab-bar.tsx` | 底栏本体（`mobileTabBar` 坑位基础实现）：四页签 + 搜索圆钮、滑动选中胶囊、捕获阶段监听各页滚动容器实现下滑收缩 |
+| `components/more-page.tsx` | 「更多」页（`pages.my` 基础实现），iOS inset grouped 列表 |
+| `components/compose-sheet.tsx` | 新会话撰写面板，内嵌 `NewTask`；首次打开后保持挂载以保留草稿 |
+| `components/mobile-settings-nav.tsx`、`components/settings-index.tsx` | 由 Netflix 主题目录**上移为基础实现**：抽屉退役后银玻璃也需要设置列表页与返回条，两主题共用 |
+| `components/app-shell.tsx` | 银玻璃移动端挂底栏与面板（`.app-shell` 的兄弟节点，避开命令面板打开时的外壳缩放）；顶栏去 ☰、加撰写键、搜索让给底栏；Agent 会话页（`/sessions/*`）不显示底栏，免得压住会话输入行 |
+| `app/(app)/page.tsx` | 银玻璃移动端 `/` replace 到 `/discover/movie` |
+| `app/globals.css` | `.glass-tabbar` / `.glass-capsule` / `.compose-sheet` 组与 `--tabbar-bottom`；`.mobile-drawer` 一组退役 |
+
+与 §3.2 的差异：「更多」复用既有 `/my` 路由（坑位现成，Netflix 覆盖为「我的」），
+没有新开 `/more`；底栏距底按 `--vp-overshoot` 折算到屏幕物理底边（iOS 独立 App
+形态下视口比屏幕矮一个 safe-top）；首版搜索圆钮沿用 SearchCommand 面板，未做
+「搜索框取代整条底栏」的原生展开动画。
+
+### 3.4 验收
 
 - iPhone 全面屏 PWA（standalone）：胶囊底边距屏幕底边 22px、不与 Home 指示条重叠；
   内容滚到底时最后一行完整露出。

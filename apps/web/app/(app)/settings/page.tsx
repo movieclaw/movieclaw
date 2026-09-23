@@ -10,9 +10,9 @@ import { useThemeState } from "@/lib/ui-prefs";
 
 /**
  * /settings 裸地址按形态分支：
- *   - Netflix 主题移动端：设置分区列表页（2026-09 修订——原分区下拉浮层在
- *     长清单上滑不动，见 themes/netflix/pages/settings-index.tsx）；
- *   - 其余形态（银玻璃全部 + Netflix 桌面）：重定向到首个分区，保证设置页
+ *   - 移动端（两个主题）：设置分区列表页（components/settings-index.tsx；原为
+ *     Netflix 专属，银玻璃抽屉侧栏随液态玻璃底栏退役后上移为基础实现）；
+ *   - 桌面端：重定向到首个分区，保证设置页
  *     始终有明确的分区地址。首个分区即「概览」落地页——管理员进设置先看到
  *     配置状态与下一步；成员没有概览（见 MEMBER_SECTION_IDS），SettingsPanel
  *     会兜底到个人信息。桌面端分区菜单在常驻侧栏，列表页反而多一跳。

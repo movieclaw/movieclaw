@@ -8,7 +8,6 @@ import { AvatarBadge } from "@/components/avatar-badge";
 import { GearIcon, LogoutIcon, UserIcon } from "@/components/icons";
 import { logout } from "@/lib/api/auth";
 import { clearBackdropCache } from "@/lib/backdrop-cache";
-import { usePageChrome } from "@/lib/page-chrome";
 import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
 import { accessiblePathFor, roleLabel } from "@/lib/permissions";
 import { useSession } from "@/lib/session";
@@ -27,7 +26,6 @@ export interface UserMenuProps {
 
 export function UserMenu({ onOpenSettings, collapsed = false }: UserMenuProps) {
   const { session } = useSession();
-  const chrome = usePageChrome();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -122,8 +120,6 @@ export function UserMenu({ onOpenSettings, collapsed = false }: UserMenuProps) {
         label="切换账号"
         onClick={() => {
           setOpen(false);
-          // 移动端菜单开在抽屉侧栏里：弹窗不切路由，抽屉不会自动收起，会盖住弹窗
-          chrome?.closeDrawer();
           setSwitcherOpen(true);
         }}
       />

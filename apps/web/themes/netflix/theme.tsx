@@ -2,12 +2,11 @@ import { themeMeta } from "@/lib/themes";
 
 import type { DetailNavProps, ThemeDefinition } from "../types";
 import { NetflixBackButton, NetflixPageActions } from "./chrome/back-button";
-import { NetflixSettingsNav, NetflixTabBar } from "./chrome/tab-bar";
+import { NetflixTabBar } from "./chrome/tab-bar";
 import { NetflixSettingsSidebar } from "./chrome/settings-sidebar";
 import { NetflixTopNav } from "./chrome/top-nav";
 import { NetflixLibraryHero } from "./components/library-hero";
 import { NetflixMyPage } from "./pages/my-page";
-import { NetflixSettingsIndex } from "./pages/settings-index";
 import { NetflixSubscriptionsPage } from "./pages/subscriptions-page";
 
 /**
@@ -30,7 +29,8 @@ const netflixTheme: ThemeDefinition = {
   slots: {
     desktopTopNav: NetflixTopNav,
     mobileTabBar: NetflixTabBar,
-    mobileSettingsNav: NetflixSettingsNav,
+    // 移动端设置返回条与 /settings 分区列表页走基础实现（两个主题共用，
+    // components/mobile-settings-nav.tsx、components/settings-index.tsx）
     settingsNav: NetflixSettingsSidebar,
     // Netflix 桌面详情页返回键：只消费 onBack / onPhoto，title 等工具条语义忽略
     detailNav: function NetflixDetailNav({ onBack, onPhoto }: DetailNavProps) {
@@ -41,7 +41,6 @@ const netflixTheme: ThemeDefinition = {
   },
   pages: {
     my: NetflixMyPage,
-    settingsIndex: NetflixSettingsIndex,
     subscriptions: NetflixSubscriptionsPage,
   },
 };

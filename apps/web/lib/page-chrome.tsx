@@ -40,14 +40,19 @@ export interface PageChromeValue {
   registerPageNav: () => () => void;
   /** 全局搜索入口：移动端由 PageNav 代为呈现（外壳那条已经撤掉） */
   onSearch: PageSearchHandler;
-  /** 唤起移动端抽屉侧栏：同样由 PageNav 代为呈现，详情页因此不必先返回才能换区 */
-  openDrawer: () => void;
   /**
-   * 收起移动端抽屉侧栏。抽屉里的动作若不切路由（如「切换账号」弹窗），抽屉不会
-   * 自动收起，而抽屉层级（z-60）压在普通弹窗（z-50）之上，弹窗会被整个盖住，
-   * 这类动作要先主动收抽屉。桌面版式下调用无副作用。
+   * 发起新会话。移动端打开外壳的撰写面板（components/compose-sheet.tsx，
+   * 银玻璃底栏形态下新会话不占页签）；其余形态直接跳 /new。
+   * 原「唤起 / 收起移动端抽屉」两个入口随抽屉侧栏退役一并移除
+   * （docs/design/web-themes-mobile/04）。
    */
-  closeDrawer: () => void;
+  openCompose: () => void;
+  /**
+   * 搜索入口是否已在底栏（银玻璃液态玻璃底栏的尾端搜索圆钮）。为 true 时
+   * PageNav / 设置返回条不再补自己的搜索键——SearchCommand 自带全局 ⌘K 监听，
+   * 全站同一时刻只能挂一份。
+   */
+  searchInTabBar: boolean;
   /**
    * 把页面级控件挂进移动端全局顶栏那一行，返回撤销函数。
    *

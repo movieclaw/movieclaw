@@ -174,8 +174,13 @@
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
 
-  /* 移动端顶栏高度：抽屉、页面吸顶元素都以它为基准让位 */
+  /* 移动端顶栏高度：页面吸顶元素都以它为基准让位 */
   --mobile-topbar-h: 52px;
+
+  /* 移动端液态玻璃底栏距视口底边的偏移（.glass-tabbar 组）：目标是距屏幕
+     物理底边约 22px（iOS 26 实测）——有 Home 指示条时 = safe-bottom − 12px，
+     再减去 iOS 独立 App 形态下视口与物理底边之间的那一截（--vp-overshoot） */
+  --tabbar-bottom: calc(max(22px, calc(var(--safe-bottom) - 12px)) - var(--vp-overshoot));
 
   /* PageNav 吸顶雾的渐变（银玻璃蓝黑）：page-nav.tsx 的内联 style 引用它，
      Netflix 主题在覆盖组里换成纯黑系——内联 style 无法被 CSS 选择器压过，
@@ -1596,47 +1601,250 @@ body.cmdk-open .app-shell {
  * 由页面级滚动容器的 .scroll-safe 承担（见下方）。
  */
 
-.mobile-drawer {
-  position: fixed;
-  z-index: 60;
-  top: 0;
-  /* 抽屉是通栏浮层，底边同样铺到屏幕物理底边 */
-  bottom: calc(-1 * var(--vp-overshoot));
-  left: 0;
-  width: 86vw;
-  max-width: 320px;
-  /* 底部内边距把 --vp-overshoot 一并算进去：抽屉的面板铺到了屏幕物理底边，
-     但内容仍要停在视口内，否则最后一项会被 Home 指示条压住 */
-  padding: calc(var(--safe-top) + 10px) 0
-    calc(var(--safe-bottom) + var(--vp-overshoot) + 10px) calc(var(--safe-left) + 10px);
-  transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  will-change: transform;
-}
-
 /*
- * —— 移动端抽屉式侧栏 ——
- * 覆盖式浮层（不是挤压布局）：主区宽度不变，抽屉从左侧滑入盖住内容。
- * 作为 .app-shell 的兄弟节点固定定位，不受外壳缩放/裁剪影响。
- * 宽度取视口的 86%（上限 320px），留出右侧一条可点关闭的空白，
- * 符合移动端「侧滑菜单」的肌肉记忆。
+ * —— 移动端液态玻璃底栏（components/glass-tab-bar.tsx，银玻璃 <768px）——
+ * iOS 26 系统 Tab Bar 的 Web 复刻，规格与出处见
+ * docs/design/web-themes-mobile/04-iOS-液态玻璃底栏.md：
+ *   - 胶囊高 62px、左右缩进 21px、与搜索圆钮间距 8px、距屏幕物理底边约 22px
+ *     （苹果未公布数值，取社区对 iOS 26 截图的量测）；
+ *   - 距底用 --vp-overshoot 折算：iOS 独立 App 形态下视口底边比屏幕物理底边
+ *     高出一个 safe-top（见 :root 该变量的长注释），fixed 元素的 bottom 要减去
+ *     这一截才落在物理底边往上 22px；其余形态该值为 0，按 safe-bottom 算。
+ *   - 玻璃 = Regular 变体：半透明底 + backdrop blur/saturate + 顶部内高光与
+ *     描边 + 外投影；Safari 不支持 SVG 位移折射，边缘透镜感用 ::before 的
+ *     径向亮环近似。元素自身不能 opacity<1（Safari 会让 backdrop-filter 失效），
+ *     透明度一律放在 background alpha 里。
  */
-.mobile-drawer[data-open="false"] {
-  transform: translateX(-104%);
-  /* 关闭状态彻底不可交互：抽屉里仍挂着 WebGL 玻璃面板，不能让它拦截主区触摸 */
+.glass-tabbar {
+  --tabbar-h: 62px;
+  position: fixed;
+  z-index: 40;
+  left: max(21px, var(--safe-left));
+  right: max(21px, var(--safe-right));
+  bottom: var(--tabbar-bottom);
+  height: var(--tabbar-h);
+  display: flex;
+  gap: 8px;
   pointer-events: none;
 }
 
-.mobile-drawer[data-open="true"] {
-  transform: translateX(0);
+.glass-tabbar > * {
+  pointer-events: auto;
 }
 
-.mobile-drawer-scrim {
+.glass-capsule {
+  position: relative;
+  border-radius: 999px;
+  background: rgba(22, 25, 34, 0.42);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  backdrop-filter: blur(22px) saturate(170%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.13),
+    0 18px 40px -18px rgba(0, 0, 0, 0.75),
+    0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+.glass-capsule::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 180% at 50% 130%, transparent 62%, rgba(255, 255, 255, 0.1) 78%, rgba(255, 255, 255, 0.02)),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.03) 30%, transparent 55%);
+}
+
+/* 主胶囊：展开时占满搜索圆钮左侧，收缩时缩成与圆钮等大的圆（max-width 可动画，
+   flex-basis: auto 不行）。margin-right:auto 让收缩后的圆靠左、搜索圆钮留在右端 */
+.glass-tabbar__bar {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin-right: auto;
+  overflow: hidden;
+  transition: max-width 420ms cubic-bezier(0.34, 1.3, 0.5, 1);
+}
+
+.glass-tabbar[data-minimized="true"] .glass-tabbar__bar {
+  max-width: var(--tabbar-h);
+}
+
+.glass-tabbar__tabs {
+  position: absolute;
+  inset: 4px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  transition: opacity 200ms ease;
+}
+
+.glass-tabbar[data-minimized="true"] .glass-tabbar__tabs {
+  opacity: 0;
+}
+
+/* 选中态：高亮胶囊在页签间弹性滑动（iOS 26 的选中胶囊不可关闭，是系统标志） */
+.glass-tabbar__indicator {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: calc(100% / var(--tab-count));
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 4px 12px -6px rgba(0, 0, 0, 0.6);
+  transform: translateX(calc(var(--tab-index) * 100%));
+  transition: transform 480ms cubic-bezier(0.34, 1.4, 0.5, 1);
+}
+
+.glass-tabbar__tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: var(--text-muted);
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color 200ms ease,
+    transform 150ms ease;
+}
+
+.glass-tabbar__tab:active {
+  transform: scale(0.94);
+}
+
+.glass-tabbar__tab[aria-current="page"] {
+  color: var(--accent-strong);
+}
+
+.glass-tabbar__tab svg,
+.glass-tabbar__mini svg {
+  width: 26px;
+  height: 26px;
+}
+
+.glass-tabbar__tab span {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+}
+
+.glass-tabbar__mini {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--accent-strong);
+}
+
+.glass-tabbar__search {
+  flex: 0 0 var(--tabbar-h);
+}
+
+.glass-tabbar__search-btn {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  color: var(--accent-strong);
+}
+
+.glass-tabbar__search-btn svg {
+  width: 24px;
+  height: 24px;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass-capsule {
+    background: rgba(22, 25, 34, 0.86);
+    -webkit-backdrop-filter: blur(10px) saturate(120%);
+    backdrop-filter: blur(10px) saturate(120%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass-tabbar__bar,
+  .glass-tabbar__indicator,
+  .glass-tabbar__tabs {
+    transition: none;
+  }
+}
+
+/* 底栏在场时，各页滚动容器末尾的 .scroll-safe 空白加高到底栏上沿之上 12px：
+   内容照常从玻璃底下穿过，滚到头时最后一行完整露出。主区不整体让位——
+   那会把滚动视口在底栏上方截断，玻璃下面就只剩空底了。 */
+@media (max-width: 767px) {
+  .app-shell[data-tabbar="true"] > main .scroll-safe::after {
+    height: calc(var(--tabbar-bottom) + 62px + 12px);
+  }
+}
+
+/*
+ * —— 移动端新会话撰写面板（components/compose-sheet.tsx）——
+ * 从底部升起的模态 sheet（iOS compose 惯例），盖住底栏。与原移动端抽屉同一套
+ * 铺底处理：面板底边铺到屏幕物理底边（-vp-overshoot），内容仍停在视口内并让出
+ * 软键盘（--keyboard-inset）与 Home 指示条。层级沿用原抽屉的 55 / 60 档。
+ */
+.compose-scrim {
   position: fixed;
   inset: 0 0 calc(-1 * var(--vp-overshoot)) 0;
   z-index: 55;
   background: rgba(4, 6, 10, 0.55);
-  backdrop-filter: blur(2px);
-  animation: page-scrim-in 200ms ease both;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 300ms ease;
+}
+
+.compose-scrim[data-open="true"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.compose-sheet {
+  position: fixed;
+  z-index: 60;
+  left: 0;
+  right: 0;
+  top: calc(var(--safe-top) + 12px);
+  bottom: calc(-1 * var(--vp-overshoot));
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--safe-right) calc(var(--vp-overshoot) + var(--keyboard-inset) + var(--safe-bottom))
+    var(--safe-left);
+  border-radius: 22px 22px 0 0;
+  background: rgba(16, 18, 26, 0.86);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  backdrop-filter: blur(30px) saturate(160%);
+  box-shadow:
+    0 -20px 60px -20px rgba(0, 0, 0, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transform: translateY(105%);
+  visibility: hidden;
+  transition:
+    transform 450ms cubic-bezier(0.32, 0.98, 0.36, 1),
+    visibility 0s linear 450ms;
+}
+
+.compose-sheet[data-open="true"] {
+  transform: none;
+  visibility: visible;
+  transition: transform 450ms cubic-bezier(0.32, 0.98, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compose-scrim,
+  .compose-sheet,
+  .compose-sheet[data-open="true"] {
+    transition: none;
+  }
 }
 
 
