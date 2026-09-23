@@ -101,27 +101,32 @@
 ```
 
 行为：向下滚且离顶 > 40px → 收缩；向上滚 10px 或回顶部或点页签 → 展开；搜索圆钮
-点开 → 底栏折叠、搜索框占满；新会话页的输入条作为底部附件贴在底栏上方 10px。
+点开 → 底栏折叠、搜索框占满；右上角撰写键 → 新会话面板从底部升起、压暗底层。
 
 ## 3. 接入本站的方案（未实施，供拍板）
 
-### 3.1 页签映射（设计决策，需确认）
+### 3.1 页签映射（2026-09-23 用户拍板后修订）
 
 iOS 上算上搜索圆钮最多放 5 个元素，390pt 视口里 4 页签 + 搜索每格约 70pt，已是
-中文双字标签的下限。银玻璃侧栏现有六项（新会话 / 媒体库 / 发现电影 / 发现剧集 /
-我的订阅 / 活动）+ 设置 + 最近会话 + 切换账号，样稿取：
+中文双字标签的下限。用户两条意见：**要有一个「更多」收纳切换账号这类操作**；
+**新会话不是高频操作，要收起来**。据此定为：
 
 | 底栏 | 落点 | 备注 |
 |---|---|---|
-| 新会话 | `/` | 品牌首页，管理员可见；成员侧退化为 3 页签 |
 | 媒体库 | `/library` | |
 | 发现 | `/discover/movie` | 电影 / 剧集合并为一页签，页内用现有顶栏 actions 切换（与 Netflix 主题一致） |
-| 订阅 | `/subscriptions` | 按 `canSubscribe` 显隐 |
+| 订阅 | `/subscriptions` | 按 `canSubscribe` 显隐，成员侧退化为 3 页签 |
+| 更多 | `/more`（新路由页） | iOS「More」惯例的分组列表：用户头 / 新会话 / 活动（角标）/ 设置 / 最近会话 / 切换账号 / 退出登录 |
 | 🔍（独立圆钮） | 唤起 `SearchCommand` | 搜索从顶栏移到底栏尾端 |
 
-活动、设置、最近会话、切换账号、退出登录 → **顶栏右侧头像**打开现有抽屉
-（`Sidebar` 不动，只换唤起点，`PageChrome.openDrawer` 契约不变）。备选方案是照
-Netflix 主题做一个 `/my` 路由页收纳这些入口，改动更大，建议第二期再评估。
+**新会话的收法**：顶栏右侧一颗玻璃「撰写」圆钮（iOS 信息 / 邮件的 compose 惯例，
+液态玻璃下导航栏按钮本来就是独立圆钮），点开是**从底部升起的模态面板**（盖住底栏，
+不占页签位），面板内是现有首页的问候语 + 建议片段 + 输入条；「更多」列表里也留一行
+「新会话」作为第二入口。管理员专属，成员侧不渲染撰写键。
+
+**抽屉侧栏在移动端整个退役**：它承载的每一项都有了新落点（主导航 → 底栏；
+活动 / 设置 / 最近会话 / 切换账号 → 更多；新会话 → 撰写键）。`PageChrome.openDrawer`
+契约保留，银玻璃移动端改为跳 `/more`（与 Netflix 分支改跳 `/my` 同型）。
 
 ### 3.2 代码落点
 
@@ -129,15 +134,17 @@ Netflix 主题做一个 `/my` 路由页收纳这些入口，改动更大，建�
    `themes/registry.tsx` 的 `BASE_SLOTS` 里登记为 `mobileTabBar` 的基础实现——Netflix
    主题已有自己的 `NetflixTabBar`，不受影响。
 2. **外壳**：`app-shell.tsx` 银玻璃移动端分支加一行 `{slots.mobileTabBar && <slots.mobileTabBar />}`
-   （与 Netflix 分支同型）；`MobileTopBar` 的 ☰ 换成头像键，搜索键在有底栏时不渲染
-   （`SearchCommand` 自带 ⌘K 监听，必须条件渲染而非 CSS 隐藏）。
+   （与 Netflix 分支同型）；`MobileTopBar` 的 ☰ 换成撰写键（管理员），搜索键在有底栏时
+   不渲染（`SearchCommand` 自带 ⌘K 监听，必须条件渲染而非 CSS 隐藏）；移动端抽屉
+   与 `.mobile-drawer` 一组 CSS 退役。
 3. **让位**：globals.css 新增 `--tabbar-h`（= 62px + 22px + 8px 呼吸），`.scroll-safe::after`
    在有底栏的主题下高度改为 `calc(var(--safe-bottom) + var(--tabbar-h))`——全站 26 处
    `.scroll-safe` 自动继承，不逐页登记；主区 `.app-shell > main` 底部照旧**不整体让位**
    （内容要从底栏下穿过，与现有约定一致）。
-4. **底部附件**：首页 `/new` 的 Composer 在移动端改为贴在底栏上方的玻璃胶囊
-   （`bottom: calc(var(--bar-bottom) + var(--bar-h) + 10px)`），键盘弹出时随
-   `--keyboard-inset` 上移、底栏隐藏（iOS 原生：键盘出现时 tab bar 收起）。
+4. **新会话面板**：移动端 `/`（新任务页）改为由撰写键唤起的底部面板（`components/`
+   下新增 sheet 容器，Composer 原样挂进去），键盘弹出时面板随 `--keyboard-inset`
+   收缩；直接打开 `/` 的 URL 时仍渲染整页（分享链接、刷新不丢）。「更多」页
+   新增路由 `/more`（`app/(app)/more`），内容迁自 `Sidebar` 的次级项。
 5. **玻璃与主题能力**：底栏走 CSS，不经 `capabilities.glass`（那是 WebGL 开关）；
    Netflix 主题的 `NetflixTabBar` 若日后也想改胶囊形态，同一份 CSS 换 token 即可。
 6. **无障碍 / 回退**：`prefers-reduced-transparency` 提高 alpha；`prefers-reduced-motion`
