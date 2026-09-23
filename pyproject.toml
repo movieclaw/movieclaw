@@ -27,7 +27,11 @@ dependencies = [
   "parsel>=1.9.0,<2.0.0",
   "tenacity>=9.0.0,<10.0.0",
   "pyyaml>=6.0,<7.0",
-  "sqlmodel>=0.0.22,<0.1.0",
+  # 0.0.45（2026-09-21）起 datetime 列默认映射为 UTCDateTime、拒绝写入不带时区的
+  # 值，而 movieclaw_db 的 utcnow() 按设计返回 naive UTC（SQLite 读回会丢 tzinfo，
+  # 见 models/base.py），升上去所有写库都会失败。放开上限前须先把时间列显式标成
+  # NaiveDatetime 或全量改 aware
+  "sqlmodel>=0.0.22,<0.0.45",
   "aiosqlite>=0.20.0,<1.0.0",
   "alembic>=1.13.0,<2.0.0",
   # SQLAlchemy 的 async 引擎依赖 greenlet；部分 Python 版本不会自动拉取，显式声明

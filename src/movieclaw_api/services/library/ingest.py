@@ -147,7 +147,7 @@ from movieclaw_api.services.library.origin import (
 )
 from movieclaw_api.services.library.profile import kind_label, profile_for
 from movieclaw_api.services.library.resolve import verify_resolve
-from movieclaw_api.services.library.scan import disc_main_stream, guess_evidence
+from movieclaw_api.services.library.scan import disc_main_stream, extras_marker, guess_evidence
 from movieclaw_api.services.library.series import ensure_series_collections_for_item
 from movieclaw_api.services.library.units import FileUnit, resolve_units
 from movieclaw_api.services.media_discover import get_tmdb_client
@@ -240,6 +240,12 @@ def _ingest_handler_revision() -> str:
 # 已明确写着其余文件因季集号解析失败而未入库。保留稳定中文片段用于识别这类
 # 历史脏状态；两种原因都不是作品身份歧义，解析能力升级后应自动补偿。
 _PARSER_GAP_MARKERS = ("解析不出集号，未入库", "解析不出季号，未入库")
+
+# issue #438 之前，电影条目一律「取最大文件为正片」，合集目录因此只入库了最大
+# 的一部，结论写着下面这句。升级后这类已入库记录需要按新逻辑（逐文件识别、
+# 按作品分组）补偿重跑一次；新逻辑同一场景改写成另一句话（见 _ingest_entry），
+# 补偿跑过一次后自然不再命中，不会每轮巡检反复重跑
+_LEGACY_LARGEST_ONLY_MARKER = "已取最大文件为正片，忽略其余"
 
 # 文件名含这些标记的视频不入库（与入库管线同口径）
 _IGNORE_MARKERS = ("sample",)
@@ -336,6 +342,17 @@ def _has_parser_gap(record: IngestEntry | None) -> bool:
     return bool(record and any(marker in (record.message or "") for marker in _PARSER_GAP_MARKERS))
 
 
+def _has_new_file_claim(record: IngestEntry) -> bool:
+    """合集条目是否有待处理的逐文件认领（认领了、但上一轮结论里还列为识别不出）。
+
+    认领只改台账不改文件，指纹不变；没有这一问，同指纹的待处理条目会被
+    作业执行器原样挂回「等待认领」，用户的认领永远落不了地。重跑后被认领的
+    文件从 ``unresolved_files`` 消失，这里自然转 False，不会反复重跑。
+    """
+    claims = record.claimed_files or {}
+    return any(name in claims for name in record.unresolved_files or [])
+
+
 def _parser_gap_auto_retry(rule: ImportWatch, record: IngestEntry | None) -> bool:
     """升级补偿能否自动重跑该记录（区别于用户主动重试）。
 
@@ -348,6 +365,20 @@ def _parser_gap_auto_retry(rule: ImportWatch, record: IngestEntry | None) -> boo
     if not _has_parser_gap(record):
         return False
     assert record is not None
+    return rule.target_path is None or not record.imported_count
+
+
+def _legacy_collection_retry(rule: ImportWatch, record: IngestEntry | None) -> bool:
+    """旧版「只取最大文件」入库的电影条目能否升级后自动补偿一次（issue #438）。
+
+    重跑对普通单片（正片 + 花絮/多版本）是无害的：识别结果仍只有一部，已入库
+    的正片在搬运层按同内容短路；对合集则补齐此前漏掉的几部。中转目录的限制
+    与 ``_parser_gap_auto_retry`` 同理（重复上传风险）。
+    """
+    if record is None or record.status != IngestStatus.IMPORTED:
+        return False
+    if _LEGACY_LARGEST_ONLY_MARKER not in (record.message or ""):
+        return False
     return rule.target_path is None or not record.imported_count
 
 
@@ -1459,7 +1490,9 @@ async def _process_entry(
             _deferred.setdefault(path_str, time.monotonic())
             return
         latest_job = None if execute_inline else await _latest_ingest_job(session, path_str)
-        parser_retry = _parser_gap_auto_retry(rule, record)
+        parser_retry = _parser_gap_auto_retry(rule, record) or _legacy_collection_retry(
+            rule, record
+        )
         if latest_job is not None and latest_job.status in ACTIVE_JOB_STATUSES:
             if latest_job.status == JobStatus.BLOCKED:
                 await _maybe_wake_blocked_job(session, entry, record, latest_job, parser_retry)
@@ -1636,7 +1669,17 @@ async def _ingest_entry(
     consumable_hashes: list[str] | None = None,
     forced_item: MediaItem | None = None,
     job_context: jobs.JobContext | None = None,
-) -> IngestEntry:
+    recognized_item: MediaItem | None = None,
+    grouped: bool = False,
+) -> IngestEntry | _GroupOutcome:
+    """处理一个监听条目：识别 → 路由 → 搬运 → 落账，结论写进台账。
+
+    ``grouped=True`` 是电影合集的内部调用（见 ``_ingest_collection``）：只处理
+    ``snap.videos`` 里属于同一部电影的那组文件，身份由调用方给定
+    （``recognized_item`` = 名称识别所得，``forced_item`` = 逐文件人工认领），
+    结论以 ``_GroupOutcome`` 返回给合集汇总，**不写台账**——台账仍是一次
+    下载一行，由外层统一落账。
+    """
     strategy = rule.strategy
     # 目标库：指定库规则即入参；auto 规则在识别出作品后才决定（见下），
     # conclude 闭包读的是当下的 dest_library——选定目标前失败的条目落账无归属库。
@@ -1658,8 +1701,17 @@ async def _ingest_entry(
     # 同一个监听条目本轮成功搬入的文件属于一个用户可理解的入库批次；增量
     # 季包下一轮再补进来的集会拿新批次号，首页因此只摘要最后一次变化。
     added_batch_id = uuid4().hex
+    # 合集里识别不出的正片文件（条目内相对路径），随结论写进台账供逐个认领；
+    # 非合集的结论写 None，顺带清掉此前轮次留下的旧列表
+    unresolved_files: list[str] | None = None
+    # 合集已入库的各部作品：合集行没有单一身份，摘要行按这一列数「几部」
+    collection_item_ids: list[int] | None = None
 
-    async def conclude(status: IngestStatus, message: str, imported: int = 0) -> IngestEntry:
+    async def conclude(
+        status: IngestStatus, message: str, imported: int = 0
+    ) -> IngestEntry | _GroupOutcome:
+        if grouped:
+            return _GroupOutcome(status, message, imported, item, list(imported_files))
         if status is IngestStatus.IMPORTED and not snap.fingerprint.startswith("ready:"):
             # 整树结论成功 = 条目当前所有文件都已处理：仍挂着的分批 blocked
             # 作业（白名单钉死、等人工）已被彻底取代，就地收口——否则它们会
@@ -1723,6 +1775,8 @@ async def _ingest_entry(
             imported,
             item,
             schedule_retry=job_context is None,
+            unresolved_files=unresolved_files,
+            collection_item_ids=collection_item_ids,
         )
         if status is IngestStatus.IMPORTED and job_context is not None and imported_files:
             await job_context.update_progress(
@@ -1855,6 +1909,11 @@ async def _ingest_entry(
     if forced_item is not None:
         item, pinned_library_id = forced_item, None
         identity_source: str | None = None
+    elif recognized_item is not None:
+        # 合集分组：身份由外层逐文件名称识别得出——与普通识别同一可信度，
+        # 不是人工拍板，身份来源照常按识别记账
+        item, pinned_library_id = recognized_item, None
+        identity_source = None
     else:
         item, pinned_library_id = await _wanted_identity(session, matched_hashes or [])
         identity_source = "subscription" if item is not None else None
@@ -1865,7 +1924,37 @@ async def _ingest_entry(
             identity_source = "manual" if item is not None else None
         if item is None:
             try:
-                item = await _identify(session, kind, watch_root, disc_root or main, spec)
+                # 电影合集（issue #438）：目录里有多个正片级视频时逐个识别，
+                # 认出两部及以上不同作品就按作品分组逐部入库；否则（单片、
+                # 同片多版本、正片 + 花絮）沿用「最大文件 = 正片」的单片流程。
+                # 只在名称识别这一档做——订阅/手动下载/整条认领都钉的是单一作品
+                identities = (
+                    await _identify_feature_files(
+                        session, kind, watch_root, entry, snap, main, spec, record
+                    )
+                    if kind is MediaKind.MOVIE and disc_root is None and not grouped
+                    else None
+                )
+                if identities is not None and _distinct_works(identities) >= 2:
+                    result = await _ingest_collection(
+                        session,
+                        rule,
+                        library,
+                        watch_root,
+                        entry,
+                        snap,
+                        identities,
+                        matched_hashes=matched_hashes,
+                        job_context=job_context,
+                    )
+                    imported_files.extend(result.imported_files)
+                    unresolved_files = result.unresolved
+                    collection_item_ids = result.item_ids
+                    return await conclude(result.status, result.message, result.imported)
+                if identities is not None and main in identities:
+                    item = identities[main][0]
+                else:
+                    item = await _identify(session, kind, watch_root, disc_root or main, spec)
             except IdentifyUnavailable as exc:
                 # 环境故障：网络恢复后重试就能过，不该钉进待处理清单
                 return await conclude(IngestStatus.FAILED, f"识别中断：{exc}；将自动重试")
@@ -2199,7 +2288,10 @@ async def _ingest_entry(
     dup_skipped = 0
     pilot_skipped: list[str] = []
     if kind is MediaKind.MOVIE and len(snap.videos) > 1:
-        notes.append(f"已取最大文件为正片，忽略其余 {len(snap.videos) - 1} 个视频")
+        # 措辞不能再含 _LEGACY_LARGEST_ONLY_MARKER：那句话专门标记旧版结论
+        notes.append(
+            f"已取最大文件为正片，其余 {len(snap.videos) - 1} 个视频是花絮或同片的其他版本，未入库"
+        )
 
     # 自定义目录的幂等靠库存：中转文件上传后会被删除，无法像库目标那样按
     # 落点文件去重——季包补集触发的重处理会把旧集重新搬进中转、被外部工具
@@ -3106,6 +3198,238 @@ async def _identify(
 
 
 # ---------------------------------------------------------------------------
+# 电影合集（issue #438）：一个条目目录里装着多部电影
+# ---------------------------------------------------------------------------
+#
+# 设计原则：**监听导入的结果应当与把同一个目录放进媒体库根目录扫描一遍一致**。
+# 库扫描本来就逐文件识别（guess_evidence：「标题 (年份)」目录名压过文件名、
+# 否则文件名先说话），合集天然被拆成多部；监听导入却另有一条「目录 = 一部片、
+# 取最大文件为正片」的规则，合集因此只入库最大的一部。这里不新增「合集模式」
+# 的开关或判定，而是让监听导入也按**识别结果**分组：
+#
+# - 目录里每个正片级视频（排除花絮/预告/过短的文件）都走与单片相同的 _identify；
+# - 认出两部及以上不同作品 → 按作品分组，每组交给单片流程（路由/去重/命名/
+#   NFO/图片全部复用），台账仍是一次下载一行、由这里统一汇总落账；
+# - 其余情况（单片、同片多版本、分段 CD、正片 + 花絮、「标题 (年份)」目录、
+#   目录内 movie.nfo）识别结果只有一部，行为与改动前完全一致。
+#
+# 识别不出的正片文件记进台账 unresolved_files，用户在清单里逐个认领
+# （claimed_files），已入库的几部不受影响。
+
+# 正片门槛：探测时长 ≥ 40 分钟才算一部电影（花絮/预告/访谈绝大多数远短于此）
+_FEATURE_MIN_SECONDS = 40 * 60
+# 探测前的体积预筛：小于最大文件 10% 的视频不值得起 ffprobe（NAS 上一个目录
+# 可能躺着几十个花絮片段），合集里各部的体积差距远没有这么大
+_FEATURE_PROBE_SIZE_RATIO = 0.1
+# ffprobe 不可用/读不出时长时退回体积判断：≥ 最大文件 30% 视为正片级
+_FEATURE_FALLBACK_SIZE_RATIO = 0.3
+
+
+@dataclass
+class _GroupOutcome:
+    """合集里一部电影（一组文件）的处理结论，供外层汇总落账。"""
+
+    status: IngestStatus
+    message: str
+    imported: int
+    item: MediaItem | None
+    imported_files: list[str]
+
+
+@dataclass
+class _CollectionResult:
+    """整个合集条目的汇总结论。"""
+
+    status: IngestStatus
+    message: str
+    imported: int
+    imported_files: list[str]
+    unresolved: list[str]
+    item_ids: list[int]
+
+
+def _distinct_works(identities: dict[Path, tuple[MediaItem | None, bool]]) -> int:
+    """逐文件识别结果里有几部不同的作品（识别不出的不计）。"""
+    return len({item.id for item, _ in identities.values() if item is not None})
+
+
+async def _identify_feature_files(
+    session,
+    kind: MediaKind,
+    watch_root: Path,
+    entry: Path,
+    snap: _EntrySnapshot,
+    main: Path,
+    main_spec,
+    record: IngestEntry | None,
+) -> dict[Path, tuple[MediaItem | None, bool]] | None:
+    """逐个识别条目里的正片级视频：文件 → (作品或 None, 是否人工认领)。
+
+    正片级视频不足两个时返回 None（普通单片，调用方照旧只识别主文件）。
+    主文件（最大的那个）总在结果里，调用方在「只认出一部」时直接复用它的
+    识别结论，不必再查一次 TMDB。逐文件认领（``record.claimed_files``）是
+    用户拍板，优先于名称识别。TMDB 不可达抛 ``IdentifyUnavailable``。
+    """
+    main_size = main.stat().st_size
+    features: list[tuple[Path, object]] = [(main, main_spec)]
+    for video in snap.videos:
+        if video == main or extras_marker(video.name):
+            continue
+        size = video.stat().st_size
+        if size < main_size * _FEATURE_PROBE_SIZE_RATIO:
+            continue
+        video_spec = await asyncio.to_thread(probe_media, video)
+        duration = video_spec.duration_seconds if video_spec else None
+        if duration:
+            if duration >= _FEATURE_MIN_SECONDS:
+                features.append((video, video_spec))
+        elif size >= main_size * _FEATURE_FALLBACK_SIZE_RATIO:
+            features.append((video, video_spec))
+    if len(features) < 2:
+        return None
+
+    claims = (record.claimed_files if record is not None else None) or {}
+    identities: dict[Path, tuple[MediaItem | None, bool]] = {}
+    for video, video_spec in features:
+        relative = _relative_entry_file(entry, video)
+        claimed_tmdb_id = claims.get(relative) if relative else None
+        if claimed_tmdb_id is not None:
+            try:
+                claimed = await MediaLibraryService(session, get_tmdb_client()).ensure_media_item(
+                    kind, claimed_tmdb_id
+                )
+            except Exception as exc:
+                raise IdentifyUnavailable(f"按认领身份建档失败（{exc}）") from exc
+            identities[video] = (claimed, True)
+        else:
+            identities[video] = (
+                await _identify(session, kind, watch_root, video, video_spec),
+                False,
+            )
+    return identities
+
+
+async def _ingest_collection(
+    session,
+    rule: ImportWatch,
+    library: Library | None,
+    watch_root: Path,
+    entry: Path,
+    snap: _EntrySnapshot,
+    identities: dict[Path, tuple[MediaItem | None, bool]],
+    *,
+    matched_hashes: list[str] | None,
+    job_context: jobs.JobContext | None,
+) -> _CollectionResult:
+    """按作品分组逐部入库，汇总成一条台账结论（台账由调用方落账）。
+
+    每组交给 ``_ingest_entry(grouped=True)``：快照只含这组文件，身份由这里
+    给定，其余（路由、同档去重、命名、搬运、库台账、NFO/图片/章节图）与
+    单片完全同一条路径。重跑是幂等的：已入库的文件在搬运层按同内容短路，
+    所以认领一个遗漏文件后整条目重跑，只会新增那一部。
+    """
+    groups: dict[int, tuple[MediaItem, list[Path], bool]] = {}
+    unresolved: list[str] = []
+    for file, (item, claimed) in identities.items():
+        if item is None or item.id is None:
+            unresolved.append(_relative_entry_file(entry, file) or file.name)
+            continue
+        _, files, all_claimed = groups.get(item.id, (item, [], True))
+        groups[item.id] = (item, [*files, file], all_claimed and claimed)
+    unresolved.sort()
+    ignored = len(snap.videos) - len(identities)
+
+    # 自动路由规则下，各部可能落到不同的库。任务资源锁按库 id 升序一次取齐
+    # 再逐部入库——各组在单片流程里按识别顺序逐个加锁，两个合集任务交叉
+    # 等待对方手里的库会永久互等（acquire_target_resource 的死锁告诫）
+    if job_context is not None and library is None and rule.target_path is None:
+        from movieclaw_api.services.library.routing import route_for_item
+
+        library_ids: set[int] = set()
+        for item, _, _ in groups.values():
+            decision = await route_for_item(session, rule.kind, item)
+            if decision.library is not None and decision.library.id is not None:
+                library_ids.add(decision.library.id)
+        if len(library_ids) > 1:
+            for library_id in sorted(library_ids):
+                while not await job_context.acquire_target_resource("library", library_id):
+                    await job_context.raise_if_cancelled()
+                    await job_context.update_progress(
+                        mode="waiting",
+                        phase="waiting_library",
+                        message="电影合集涉及多个媒体库，等待这些库的其他作业结束后安全入库",
+                        phase_index=3,
+                        phase_count=4,
+                        details={"entry_name": entry.name, "library_id": library_id},
+                    )
+                    await asyncio.sleep(2)
+
+    outcomes: list[_GroupOutcome] = []
+    # 按上映年份逐部处理：结论里的片单就是系列的观影顺序
+    ordered = sorted(groups.values(), key=lambda g: (g[0].year or 9999, min(g[1])))
+    for item, files, all_claimed in ordered:
+        outcome = await _ingest_entry(
+            session,
+            rule,
+            library,
+            watch_root,
+            entry,
+            replace(snap, videos=sorted(files)),
+            None,
+            matched_hashes=matched_hashes,
+            forced_item=item if all_claimed else None,
+            recognized_item=None if all_claimed else item,
+            job_context=job_context,
+            grouped=True,
+        )
+        assert isinstance(outcome, _GroupOutcome)
+        outcomes.append(outcome)
+
+    # 结论是清单里唯一的人读摘要：顺利的几部只列片名（逐部的落点路径五六行
+    # 堆在一起反而看不清），有问题的那部才展开它自己的完整说明
+    added = [o for o in outcomes if o.status is IngestStatus.IMPORTED and o.imported]
+    present = [o for o in outcomes if o.status is IngestStatus.IMPORTED and not o.imported]
+    parts = [f"识别为电影合集，共 {len(groups)} 部"]
+    if added:
+        titles = "".join(f"《{o.item.title}》" for o in added if o.item is not None)
+        parts.append(f"新入库 {len(added)} 部：{titles}")
+    if present:
+        titles = "".join(f"《{o.item.title}》" for o in present if o.item is not None)
+        parts.append(f"{len(present)} 部已在库：{titles}")
+    parts.extend(o.message for o in outcomes if o.status is not IngestStatus.IMPORTED)
+    if unresolved:
+        parts.append(
+            f"{len(unresolved)} 个视频无法识别，可点「认领」逐个指定："
+            + "".join(f"「{name}」" for name in unresolved)
+        )
+    if ignored:
+        parts.append(f"另有 {ignored} 个花絮/短视频未入库")
+    statuses = {outcome.status for outcome in outcomes}
+    status = (
+        IngestStatus.FAILED
+        if IngestStatus.FAILED in statuses
+        else IngestStatus.PENDING
+        if unresolved or IngestStatus.PENDING in statuses
+        else IngestStatus.IMPORTED
+    )
+    return _CollectionResult(
+        status=status,
+        message="；".join(parts),
+        imported=sum(outcome.imported for outcome in outcomes),
+        imported_files=[name for outcome in outcomes for name in outcome.imported_files],
+        unresolved=unresolved,
+        # 已在库的作品（本轮新入库或此前已入库）；落账失败/冲突待处理的那部不算
+        item_ids=[
+            o.item.id
+            for o in outcomes
+            if o.item is not None
+            and o.item.id is not None
+            and (o.imported or o.status is IngestStatus.IMPORTED)
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
 # 搬运（线程池内运行）
 # ---------------------------------------------------------------------------
 
@@ -3627,6 +3951,8 @@ async def _save_record(
     item: MediaItem | None = None,
     *,
     schedule_retry: bool = True,
+    unresolved_files: list[str] | None = None,
+    collection_item_ids: list[int] | None = None,
 ) -> IngestEntry:
     now = utcnow()
     if record is None:
@@ -3639,6 +3965,8 @@ async def _save_record(
             message=message,
             imported_count=imported,
             attempted_at=now,
+            unresolved_files=unresolved_files or None,
+            collection_item_ids=collection_item_ids or None,
         )
         session.add(record)
     else:
@@ -3648,6 +3976,8 @@ async def _save_record(
         record.imported_count += imported
         record.attempted_at = now
         record.updated_at = now
+        record.unresolved_files = unresolved_files or None
+        record.collection_item_ids = collection_item_ids or None
         if library is not None:
             record.library_id = library.id  # auto 条目此前失败无归属，路由成功后补上
         if item is not None:
@@ -3900,7 +4230,9 @@ async def _execute_ingest_job(
             await _attach_ingest_entry_resource(context, record)
             # 中转记录的补偿限制见 _parser_gap_auto_retry；被限制的记录在此
             # 照旧短路/挂起，等用户改名或恢复时以新指纹走完整重跑
-            parser_retry = _parser_gap_auto_retry(rule, record)
+            parser_retry = _parser_gap_auto_retry(rule, record) or _legacy_collection_retry(
+                rule, record
+            )
             disc_retry = bool(
                 snap.has_disc
                 and record.status == IngestStatus.SKIPPED
@@ -3920,6 +4252,7 @@ async def _execute_ingest_job(
             if (
                 record.status == IngestStatus.PENDING
                 and record.claimed_tmdb_id is None
+                and not _has_new_file_claim(record)
                 and not parser_retry
             ):
                 parser_gap = _has_parser_gap(record)
@@ -4041,6 +4374,7 @@ async def entry_stats(session, rules: list[ImportWatch]) -> dict[int, LedgerStat
                 IngestEntry.status,
                 IngestEntry.imported_count,
                 IngestEntry.media_item_id,
+                IngestEntry.collection_item_ids,
             )
         )
     ).all()
@@ -4053,13 +4387,15 @@ async def entry_stats(session, rules: list[ImportWatch]) -> dict[int, LedgerStat
         # 老台账（本次升级前入库）没有身份，去重无从下手：这些条目按条目数
         # 计入，宁可少合并也不能凭标题猜——回填见迁移脚本
         legacy = 0
-        for path, status, imported_count, media_item_id in rows:
+        for path, status, imported_count, media_item_id, collection_item_ids in rows:
             if not _is_entry_of(path, rule.source_path) or status not in counts:
                 continue
             counts[status] += 1
             if status == IngestStatus.IMPORTED:
                 imported_files += imported_count or 0
-                if media_item_id is None:
+                if collection_item_ids:
+                    works.update(collection_item_ids)  # 电影合集：按部计数
+                elif media_item_id is None:
                     legacy += 1
                 else:
                     works.add(media_item_id)
@@ -4309,6 +4645,7 @@ async def claim_entry(
     entry_id: int,
     tmdb_id: int,
     *,
+    file: str | None = None,
     execute_inline: bool = False,
 ) -> IngestEntry:
     """人工认领：把条目钉到指定 TMDB 身份并恢复同一个后台入库作业。
@@ -4317,6 +4654,11 @@ async def claim_entry(
     （指定库=库类型，自动路由/自定义目录=规则声明）。生产路径只保存认领
     事实并原地解除 blocked Job，稳定 job id、事件时间线与复制断点都不变；
     ``execute_inline`` 仅供领域单测复用处理原语。
+
+    电影合集条目（issue #438，台账 ``unresolved_files`` 非空）按**文件**认领：
+    ``file`` 指定合集里识别不出的那个视频，身份记进 ``claimed_files``，整条目
+    重跑时只新增这一部，已入库的几部不受影响。只剩一个待认领文件时可省略
+    ``file``；有多个时必须指定——整条认领会把整个合集钉成同一部片。
     """
     from movieclaw_api.exceptions import BadRequestException, NotFoundException
 
@@ -4345,17 +4687,36 @@ async def claim_entry(
     if snap.has_marker or _torrent_verdict(matches) == "downloading":
         raise BadRequestException("条目似乎还在下载中（存在未完成标记文件），请等下载完成再认领")
     kind = MediaKind(library.kind if library is not None else rule.kind)
+    unresolved = record.unresolved_files or []
+    if file is None and len(unresolved) > 1:
+        raise BadRequestException(
+            f"这是电影合集，有 {len(unresolved)} 个视频待认领，请先选择要认领的文件"
+        )
+    if file is not None and file not in unresolved:
+        raise BadRequestException(f"「{file}」不在该条目的待认领文件中，可能已识别或已被移走")
     item = await MediaLibraryService(session, get_tmdb_client()).ensure_media_item(kind, tmdb_id)
+    if unresolved:
+        # 合集逐文件认领：只钉这一个文件，不动整条目的认领身份
+        file = file or unresolved[0]
+        record.claimed_files = {**(record.claimed_files or {}), file: tmdb_id}
+        record.status = IngestStatus.PENDING
+        record.message = f"已将「{file}」认领为《{item.title}》，等待后台整理入库"
+        record.updated_at = utcnow()
+        await session.commit()
+        forced_item: MediaItem | None = None
+    else:
+        forced_item = item
     # 认领身份先持久化再处理：用户拍板是最高权威。本轮处理若因环境故障
     # 失败（探测/搬运/TMDB 网络 → failed），后续自动退避重试会凭台账里的
     # 这颗钉子还原身份（见 _ingest_entry），不会回退到重新识别落回
     # pending、更不需要用户再认领一次
-    record.claimed_tmdb_id = tmdb_id
-    record.claimed_kind = kind.value
-    record.status = IngestStatus.PENDING
-    record.message = f"已认领为《{item.title}》，等待后台整理入库"
-    record.updated_at = utcnow()
-    await session.commit()
+    if forced_item is not None:
+        record.claimed_tmdb_id = tmdb_id
+        record.claimed_kind = kind.value
+        record.status = IngestStatus.PENDING
+        record.message = f"已认领为《{item.title}》，等待后台整理入库"
+        record.updated_at = utcnow()
+        await session.commit()
     if not execute_inline:
         created = await enqueue_ingest_job(
             session,
@@ -4387,7 +4748,7 @@ async def claim_entry(
             snap,
             record,
             matched_hashes=None,
-            forced_item=item,
+            forced_item=forced_item,
         )
     await session.refresh(record)
     await refresh_source_notice(session, source)
