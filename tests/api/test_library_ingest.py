@@ -1549,9 +1549,7 @@ async def test_enabled_unverified_downloader_is_unavailable_not_unconfigured(db)
 
 
 @pytest.mark.asyncio
-async def test_one_unreachable_downloader_makes_combined_brief_incomplete(
-    db, monkeypatch
-):
+async def test_one_unreachable_downloader_makes_combined_brief_incomplete(db, monkeypatch):
     """多下载器只成功一台时不能把部分列表当完整事实，未命中条目继续等待。"""
     async with db.session() as session:
         session.add_all(
@@ -2653,9 +2651,7 @@ async def _ingest_shared_folder(db, tmp_path, monkeypatch, *, deliveries, torren
 
 
 @pytest.mark.asyncio
-async def test_shared_folder_torrents_stamp_each_file_by_delivered_unit(
-    db, tmp_path, monkeypatch
-):
+async def test_shared_folder_torrents_stamp_each_file_by_delivered_unit(db, tmp_path, monkeypatch):
     """逐集发布的单集种子共用同一个内容目录名（CMCTV 这类）：一个监听条目同时
     匹配多颗种子，来源戳必须逐文件记到声明该集的那次投递上。旧实现按条目对
     ``info_hash IN (...)`` 取第一条，整批文件记到同一颗种子（NAS 实测《交锋》
@@ -3955,3 +3951,291 @@ async def test_entry_stats_dedupes_works_across_seasons_and_versions(db, tmp_pat
     assert ledger.counts["imported"] == 6  # 条目数照旧
     assert ledger.imported_works == 3  # 剧A + 剧B + 未回填的剧C
     assert ledger.imported_files == 39
+
+
+# —— 电影合集（issue #438）：一个条目目录里装着多部电影 ——————————————————
+
+
+def _spec_minutes(minutes: int) -> SimpleNamespace:
+    return SimpleNamespace(**{**vars(_FAKE_SPEC), "duration_seconds": minutes * 60})
+
+
+async def _make_movies(db, names: dict[str, int]) -> dict[str, MediaItem]:
+    """按「片名 → 年份」批量建电影条目（tmdb_id 各不相同）。"""
+    items: dict[str, MediaItem] = {}
+    async with db.session() as session:
+        for index, (title, year) in enumerate(names.items()):
+            item = MediaItem(
+                kind="movie", tmdb_id=1000 + index, title=title, original_title=title, year=year
+            )
+            session.add(item)
+            await session.commit()
+            await session.refresh(item)
+            items[title] = item
+    return items
+
+
+def _stub_identify_by_stem(monkeypatch, mapping: dict[str, MediaItem | None]) -> list[str]:
+    """按文件名（去扩展名）识别；返回被识别过的文件名，供断言识别次数。"""
+    seen: list[str] = []
+
+    async def identify(session, kind, watch_root, main, spec):
+        seen.append(main.name)
+        return mapping.get(main.stem)
+
+    monkeypatch.setattr(ingest_mod, "_identify", identify)
+    return seen
+
+
+_TRANSFORMERS = {
+    "变形金刚": 2007,
+    "变形金刚2：卷土重来": 2009,
+    "变形金刚3：月黑之时": 2011,
+    "变形金刚4：绝迹重生": 2014,
+    "变形金刚5：最后的骑士": 2017,
+}
+_TRANSFORMERS_FILES = [
+    "Transformers.2007.2160p",
+    "Transformers.Revenge.of.the.Fallen.2009.2160p",
+    "Transformers.Dark.of.the.Moon.2011.2160p",
+    "Transformers.Age.of.Extinction.2014.2160p",
+    "Transformers.The.Last.Knight.2017.2160p",
+]
+
+
+def _write_collection(watch: Path, files: list[str]) -> Path:
+    entry = watch / "Transformers.5-Film.Collection.2007-2017.UHD.BluRay.2160p"
+    entry.mkdir()
+    for index, stem in enumerate(files):
+        (entry / f"{stem}.mkv").write_bytes(b"x" * (1000 + index))
+    return entry
+
+
+@pytest.mark.asyncio
+async def test_movie_collection_imports_every_film(db, tmp_path, monkeypatch):
+    """issue #438：合集目录里每部电影都按自己的身份入库，台账仍是一行。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    items = await _make_movies(db, _TRANSFORMERS)
+    _stub_identify_by_stem(monkeypatch, dict(zip(_TRANSFORMERS_FILES, items.values(), strict=True)))
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda p: _FAKE_SPEC)
+    entry = _write_collection(watch, _TRANSFORMERS_FILES)
+    (entry / "Transformers-featurette.mkv").write_bytes(b"x" * 900)
+    (entry / "Transformers.2007.Trailer.mkv").write_bytes(b"x" * 10)
+
+    await _sweep_twice(db, library_id, watch)
+
+    async with db.session() as session:
+        files = list((await session.execute(select(LibraryFile))).scalars())
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+    for title, year in _TRANSFORMERS.items():
+        assert (root / f"{title} ({year})" / f"{title} ({year}).mkv").exists()
+    assert {f.media_item_id for f in files} == {item.id for item in items.values()}
+    assert len(files) == 5
+    assert record.status == IngestStatus.IMPORTED
+    assert record.imported_count == 5
+    assert record.unresolved_files is None
+    # 合集没有单一作品身份；花絮（-featurette 惯例名 / 体积预筛）不入库
+    assert record.media_item_id is None
+    assert "识别为电影合集，共 5 部" in (record.message or "")
+    assert "另有 2 个花絮/短视频未入库" in (record.message or "")
+    # 规则卡片摘要：一行合集台账按 5 部作品计数，而不是 1 部
+    assert sorted(record.collection_item_ids or []) == sorted(i.id for i in items.values())
+    async with db.session() as session:
+        rule = ImportWatch(id=1, source_path=str(watch), strategy="hardlink")
+        stats = await ingest_mod.entry_stats(session, [rule])
+    assert stats[1].imported_works == 5
+    assert stats[1].imported_files == 5
+
+
+@pytest.mark.asyncio
+async def test_movie_collection_unresolved_film_claimed_per_file(db, tmp_path, monkeypatch):
+    """合集里识别不出的那部：其余照常入库，条目待处理；按文件认领后只补这一部。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    await _make_rule(db, library_id=library_id, source=watch)
+    items = await _make_movies(db, _TRANSFORMERS)
+    mapping: dict[str, MediaItem | None] = dict(
+        zip(_TRANSFORMERS_FILES, items.values(), strict=True)
+    )
+    mapping[_TRANSFORMERS_FILES[2]] = None
+    mapping[_TRANSFORMERS_FILES[4]] = None
+    _stub_identify_by_stem(monkeypatch, mapping)
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda p: _FAKE_SPEC)
+
+    async def ensure_item(_service, kind, tmdb_id):
+        return next(item for item in items.values() if item.tmdb_id == tmdb_id)
+
+    async def no_assets(_media_item_id: int) -> None:
+        return None
+
+    monkeypatch.setattr(ingest_mod.MediaLibraryService, "ensure_media_item", ensure_item)
+    monkeypatch.setattr("movieclaw_api.services.media_scrape.ensure_assets", no_assets)
+    _write_collection(watch, _TRANSFORMERS_FILES)
+
+    async with db.session() as session:
+        rule = (await session.execute(select(ImportWatch))).scalar_one()
+        library = await session.get(Library, library_id)
+    await ingest_mod._sweep_dir(rule, library)
+    await ingest_mod._sweep_dir(rule, library)
+    async with db.session() as session:
+        job = (await session.execute(_ingest_jobs())).scalar_one()
+    await jobs.init_job_dispatcher(max_parallel=1)
+    blocked = await _wait_job_status(job.id, JobStatus.BLOCKED)
+    assert blocked.error["code"] == "INGEST_IDENTITY_REQUIRED"
+
+    third, fifth = (f"{_TRANSFORMERS_FILES[i]}.mkv" for i in (2, 4))
+    async with db.session() as session:
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+        assert record.status == IngestStatus.PENDING
+        assert record.imported_count == 3
+        assert record.unresolved_files == [third, fifth]
+        assert "2 个视频无法识别" in (record.message or "")
+        # 有多个待认领文件时必须指定文件：整条认领会把整个合集钉成同一部
+        with pytest.raises(BadRequestException):
+            await ingest_mod.claim_entry(session, record.id, items["变形金刚"].tmdb_id)
+        with pytest.raises(BadRequestException):
+            await ingest_mod.claim_entry(
+                session, record.id, 1002, file=f"{_TRANSFORMERS_FILES[0]}.mkv"
+            )
+        # 认领只改台账不改文件（指纹不变）：作业执行器必须放行，不能原样挂回
+        await ingest_mod.claim_entry(session, record.id, 1002, file=third)
+
+    await _wait_job_status(job.id, JobStatus.BLOCKED)
+    async with db.session() as session:
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+        assert record.unresolved_files == [fifth]
+        assert record.claimed_files == {third: 1002}
+        assert record.imported_count == 4
+        third_file = (
+            await session.execute(
+                select(LibraryFile).where(
+                    LibraryFile.media_item_id == items["变形金刚3：月黑之时"].id
+                )
+            )
+        ).scalar_one()
+        assert third_file.identity_source == "manual"
+        # 只剩一个待认领文件时可以不指定文件
+        await ingest_mod.claim_entry(session, record.id, 1004)
+
+    await _wait_job_status(job.id, JobStatus.SUCCEEDED)
+    async with db.session() as session:
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+        files = list((await session.execute(select(LibraryFile))).scalars())
+    assert record.status == IngestStatus.IMPORTED
+    assert record.unresolved_files is None
+    assert len(files) == 5
+    assert (root / "变形金刚5：最后的骑士 (2017)" / "变形金刚5：最后的骑士 (2017).mkv").exists()
+
+
+@pytest.mark.asyncio
+async def test_same_film_versions_stay_single_movie(db, tmp_path, monkeypatch):
+    """同一部片的两个版本都识别到同一作品：不是合集，照旧只取最大文件。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    item = await _make_item(db, kind=MediaKind.MOVIE, title="某电影", year=2020)
+    seen = _stub_identify_by_stem(
+        monkeypatch, {"Some.Movie.2020.2160p": item, "Some.Movie.2020.1080p": item}
+    )
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda p: _FAKE_SPEC)
+    entry = watch / "Some.Movie.2020.Pack"
+    entry.mkdir()
+    (entry / "Some.Movie.2020.2160p.mkv").write_bytes(b"x" * 400)
+    (entry / "Some.Movie.2020.1080p.mkv").write_bytes(b"x" * 200)
+
+    await _sweep_twice(db, library_id, watch)
+
+    async with db.session() as session:
+        files = list((await session.execute(select(LibraryFile))).scalars())
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+    assert [Path(f.file_path).name for f in files] == ["某电影 (2020).mkv"]
+    assert files[0].size_bytes == 400
+    assert record.status == IngestStatus.IMPORTED
+    assert record.media_item_id == item.id
+    assert "已取最大文件为正片，其余 1 个视频是花絮或同片的其他版本，未入库" in (
+        record.message or ""
+    )
+    # 主文件的逐文件识别结论直接复用，不再多查一次
+    assert sorted(seen) == ["Some.Movie.2020.1080p.mkv", "Some.Movie.2020.2160p.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_short_extras_never_trigger_per_file_identification(db, tmp_path, monkeypatch):
+    """正片 + 短花絮：花絮不到正片级时长，不参与识别，行为与改动前一致。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    item = await _make_item(db, kind=MediaKind.MOVIE, title="某电影", year=2020)
+    seen = _stub_identify_by_stem(monkeypatch, {"Some.Movie.2020": item})
+    monkeypatch.setattr(
+        ingest_mod,
+        "probe_media",
+        lambda p: _spec_minutes(15) if "Interview" in p.name else _FAKE_SPEC,
+    )
+    entry = watch / "Some.Movie.2020.1080p"
+    entry.mkdir()
+    (entry / "Some.Movie.2020.mkv").write_bytes(b"x" * 400)
+    (entry / "Director.Interview.mkv").write_bytes(b"x" * 300)
+
+    await _sweep_twice(db, library_id, watch)
+
+    async with db.session() as session:
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+    assert seen == ["Some.Movie.2020.mkv"]
+    assert record.status == IngestStatus.IMPORTED
+    assert record.media_item_id == item.id
+    assert (root / "某电影 (2020)" / "某电影 (2020).mkv").exists()
+
+
+@pytest.mark.asyncio
+async def test_legacy_largest_only_collection_backfilled_once_after_upgrade(
+    db, tmp_path, monkeypatch
+):
+    """升级补偿：旧版只入库了最大一部的合集，升级后自动补齐其余几部，且只补偿一次。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    items = await _make_movies(db, _TRANSFORMERS)
+    seen = _stub_identify_by_stem(
+        monkeypatch, dict(zip(_TRANSFORMERS_FILES, items.values(), strict=True))
+    )
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda p: _FAKE_SPEC)
+    entry = _write_collection(watch, _TRANSFORMERS_FILES)
+    # 旧版结论：最大的（第 5 部）已硬链进库，其余 4 部被「忽略」
+    largest = entry / f"{_TRANSFORMERS_FILES[4]}.mkv"
+    old_target = root / "变形金刚5：最后的骑士 (2017)" / "变形金刚5：最后的骑士 (2017).mkv"
+    old_target.parent.mkdir(parents=True)
+    os.link(largest, old_target)
+    async with db.session() as session:
+        session.add(
+            IngestEntry(
+                library_id=library_id,
+                media_item_id=items["变形金刚5：最后的骑士"].id,
+                entry_path=str(entry),
+                fingerprint=ingest_mod._snapshot(entry).fingerprint,
+                status=IngestStatus.IMPORTED,
+                message="已识别为《变形金刚5：最后的骑士》，硬链接 1 个文件；"
+                "已取最大文件为正片，忽略其余 4 个视频",
+                imported_count=1,
+            )
+        )
+        await session.commit()
+
+    await _sweep_twice(db, library_id, watch)
+
+    async with db.session() as session:
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+    for title, year in _TRANSFORMERS.items():
+        assert (root / f"{title} ({year})" / f"{title} ({year}).mkv").exists()
+    assert record.status == IngestStatus.IMPORTED
+    assert record.imported_count == 1 + 4  # 已在库的那部按同内容短路，不重复计数
+    assert "新入库 4 部" in (record.message or "")
+    assert "1 部已在库：《变形金刚5：最后的骑士》" in (record.message or "")
+
+    # 补偿只一次：新结论不再含旧版标记，指纹没变就不再重跑
+    identified = len(seen)
+    await _sweep_twice(db, library_id, watch)
+    assert len(seen) == identified
