@@ -1602,6 +1602,27 @@ body.cmdk-open .app-shell {
  */
 
 /*
+ * —— 弹簧曲线 ——
+ * CSS linear() 采样的阻尼弹簧阶跃响应（Safari 17.2+ / Chrome 113+），底栏与
+ * 撰写面板的「落定」动作都走它：比 cubic-bezier 多了一次真实的过冲回摆，
+ * 是 iOS 26 液态玻璃动效的关键观感。不支持 linear() 的浏览器回落到近似的
+ * cubic-bezier（只有单次过冲、没有回摆，功能无差别）。
+ *   --ease-spring      阻尼比 0.62：约 8% 过冲，用于胶囊收缩 / 展开、图标弹出；
+ *   --ease-spring-soft 阻尼比 0.86：几乎不过冲，用于整块面板的进出。
+ */
+:root {
+  --ease-spring: cubic-bezier(0.2, 0.9, 0.25, 1.08);
+  --ease-spring-soft: cubic-bezier(0.25, 0.9, 0.3, 1);
+}
+
+@supports (transition-timing-function: linear(0, 1)) {
+  :root {
+    --ease-spring: linear(0, 0.037, 0.129, 0.253, 0.392, 0.531, 0.661, 0.775, 0.871, 0.947, 1.003, 1.043, 1.068, 1.08, 1.084, 1.08, 1.072, 1.062, 1.05, 1.038, 1.028, 1.018, 1.01, 1.004, 0.999, 0.996, 0.994, 0.993, 0.993, 0.993, 0.994, 0.995, 0.996, 0.997, 0.998, 0.999, 0.999, 1, 1, 1, 1);
+    --ease-spring-soft: linear(0, 0.022, 0.078, 0.155, 0.242, 0.333, 0.423, 0.508, 0.586, 0.657, 0.719, 0.773, 0.819, 0.858, 0.89, 0.917, 0.938, 0.956, 0.969, 0.98, 0.988, 0.993, 0.998, 1.001, 1.003, 1.004, 1.005, 1.005, 1.005, 1.005, 1.004, 1.004, 1.004, 1.003, 1.003, 1.002, 1.002, 1.002, 1.001, 1.001, 1);
+  }
+}
+
+/*
  * —— 移动端液态玻璃底栏（components/glass-tab-bar.tsx，银玻璃 <768px）——
  * iOS 26 系统 Tab Bar 的 Web 复刻，规格与出处见
  * docs/design/web-themes-mobile/04-iOS-液态玻璃底栏.md：
@@ -1617,6 +1638,9 @@ body.cmdk-open .app-shell {
  */
 .glass-tabbar {
   --tabbar-h: 62px;
+  /* 胶囊展开态的整宽：页签网格按它定宽，收缩时胶囊变窄只是把网格裁掉，
+     图标不会跟着挤成一团（旧版的毛病） */
+  --bar-full: calc(100vw - max(21px, var(--safe-left)) - max(21px, var(--safe-right)));
   position: fixed;
   z-index: 40;
   left: max(21px, var(--safe-left));
@@ -1626,6 +1650,10 @@ body.cmdk-open .app-shell {
   display: flex;
   gap: 8px;
   pointer-events: none;
+}
+
+.glass-tabbar:has(.glass-tabbar__search) {
+  --bar-full: calc(100vw - max(21px, var(--safe-left)) - max(21px, var(--safe-right)) - 70px);
 }
 
 .glass-tabbar > * {
@@ -1644,8 +1672,10 @@ body.cmdk-open .app-shell {
     inset 0 0 0 1px rgba(255, 255, 255, 0.13),
     0 18px 40px -18px rgba(0, 0, 0, 0.75),
     0 2px 6px rgba(0, 0, 0, 0.25);
+  transition: transform 420ms var(--ease-spring);
 }
 
+/* 边缘透镜亮环 + 斜向高光（Safari 无折射的近似） */
 .glass-capsule::before {
   content: "";
   position: absolute;
@@ -1657,35 +1687,88 @@ body.cmdk-open .app-shell {
     linear-gradient(135deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.03) 30%, transparent 55%);
 }
 
+/* 按压辉光：触点处由内发亮（HIG：玻璃从指尖照亮），按下 90ms 亮起、松手 520ms
+   缓缓熄灭；整块玻璃同时微微鼓起。触点坐标由组件写入 --gx / --gy */
+.glass-capsule::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(
+    circle 72px at var(--gx, 50%) var(--gy, 50%),
+    rgba(255, 255, 255, 0.24),
+    rgba(255, 255, 255, 0.07) 55%,
+    transparent 78%
+  );
+  opacity: 0;
+  transition: opacity 520ms ease-out;
+}
+
+.glass-capsule[data-pressed="true"]::after {
+  opacity: 1;
+  transition-duration: 90ms;
+}
+
+.glass-capsule[data-pressed="true"] {
+  transform: scale(1.02);
+}
+
 /* 主胶囊：展开时占满搜索圆钮左侧，收缩时缩成与圆钮等大的圆（max-width 可动画，
-   flex-basis: auto 不行）。margin-right:auto 让收缩后的圆靠左、搜索圆钮留在右端 */
+   flex-basis: auto 不行）。margin-right:auto 让收缩后的圆靠左、搜索圆钮留在右端。
+   宽度走 --ease-spring：收拢到位时略微过冲再回弹，像一滴液体收起来 */
 .glass-tabbar__bar {
   flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
   margin-right: auto;
   overflow: hidden;
-  transition: max-width 420ms cubic-bezier(0.34, 1.3, 0.5, 1);
+  transition:
+    max-width 640ms var(--ease-spring),
+    transform 420ms var(--ease-spring);
 }
 
 .glass-tabbar[data-minimized="true"] .glass-tabbar__bar {
   max-width: var(--tabbar-h);
+  transition:
+    max-width 560ms var(--ease-spring),
+    transform 420ms var(--ease-spring);
 }
 
+/* 页签网格：定宽（--bar-full），不随胶囊变窄。收缩时整体向当前页签收拢
+   （transform-origin = 当前页签中心）并糊掉；展开时延迟 60ms 跟上胶囊 */
 .glass-tabbar__tabs {
   position: absolute;
-  inset: 4px;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(var(--bar-full) - 8px);
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
-  transition: opacity 200ms ease;
+  /* 底栏自己处理横向拖动擦选；长按不弹链接预览、不选中文字 */
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  transform-origin: var(--tab-origin, 50%) 50%;
+  transition:
+    filter 260ms ease 60ms,
+    transform 560ms var(--ease-spring) 60ms;
 }
 
 .glass-tabbar[data-minimized="true"] .glass-tabbar__tabs {
-  opacity: 0;
+  filter: blur(6px);
+  transform: scale(0.82);
+  transition:
+    filter 160ms ease,
+    transform 240ms cubic-bezier(0.4, 0, 1, 1);
 }
 
-/* 选中态：高亮胶囊在页签间弹性滑动（iOS 26 的选中胶囊不可关闭，是系统标志） */
+/* 液态选中胶囊：transform 由组件逐帧 / WAAPI 写入（平移 + 速度拉伸 + 行进抬起，
+   见 lib/liquid-spring.ts）；这里只管材质。行进与拖动时变亮、加厚边光，
+   像一颗被拎起来的玻璃气泡 */
 .glass-tabbar__indicator {
   position: absolute;
   inset-block: 0;
@@ -1697,8 +1780,26 @@ body.cmdk-open .app-shell {
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
     inset 0 0 0 1px rgba(255, 255, 255, 0.06),
     0 4px 12px -6px rgba(0, 0, 0, 0.6);
-  transform: translateX(calc(var(--tab-index) * 100%));
-  transition: transform 480ms cubic-bezier(0.34, 1.4, 0.5, 1);
+  will-change: transform;
+  transition:
+    background 260ms ease,
+    box-shadow 260ms ease,
+    opacity 160ms ease;
+}
+
+.glass-tabbar__indicator[data-hidden="true"],
+.glass-tabbar[data-minimized="true"] .glass-tabbar__indicator {
+  opacity: 0;
+}
+
+.glass-tabbar__indicator[data-moving="true"],
+.glass-tabbar[data-dragging="true"] .glass-tabbar__indicator {
+  background: rgba(255, 255, 255, 0.2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    inset 0 -10px 16px -10px rgba(255, 255, 255, 0.22),
+    0 10px 24px -8px rgba(0, 0, 0, 0.7);
 }
 
 .glass-tabbar__tab {
@@ -1710,23 +1811,46 @@ body.cmdk-open .app-shell {
   gap: 2px;
   color: var(--text-muted);
   -webkit-tap-highlight-color: transparent;
+  /* 展开时自左向右依次浮现（每格错开 35ms）；收起时一齐快速淡出 */
   transition:
     color 200ms ease,
-    transform 150ms ease;
+    opacity 280ms ease calc(90ms + var(--i, 0) * 35ms),
+    translate 520ms var(--ease-spring) calc(90ms + var(--i, 0) * 35ms);
 }
 
-.glass-tabbar__tab:active {
-  transform: scale(0.94);
+.glass-tabbar[data-minimized="true"] .glass-tabbar__tab {
+  opacity: 0;
+  translate: 0 6px;
+  transition:
+    color 200ms ease,
+    opacity 120ms ease,
+    translate 200ms ease-in;
 }
 
-.glass-tabbar__tab[aria-current="page"] {
+.glass-tabbar__tab[aria-current="page"],
+.glass-tabbar__tab[data-hover] {
   color: var(--accent-strong);
+}
+
+/* 拖动擦选时，高亮跟着手指走：原选中页签若不在指下就先暗下去 */
+.glass-tabbar[data-dragging="true"] .glass-tabbar__tab[aria-current="page"]:not([data-hover]) {
+  color: var(--text-muted);
 }
 
 .glass-tabbar__tab svg,
 .glass-tabbar__mini svg {
   width: 26px;
   height: 26px;
+}
+
+/* 图标按压回弹：按下缩到 0.84，松手按 --ease-spring 弹回并略微过冲 */
+.glass-tabbar__tab svg {
+  transition: transform 460ms var(--ease-spring);
+}
+
+.glass-tabbar__tab:active svg {
+  transform: scale(0.84);
+  transition-duration: 110ms;
 }
 
 .glass-tabbar__tab span {
@@ -1736,12 +1860,37 @@ body.cmdk-open .app-shell {
   letter-spacing: 0.01em;
 }
 
+/* 收起态圆钮：钉在胶囊左端、与胶囊收拢后同宽，胶囊变窄时图标原地不动
+   （旧版居中于整条胶囊，收缩中途会在页签中间闪出一颗图标）。页签淡出 70ms 后
+   就从 0.4 倍弹出——等太久会露出一段空胶囊 */
 .glass-tabbar__mini {
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--tabbar-h);
   display: grid;
   place-items: center;
   color: var(--accent-strong);
+  opacity: 0;
+  transform: scale(0.4);
+  filter: blur(4px);
+  pointer-events: none;
+  transition:
+    opacity 110ms ease,
+    transform 180ms ease-in,
+    filter 110ms ease;
+}
+
+.glass-tabbar[data-minimized="true"] .glass-tabbar__mini {
+  opacity: 1;
+  transform: none;
+  filter: none;
+  pointer-events: auto;
+  transition:
+    opacity 200ms ease 70ms,
+    transform 600ms var(--ease-spring) 70ms,
+    filter 200ms ease 70ms;
 }
 
 .glass-tabbar__search {
@@ -1755,11 +1904,36 @@ body.cmdk-open .app-shell {
   height: 100%;
   border-radius: 999px;
   color: var(--accent-strong);
+  -webkit-tap-highlight-color: transparent;
 }
 
 .glass-tabbar__search-btn svg {
   width: 24px;
   height: 24px;
+  transition: transform 460ms var(--ease-spring);
+}
+
+.glass-tabbar__search-btn:active svg {
+  transform: scale(0.84);
+  transition-duration: 110ms;
+}
+
+/* 滚动边缘效果（iOS 26 scroll edge effect 的 .soft 近似）：底栏后方一段从透明
+   过渡到「轻糊 + 压暗」的带，内容滚进底栏底下时先被柔化，玻璃因此显得浮起、
+   标签文字不被花哨的海报抢走。铺到屏幕物理底边（-vp-overshoot） */
+.glass-tabbar-edge {
+  position: fixed;
+  z-index: 39;
+  left: 0;
+  right: 0;
+  bottom: calc(-1 * var(--vp-overshoot));
+  height: calc(var(--tabbar-bottom) + var(--vp-overshoot) + 62px + 44px);
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(8, 10, 15, 0.42) 62%, rgba(8, 10, 15, 0.58));
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 58%);
+  mask-image: linear-gradient(180deg, transparent, #000 58%);
 }
 
 @media (prefers-reduced-transparency: reduce) {
@@ -1771,10 +1945,18 @@ body.cmdk-open .app-shell {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .glass-capsule,
   .glass-tabbar__bar,
-  .glass-tabbar__indicator,
-  .glass-tabbar__tabs {
+  .glass-tabbar__tabs,
+  .glass-tabbar__tab,
+  .glass-tabbar__tab svg,
+  .glass-tabbar__mini,
+  .glass-tabbar__search-btn svg {
     transition: none;
+  }
+
+  .glass-capsule[data-pressed="true"] {
+    transform: none;
   }
 }
 
@@ -1792,6 +1974,13 @@ body.cmdk-open .app-shell {
  * 从底部升起的模态 sheet（iOS compose 惯例），盖住底栏。与原移动端抽屉同一套
  * 铺底处理：面板底边铺到屏幕物理底边（-vp-overshoot），内容仍停在视口内并让出
  * 软键盘（--keyboard-inset）与 Home 指示条。层级沿用原抽屉的 55 / 60 档。
+ *
+ * 动效对齐 iOS 页面 sheet：
+ *   - 升起时底下的整个应用缩小、下沉、加圆角，退成一张卡片（html[data-compose-open]
+ *     作用于 .app-shell），面板走 --ease-spring-soft 落定；
+ *   - 按住顶部把手区可以往下拖：面板跟手、底下卡片与遮罩按拖动进度（--sheet-drag，
+ *     0 = 完全打开、1 = 拖到底）同步恢复；松手时拖过 1/4 或向下甩出就收回，
+ *     否则弹回原位。拖动中关掉过渡（html[data-sheet-dragging]），跟手无延迟。
  */
 .compose-scrim {
   position: fixed;
@@ -1800,11 +1989,11 @@ body.cmdk-open .app-shell {
   background: rgba(4, 6, 10, 0.55);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 300ms ease;
+  transition: opacity 420ms ease;
 }
 
 .compose-scrim[data-open="true"] {
-  opacity: 1;
+  opacity: calc(1 - var(--sheet-drag, 0));
   pointer-events: auto;
 }
 
@@ -1829,21 +2018,60 @@ body.cmdk-open .app-shell {
   transform: translateY(105%);
   visibility: hidden;
   transition:
-    transform 450ms cubic-bezier(0.32, 0.98, 0.36, 1),
-    visibility 0s linear 450ms;
+    transform 520ms var(--ease-spring-soft),
+    visibility 0s linear 520ms;
 }
 
 .compose-sheet[data-open="true"] {
-  transform: none;
+  transform: translateY(var(--sheet-offset, 0px));
   visibility: visible;
-  transition: transform 450ms cubic-bezier(0.32, 0.98, 0.36, 1);
+  transition: transform 600ms var(--ease-spring-soft);
+}
+
+/* 顶部把手区：拖动下滑关闭的抓手，纵向手势归组件处理 */
+.compose-sheet__handle {
+  touch-action: none;
+  cursor: grab;
+}
+
+@media (max-width: 767px) {
+  /* 面板收起时卡片同一条曲线、同一时长恢复，与面板落下同步（桌面端命令面板
+     的 260ms 后推不受影响） */
+  .app-shell {
+    transition:
+      transform 520ms var(--ease-spring-soft),
+      border-radius 520ms var(--ease-spring-soft);
+  }
+
+  /* 底下的应用退成卡片：缩到 0.92、下沉、加圆角；拖动时按 --sheet-drag 线性恢复 */
+  html[data-compose-open] .app-shell {
+    transform-origin: 50% 0;
+    transform: translateY(calc((1 - var(--sheet-drag, 0)) * (var(--safe-top) * 0.4 + 6px)))
+      scale(calc(0.92 + 0.08 * var(--sheet-drag, 0)));
+    border-radius: calc(20px * (1 - var(--sheet-drag, 0)));
+    overflow: hidden;
+    transition:
+      transform 600ms var(--ease-spring-soft),
+      border-radius 600ms var(--ease-spring-soft);
+  }
+}
+
+html[data-sheet-dragging] .compose-sheet,
+html[data-sheet-dragging] .compose-scrim,
+html[data-sheet-dragging] .app-shell {
+  transition: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .compose-scrim,
   .compose-sheet,
-  .compose-sheet[data-open="true"] {
+  .compose-sheet[data-open="true"],
+  html[data-compose-open] .app-shell {
     transition: none;
+  }
+
+  html[data-compose-open] .app-shell {
+    transform: none;
   }
 }
 
