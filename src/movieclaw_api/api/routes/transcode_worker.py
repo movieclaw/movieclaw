@@ -53,7 +53,7 @@ logger = logging.getLogger("movieclaw_api.playback.transcode_worker")
 
 router = APIRouter(prefix="/transcode-worker", tags=["transcode-worker"])
 
-_ARTIFACT_NAME = re.compile(r"^(?:init\.mp4|(?:live|index)\.m3u8|seg\d{5}\.m4s)$")
+_ARTIFACT_NAME = re.compile(r"^(?:init\.mp4|(?:live|index)\.m3u8|seg\d{5}\.(?:m4s|ts))$")
 
 
 def _artifact_write_failure(

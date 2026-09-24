@@ -140,10 +140,11 @@ class Manifest:
         return self.components == components
 
     def usable_segments(self, directory: Path) -> set[int]:
-        """台账登记且盘上真的还在的分片。"""
+        """台账登记且盘上真的还在的分片（后缀随成分里的容器：fMP4 是 .m4s、TS 是 .ts）。"""
+        suffix = "ts" if self.components.get("container") == "hls-ts" else "m4s"
         present: set[int] = set()
         for index in self.completed:
-            if (directory / f"seg{index:05d}.m4s").is_file():
+            if (directory / f"seg{index:05d}.{suffix}").is_file():
                 present.add(index)
         return present
 

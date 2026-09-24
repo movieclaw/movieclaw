@@ -142,7 +142,10 @@ export function DiscoveryFilterControl({
           </button>
         </div>
 
-        <div className="scroll-thin flex-1 space-y-6 overflow-y-auto px-6 py-5 max-md:px-4">
+        {/* 手机（底部抽屉）：内容区限高约半屏、自己滚，头（标题/关闭）与底（重置/应用）
+            常驻可见——Modal 在手机上为了软键盘把面板高度放开到整屏，不在这里夹一下，
+            类型筹码 + 六个下拉一路长到快满屏（2026-09-24 用户反馈）。内容少时仍按内容高。 */}
+        <div className="scroll-thin flex-1 space-y-6 overflow-y-auto px-6 py-5 max-md:max-h-[52svh] max-md:px-4">
           <fieldset>
             <legend className="mb-3 text-sub font-semibold text-[var(--text-muted)]">类型（可多选）</legend>
             {genreError ? (

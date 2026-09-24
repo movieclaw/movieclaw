@@ -84,9 +84,10 @@ from movieclaw_api.services.playback.embedded_subs import (
 from movieclaw_api.services.playback.ffmpeg_args import (
     HW_BACKENDS,
     INIT_NAME,
-    SEGMENT_PATTERN,
     SEGMENT_SECONDS,
     effective_hw_backend,
+    is_mpegts,
+    segment_pattern,
 )
 from movieclaw_api.services.playback.hwprobe import (
     available_backends,
@@ -735,7 +736,7 @@ async def decide_playback_route(
 
 # 只放行会话目录里由 ffmpeg 产出的两类文件名。**这是路径穿越的唯一防线**：
 # 会话 id 来自签名 token 可信，但文件名来自 URL，必须白名单而不是过滤。
-_SEGMENT_NAME = re.compile(r"^(init\.mp4|seg\d{5}\.m4s)$")
+_SEGMENT_NAME = re.compile(r"^(init\.mp4|seg\d{5}\.(?:m4s|ts))$")
 # 雪碧图文件名由服务端生成，但仍经过 URL——白名单一视同仁。
 _TRICKPLAY_SHEET_NAME = re.compile(r"^sprite_\d{3}\.jpg$")
 
@@ -1246,8 +1247,8 @@ async def get_session_playlist(
     if session.segment_plan is not None:
         playlist = build_media_playlist(
             session.segment_plan,
-            init_name=INIT_NAME,
-            segment_name=SEGMENT_PATTERN,
+            init_name=None if is_mpegts(session.plan) else INIT_NAME,
+            segment_name=segment_pattern(session.plan),
             query=f"?token={token}",
         )
         return Response(
@@ -1487,11 +1488,12 @@ async def get_session_segment(
     # （换会话必换 URL）——放给浏览器缓存，用户往回拖（back buffer 只留 30
     # 秒，回看必然重新走 HTTP）就变成本地命中，不再打服务端。
     headers = {"Cache-Control": "private, max-age=3600, immutable"}
+    media_type = "video/mp2t" if name.endswith(".ts") else "video/mp4"
     if meter is None:
-        return FileResponse(target, media_type="video/mp4", headers=headers)
+        return FileResponse(target, media_type=media_type, headers=headers)
     # 逐块计量发出的字节（活动页的速率来源）；计量器随会话存活，这里不回收
     return DisconnectAwareFileResponse(
-        target, media_type="video/mp4", headers=headers, byte_sink=meter.add
+        target, media_type=media_type, headers=headers, byte_sink=meter.add
     )
 
 

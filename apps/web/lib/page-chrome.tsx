@@ -1,5 +1,6 @@
 "use client";
 
+import type { Route } from "next";
 import { createContext, useContext, type ReactNode } from "react";
 
 import type { SearchSubmitOptions } from "@/components/search-command";
@@ -41,10 +42,10 @@ export interface PageChromeValue {
   /** 全局搜索入口：移动端由 PageNav 代为呈现（外壳那条已经撤掉） */
   onSearch: PageSearchHandler;
   /**
-   * 发起新会话。移动端打开外壳的撰写面板（components/compose-sheet.tsx，
-   * 银玻璃底栏形态下新会话不占页签）；其余形态直接跳 /new。
-   * 原「唤起 / 收起移动端抽屉」两个入口随抽屉侧栏退役一并移除
-   * （docs/design/web-themes-mobile/04）。
+   * 发起新会话：跳 /new 整页（银玻璃手机上是一张与会话页同构的空会话页，
+   * 见 components/new-task.tsx；原底部撰写面板 2026-09-24 退役）。外壳负责
+   * 先收起「更多」面板。原「唤起 / 收起移动端抽屉」两个入口随抽屉侧栏退役
+   * 一并移除（docs/design/web-themes-mobile/04）。
    */
   openCompose: () => void;
   /**
@@ -65,13 +66,26 @@ export interface PageChromeValue {
    */
   setTopBarActions: (node: ReactNode) => () => void;
   /**
+   * 把页面级的视图切换挂到液态玻璃底栏的「底部附件」位（iOS 26 tab bar
+   * bottom accessory：相册的「年 / 月 / 全部」）——展开时是浮在底栏上方的一条
+   * 胶囊，底栏随滚动收起成圆钮后它下沉到圆钮与搜索圆钮之间。银玻璃手机专用；
+   * 内容用 glass-tab-bar 导出的 AccessorySegmented。返回撤销函数，effect 里用。
+   */
+  setTabBarAccessory: (node: ReactNode) => () => void;
+  /** 当前挂着的底部附件（底栏消费；页面不用读） */
+  tabBarAccessory?: ReactNode;
+  /**
    * 把页面标题挂进移动端全局顶栏、顶替品牌字标的位置，返回撤销函数。
    *
    * 给沉浸类顶层页面（如 Agent 会话）：窄屏上字标传达不了任何新信息（用户
    * 就在应用里），这一格让给「我在看哪个会话」远比品牌曝光有用。字标只在
    * 没有页面认领标题时兜底显示。同样在 effect 里调用。
+   *
+   * ``backHref``：认领标题的页面通常是从别处进来的深层页（会话页），顶栏在
+   * 标题左侧给一颗返回键——能回就按浏览历史回、回不了就落到这里给的地址
+   * （lib/back-navigation.ts）。手机上底栏在这类页面是收起的，没有它就出不去。
    */
-  setTopBarTitle: (title: string) => () => void;
+  setTopBarTitle: (title: string, options?: { backHref?: Route }) => () => void;
 }
 
 const PageChromeContext = createContext<PageChromeValue | null>(null);

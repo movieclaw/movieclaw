@@ -7,7 +7,9 @@ import { useLayoutEffect } from "react";
 import { ChevronLeftIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS } from "@/components/page-nav";
 import { SearchCommand } from "@/components/search-command";
+import { useBackNavigation } from "@/lib/back-navigation";
 import { usePageChrome } from "@/lib/page-chrome";
+import { useTheme } from "@/lib/ui-prefs";
 
 /**
  * 移动端设置页的导航条：左侧返回键 + 页面标题 + 右侧搜索键（基础实现，两个
@@ -28,10 +30,26 @@ import { usePageChrome } from "@/lib/page-chrome";
  * 让出；左右安全区仍由 main 的内边距承担（globals.css 的
  * .app-shell[data-topbar="false"] 只清 padding-top），本条只补基础间距，
  * 不重复让位——与 PageNav 的做法同型。
+ *
+ * 外观按主题分叉：Netflix 是实底（--bg 纯黑）+ 底边线，与它的实底标签栏同一
+ * 语言；银玻璃**不能**用实底——页面底是带光斑的氛围渐变，一块 --bg 实色压上去
+ * 就是「顶上一块黑板」外加一条硬边（2026-09-23 用户截图），要走全站顶栏同一套
+ * 「向下化开的雾」（--page-fog + 模糊 + 渐隐蒙版，与 PageNav / MobileTopBar 同型），
+ * 雾脚向下多铺一截盖住列表首行，顶栏与内容之间没有任何一条可见的边。
  */
-export function MobileSettingsNav({ title, backHref }: { title: string; backHref: Route }) {
+export function MobileSettingsNav({
+  title,
+  backHref,
+  historyBack = false,
+}: {
+  title: string;
+  backHref: Route;
+  /** 列表页（银玻璃）：按浏览历史回到打开「更多」面板的那一页，无历史才落 backHref */
+  historyBack?: boolean;
+}) {
   const router = useRouter();
   const chrome = usePageChrome();
+  const goBackInHistory = useBackNavigation(backHref);
   // 认领移动端顶栏那一行（注销函数即 effect 清理）。必须用 useLayoutEffect
   // 而不是 useEffect：登记要赶在浏览器绘制之前生效，否则外壳的全局顶栏会
   // 先画出一帧再被撤掉（PageNav 对同一机制记录过这个坑，见 components/page-nav.tsx）
@@ -40,11 +58,28 @@ export function MobileSettingsNav({ title, backHref }: { title: string; backHref
   // （历史里堆着一串 /settings/*），按后退语义要逐级回退每个分区才能离开
   // 设置，与 iOS 设置页的返回心智不符。固定 replace 到上级，一次到位且不
   // 额外堆积历史。
-  const back = () => router.replace(backHref);
+  const back = () => (historyBack ? goBackInHistory() : router.replace(backHref));
+  const isNf = useTheme().structural;
 
   return (
-    <div className="relative z-30 shrink-0 border-b border-[var(--line)] bg-[var(--bg)] py-2 px-2 pt-[calc(var(--safe-top)+0.5rem)]">
-      <div className="flex items-center gap-1">
+    <div
+      className={`relative z-30 shrink-0 px-2 py-2 pt-[calc(var(--safe-top)+0.5rem)] ${
+        isNf ? "border-b border-[var(--line)] bg-[var(--bg)]" : ""
+      }`}
+    >
+      {!isNf && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 -bottom-6 top-0 backdrop-blur-md"
+          style={{
+            /* 雾层色相走 --page-fog：内联 style 无法被 CSS 选择器压过，主题换肤必须经变量 */
+            background: "var(--page-fog)",
+            maskImage: "linear-gradient(180deg, #000 0%, #000 55%, transparent 100%)",
+            WebkitMaskImage: "linear-gradient(180deg, #000 0%, #000 55%, transparent 100%)",
+          }}
+        />
+      )}
+      <div className="relative flex items-center gap-1">
         <button
           type="button"
           onClick={back}

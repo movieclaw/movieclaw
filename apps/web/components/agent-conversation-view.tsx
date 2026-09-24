@@ -56,9 +56,10 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
   // 标题可能先于详情就绪（侧栏最近会话已带），也会随自动命名更新，跟着值重挂即可。
   const chrome = usePageChrome();
   const title = conversation?.title;
+  // 返回落点 /my：手机上会话列表在「更多」页；有应用内历史时按历史回
   useEffect(() => {
     if (!chrome || !title) return;
-    return chrome.setTopBarTitle(title);
+    return chrome.setTopBarTitle(title, { backHref: "/my" as Route });
   }, [chrome, title]);
   const [input, setInput] = useState("");
   // 思维链档位：undefined = 用户没动过选择器（发送时不传，服务端沿用会话
@@ -263,7 +264,9 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
       {/* 底部输入：生成中可继续打字，发送键变停止键。
           移动端主区不再整体让位底部安全区（见 globals.css），贴底的输入行
           要自己把 Home 指示条的高度让出来，否则发送键会被指示条压住 */}
-      <div className="shrink-0 px-4 pb-5 pt-2 max-md:px-3 max-md:pb-[calc(0.75rem+var(--safe-bottom))]">
+      {/* 手机贴底：平时为 Home 指示条留安全区；软键盘立着时（html[data-soft-keyboard]）
+          那段安全区在键盘底下，留着只会让输入框离键盘悬空一截，收成基础间距 */}
+      <div className="shrink-0 px-4 pb-5 pt-2 max-md:px-3 max-md:pb-[calc(0.75rem+var(--safe-bottom))] [[data-soft-keyboard]_&]:max-md:pb-3">
         <div className="mx-auto max-w-3xl">
           {activeRetryTarget && (
             <div className="mb-2 flex items-center justify-between px-2 text-caption text-[var(--text-muted)]">

@@ -226,7 +226,7 @@ class PlaybackPlan:
 
     tier: PlaybackTier
     file_id: int
-    container: str  # "mp4" | "hls-fmp4"
+    container: str  # "mp4" | "hls-fmp4" | "hls-ts"（后者只给申报 MPEG-TS 的第三方播放器）
     video: VideoPlan
     audio: AudioPlan
     subtitles: tuple[SubtitlePlan, ...] = ()
@@ -746,8 +746,17 @@ def plan_capped_transcode(
     *,
     preferred_audio: str | None = None,
     max_height: int | None = None,
+    segment_container: str = "mp4",
+    audio_codecs: frozenset[str] | None = None,
+    max_audio_channels: int | None = None,
 ) -> PlaybackPlan | PlaybackRejected:
     """全解码播放器**主动要求**转码时的计划（docs/design/jellyfin-transcode.md §3）。
+
+    ``segment_container`` / ``audio_codecs`` / ``max_audio_channels`` 来自播放器
+    DeviceProfile 里 HLS 视频转码档的申报（Infuse 8：``Container=ts``、
+    ``AudioCodec=aac``、``MaxAudioChannels=2``）。分片容器按申报出——Infuse 只认
+    MPEG-TS，拿到 fMP4 分片探一下就报错（2026-09-23 真机）；音轨在申报的编码与
+    声道数之内选 copy 还是转码，申报之外的 copy 会让播放器解不出声音。
 
     与 ``decide_playback`` 的 universal 分支互补：那条分支回答「播放器什么都能
     解，服务端该不该转」（永远不该）；这里回答「播放器自己说线路装不下、要
@@ -792,13 +801,15 @@ def plan_capped_transcode(
             suggestion="请选择原画直连播放，或为容器配置显卡。",
         )
 
-    audio = _capped_audio_plan(media, preferred_audio)
+    audio = _capped_audio_plan(
+        media, preferred_audio, allowed_codecs=audio_codecs, max_channels=max_audio_channels
+    )
     label = (media.video_codec or "未知").upper()
     reason = f"播放器要求限制码率，视频 {label} 按上限重新编码为 H.264；{audio_note(audio)}"
     return PlaybackPlan(
         tier=tier,
         file_id=media.file_id,
-        container="hls-fmp4",
+        container="hls-ts" if segment_container == "ts" else "hls-fmp4",
         video=_build_video_plan(media, tier, policy, max_height),
         audio=audio,
         # 字幕不进计划：本函数只服务 Jellyfin 协议层，字幕由它按协议自己投递
@@ -817,23 +828,48 @@ def audio_note(audio: AudioPlan) -> str:
     return f"音轨已转为 {codec}{channels}"
 
 
-def _capped_audio_plan(media: MediaProfile, preferred_audio: str | None) -> AudioPlan:
+def _capped_audio_plan(
+    media: MediaProfile,
+    preferred_audio: str | None,
+    *,
+    allowed_codecs: frozenset[str] | None = None,
+    max_channels: int | None = None,
+) -> AudioPlan:
+    """限码率转码的音轨计划。
+
+    ``allowed_codecs`` / ``max_channels`` 是播放器转码档申报的音频能力（None =
+    没申报，按服务端默认：有损编码 copy、多声道转 E-AC-3、立体声转 AAC）。申报了
+    就只在其内选：源轨编码与声道都在申报内才 copy；否则多声道且申报里有 eac3 转
+    E-AC-3，不然一律转 AAC 并把声道压到申报上限（超出的做带中置加权的降混）。
+    """
     tracks = media.audio_tracks
     if not tracks:
         return AudioPlan(action="copy", track_ref=None)
     track = next((t for t in tracks if t.ref == preferred_audio), None) or _preferred_audio(tracks)
-    if (track.codec or "").lower() in CAPPED_COPY_AUDIO_CODECS:
-        return _copy_audio_plan(track)
+    codec = (track.codec or "").lower()
     channels = track.channels or 2
-    if channels > 2:
+    channel_cap = max_channels if max_channels and max_channels > 0 else None
+    fits_channels = channel_cap is None or channels <= channel_cap
+    codec_allowed = allowed_codecs is None or codec in allowed_codecs
+    if codec in CAPPED_COPY_AUDIO_CODECS and codec_allowed and fits_channels:
+        return _copy_audio_plan(track)
+    target_channels = min(channels, channel_cap) if channel_cap else channels
+    if target_channels > 2 and (allowed_codecs is None or "eac3" in allowed_codecs):
         return AudioPlan(
             action="transcode",
             track_ref=track.ref,
             codec="eac3",
-            channels=min(channels, _EAC3_MAX_CHANNELS),
-            downmix=channels > _EAC3_MAX_CHANNELS,
+            channels=min(target_channels, _EAC3_MAX_CHANNELS),
+            downmix=channels > min(target_channels, _EAC3_MAX_CHANNELS),
         )
-    return AudioPlan(action="transcode", track_ref=track.ref, codec="aac", channels=channels)
+    stereo = min(target_channels, 2)
+    return AudioPlan(
+        action="transcode",
+        track_ref=track.ref,
+        codec="aac",
+        channels=stereo,
+        downmix=channels > stereo,
+    )
 
 
 def needs_keyframe_probe(

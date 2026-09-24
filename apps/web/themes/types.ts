@@ -54,6 +54,8 @@ export interface PageActionsProps {
 export interface MobileSettingsNavProps {
   title: string;
   backHref: Route;
+  /** 列表页按浏览历史回退（银玻璃：设置从「更多」面板进）；缺省按 backHref 直达 */
+  historyBack?: boolean;
 }
 
 /**

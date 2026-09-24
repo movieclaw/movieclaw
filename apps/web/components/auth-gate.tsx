@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+
+import { BrandLoader } from "@/components/brand-loader";
 import type { Route } from "next";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -49,6 +51,20 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<SessionView | null>(cachedSession);
   const [failure, setFailure] = useState<StartupFailure | null>(null);
   const [retryKey, setRetryKey] = useState(0);
+  // 启动页的三段：on = 还在连接（本次是冷启动，没有缓存会话）；leaving = 已连上，
+  // 工作台在底下挂好、启动页正在淡出；off = 撤掉。有缓存会话的重挂载直接 off。
+  // 为什么连上后不立刻撤：工作台外壳的全局蒙版（.page-scrim）挂载时从透明渐显
+  // 240ms，启动页一撤这段时间壁纸会裸露闪一下（2026-09-24 用户反馈）——启动页
+  // 多停一拍、在蒙版就位后淡出，壁纸就始终盖在下面。
+  const [splashPhase, setSplashPhase] = useState<"on" | "leaving" | "off">(
+    cachedSession ? "off" : "on",
+  );
+  useEffect(() => {
+    if (!session || splashPhase !== "on") return;
+    setSplashPhase("leaving");
+    const timer = setTimeout(() => setSplashPhase("off"), 520);
+    return () => clearTimeout(timer);
+  }, [session, splashPhase]);
 
   /** 改昵称等处更新会话时，缓存要一起跟上，否则下次跨 layout 会闪回旧数据 */
   const updateSession = useCallback((next: SessionView) => {
@@ -111,7 +127,31 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (accessiblePathFor(session, pathname) !== pathname) {
     return <StartupStatus failure={null} onRetry={() => setRetryKey((value) => value + 1)} />;
   }
-  return <SessionProvider value={{ session, setSession: updateSession }}>{children}</SessionProvider>;
+  return (
+    <SessionProvider value={{ session, setSession: updateSession }}>
+      {children}
+      {splashPhase !== "off" && <SplashLayer leaving={splashPhase === "leaving"} />}
+    </SessionProvider>
+  );
+}
+
+/**
+ * 启动页本体：与 iOS 启动图同色的实底 + 同一颗标（见 StartupStatus 的说明）。
+ * ``leaving`` 时整层淡出（工作台已在底下），淡出期间不拦点击。
+ * z 取 100：要压过外壳、底栏、顶栏与全部弹层，启动期间屏幕上只有它。
+ */
+function SplashLayer({ leaving = false }: { leaving?: boolean }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={`fixed inset-0 z-[100] flex items-center justify-center bg-[var(--bg)] [bottom:calc(-1*var(--vp-overshoot))] transition-opacity duration-300 ease-out ${
+        leaving ? "pointer-events-none opacity-0 delay-100" : "opacity-100"
+      }`}
+    >
+      {/* 与 iOS 启动图同一颗标、同一尺寸档（启动图里约 94pt 宽），接管后原地呼吸 */}
+      <BrandLoader className="size-24" />
+    </div>
+  );
 }
 
 /** 把启动异常收敛成部署用户能理解的中文信息；后端主动返回的业务消息原样保留。 */
@@ -126,8 +166,17 @@ function startupFailureMessage(error: unknown): string {
 }
 
 /**
- * 工作台启动状态使用纯 CSS 面板，不依赖 AppShell、用户偏好接口或 WebGL。
- * 这样即使故障正发生在这些初始化环节，用户仍能看到原因并自行重试。
+ * 工作台启动状态：一张与 iOS 启动图同构的启动页，不依赖 AppShell、用户偏好接口
+ * 或 WebGL——即使故障正发生在这些初始化环节，用户仍能看到原因并自行重试。
+ *
+ * 为什么是「启动页」而不是原来的「正在连接服务…」小卡片：PWA 冷启动的顺序是
+ * iOS 静态启动图（纯 --bg 底 + 居中 rotor 标，见 lib/apple-splash.ts）→ 本组件
+ * → 工作台。原卡片压在**没有全局蒙版**的壁纸上（蒙版 .page-scrim 由 AppShell
+ * 才渲染），前后两帧都是暗底、中间突然一屏亮壁纸加一张卡，像进错了应用
+ * （2026-09-24 用户反馈）。现在本组件自己铺一层与启动图同色的实底、把同一颗
+ * 标放在同一位置同一尺寸，从启动图接管后原地开始呼吸，连上就直接切进工作台，
+ * 与原生 App「启动图 → 首屏」的体验一致。标随主题分叉由 BrandLoader 负责。
+ * 铺底向下越出 --vp-overshoot：iOS 独立 App 的视口比屏幕矮一截（globals.css）。
  */
 function StartupStatus({
   failure,
@@ -137,18 +186,23 @@ function StartupStatus({
   onRetry: () => void;
 }) {
   return (
-    <main className="viewport-app-height relative z-10 flex w-full items-center justify-center p-6">
-      <section
-        role={failure ? "alert" : "status"}
-        aria-live="polite"
-        // solid-popover：自绘登录门卡按浮层材质挂钩子（--line 描边 + #181818
-        // 实底 + Netflix 投影 + 关 blur），圆角走 rounded-2xl 换档；银玻璃零变化
-        className="solid-popover w-full max-w-[420px] rounded-2xl border border-white/[0.1] bg-[rgba(13,15,21,0.88)] p-6 shadow-2xl backdrop-blur-xl"
-      >
-        <p className="text-sub font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-          MovieClaw
-        </p>
-        {failure ? (
+    <main
+      role={failure ? "alert" : "status"}
+      aria-live="polite"
+      aria-label={failure ? "工作台加载失败" : "正在连接服务"}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--bg)] p-6 [bottom:calc(-1*var(--vp-overshoot))]"
+    >
+      {!failure ? (
+        <SplashLayer />
+      ) : (
+        <section
+          // solid-popover：自绘登录门卡按浮层材质挂钩子（--line 描边 + #181818
+          // 实底 + Netflix 投影 + 关 blur），圆角走 rounded-2xl 换档；银玻璃零变化
+          className="solid-popover w-full max-w-[420px] rounded-2xl border border-white/[0.1] bg-[rgba(13,15,21,0.88)] p-6 shadow-2xl backdrop-blur-xl"
+        >
+          <p className="text-sub font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+            MovieClaw
+          </p>
           <>
             <h1 className="mt-2 text-title font-semibold text-[var(--text)]">工作台加载失败</h1>
             {/* 部署出问题时这段报错是用户唯一能拿去求助的线索，PWA 下也必须可选可复制 */}
@@ -174,16 +228,8 @@ function StartupStatus({
               </Link>
             </div>
           </>
-        ) : (
-          <div className="mt-3 flex items-center gap-3 text-ui text-[var(--text-muted)]">
-            <span
-              className="size-4 shrink-0 animate-spin rounded-full border-2 border-white/20 border-t-white/70"
-              aria-hidden="true"
-            />
-            正在连接服务…
-          </div>
-        )}
-      </section>
+        </section>
+      )}
     </main>
   );
 }

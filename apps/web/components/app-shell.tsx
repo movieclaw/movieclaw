@@ -11,15 +11,18 @@ const SIDEBAR_COLLAPSED_KEY = "movieclaw.sidebar-collapsed";
 const SETTINGS_RETURN_KEY = "movieclaw.settings-return";
 
 import { FeedbackProvider } from "@/components/feedback";
-import { ComposeSheet } from "@/components/compose-sheet";
-import { PencilIcon } from "@/components/icons";
+import { usePendingUpdate } from "@/components/app-update-entry";
+import { AvatarBadge } from "@/components/avatar-badge";
+import { MobileSheet } from "@/components/compose-sheet";
+import { MorePage } from "@/components/more-page";
+import { ChevronLeftIcon, PencilIcon, PlusIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS } from "@/components/page-nav";
 import { SearchCommand, type SearchSubmitOptions } from "@/components/search-command";
 import { Sidebar } from "@/components/sidebar";
 import { SubscribeEntryProvider } from "@/components/subscribe-entry";
 import { MovieclawMark } from "@/components/brand";
 import { AgentConversationsProvider } from "@/lib/agent-conversations";
-import { useAppNavigationTracking } from "@/lib/back-navigation";
+import { useAppNavigationTracking, useBackNavigation } from "@/lib/back-navigation";
 import { BackdropProvider } from "@/lib/backdrop";
 import type { SearchScope } from "@/lib/categories";
 import { PageChromeProvider, isHomeRoute } from "@/lib/page-chrome";
@@ -39,7 +42,7 @@ import { useSession } from "@/lib/session";
  *   /                    银玻璃=新任务氛围页；Netflix 无首页（replace 到 /library，
  *                        原内容首页 Billboard 已并入媒体库页，2026-09 修订）
  *   /library             媒体库（内容的一等入口；Netflix 主题顶部带 Billboard）
- *   /new                 AI 新任务（Netflix 主题的顶栏「＋ 新任务」落点）
+ *   /new                 AI 新任务（Netflix 顶栏「＋ 新任务」与银玻璃手机「更多 → 新会话」的落点）
  *   /discover/movie|tv   发现电影 / 剧集
  *   /subscriptions       我的订阅
  *   /activity            活动（观看 / 任务）
@@ -99,10 +102,10 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   const { slots } = useResolvedTheme();
   const SettingsNav = slots.settingsNav;
   const MobileSettingsNav = slots.mobileSettingsNav;
-  // 新会话撰写面板开合（银玻璃移动端，components/compose-sheet.tsx）。原移动端
-  // 抽屉侧栏已随液态玻璃底栏退役（docs/design/web-themes-mobile/04）：主导航进
-  // 底栏，低频入口进「更多」（/my），新会话收成顶栏撰写键 + 本面板。
-  const [composeOpen, setComposeOpen] = useState(false);
+  // 「更多」面板（银玻璃手机）：底栏减到四格后，账号/设置/会话这些非内容入口
+  // 从右上角头像圆钮弹出半屏 sheet——Apple 自家 App（App Store / Music / 播客）
+  // 的账号入口惯例；内容就是 /my 的「更多」页。
+  const [moreOpen, setMoreOpen] = useState(false);
   const { isAdmin } = usePermissions();
   // 本页是否自带顶栏（详情类页面的 PageNav 会自登记，见 lib/page-chrome.tsx）。
   // 计数而非布尔：路由切换时新旧页面短暂共存，先卸载的那个不能把状态清零。
@@ -119,12 +122,21 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
     setTopBarActionsState(node);
     return () => setTopBarActionsState((current) => (current === node ? null : current));
   }, []);
+  // 底栏「底部附件」（发现页的电影/剧集切换），同一套按引用撤销的写法
+  const [tabBarAccessory, setTabBarAccessoryState] = useState<React.ReactNode>(null);
+  const setTabBarAccessory = useCallback((node: React.ReactNode) => {
+    setTabBarAccessoryState(node);
+    return () => setTabBarAccessoryState((current) => (current === node ? null : current));
+  }, []);
   // 页面标题顶替顶栏字标（如会话页），见 lib/page-chrome.tsx 的 setTopBarTitle。
   // 存 token 对象而非裸字符串：撤销时按引用比对，新旧页面短暂共存且标题恰好
   // 相同时，先卸载那个的清理不会误清新页面刚挂上的标题。
-  const [topBarTitle, setTopBarTitleState] = useState<{ text: string } | null>(null);
-  const setTopBarTitle = useCallback((text: string) => {
-    const token = { text };
+  const [topBarTitle, setTopBarTitleState] = useState<{
+    text: string;
+    backHref?: Route;
+  } | null>(null);
+  const setTopBarTitle = useCallback((text: string, options?: { backHref?: Route }) => {
+    const token = { text, backHref: options?.backHref };
     setTopBarTitleState(token);
     return () => setTopBarTitleState((current) => (current === token ? null : current));
   }, []);
@@ -227,7 +239,11 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   const isHome = isHomeRoute(pathname, slots.libraryHero != null);
   // Agent 对话页走沉浸模式：蒙版换成完全不透明的 .page-solid，整页盖掉
   // 背景大图（密集文本页不允许透图）；侧栏切换为实色形态。
-  const isImmersive = pathname.startsWith("/sessions/");
+  // 银玻璃手机上 /new 同样沉浸：新会话是一张「还没有消息的会话页」（顶栏标题
+  // + 返回、空白正文、贴底输入条，见 components/new-task.tsx），发出第一条后
+  // 原地变成 /sessions/[id]，两页外观必须同构才不会跳变。
+  const isImmersive =
+    pathname.startsWith("/sessions/") || (isMobile && !isNetflix && pathname === "/new");
 
   // 沉浸路由标记：强刷时由 layout.tsx 的内联脚本在首帧绘制前打上（避免闪出
   // 背景大图），这里负责客户端路由切换时的双向同步——进入 /sessions/[id] 关掉背景
@@ -242,12 +258,14 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   // 银玻璃移动端的液态玻璃底栏：Agent 会话页（沉浸路由）不显示——页底是会话
   // 输入行，底栏压上去就挡住了；iOS 信息的会话页同样收起标签栏。
   const showGlassTabBar = isMobile && !isNetflix && !isImmersive;
-  // 新会话：银玻璃移动端打开撰写面板；其余形态（桌面、Netflix）直接进 /new 整页
+  // 新会话：所有形态都进 /new 整页。银玻璃手机曾是从底部升起的撰写面板
+  // （2026-09-24 退役）：从「更多」面板点新会话得先收一张 sheet 再开一张，
+  // 而进一页再按返回回来更顺；整页还与会话页同构，发出第一条消息不跳变。
   const openCompose = useCallback(() => {
-    if (isMobile && !isNetflix) setComposeOpen(true);
-    else router.push("/new" as Route);
-  }, [isMobile, isNetflix, router]);
-  const closeCompose = useCallback(() => setComposeOpen(false), []);
+    setMoreOpen(false);
+    router.push("/new" as Route);
+  }, [router]);
+  const closeMore = useCallback(() => setMoreOpen(false), []);
   const pageChrome = useMemo(
     () => ({
       registerPageNav,
@@ -256,14 +274,25 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
       searchInTabBar: showGlassTabBar,
       setTopBarActions,
       setTopBarTitle,
+      setTabBarAccessory,
+      tabBarAccessory,
     }),
-    [registerPageNav, handleSearch, openCompose, showGlassTabBar, setTopBarActions, setTopBarTitle],
+    [
+      registerPageNav,
+      handleSearch,
+      openCompose,
+      showGlassTabBar,
+      setTopBarActions,
+      setTopBarTitle,
+      setTabBarAccessory,
+      tabBarAccessory,
+    ],
   );
 
-  // 撰写面板：切换路由即收起（发起任务后会跳会话页，面板不该还盖着新页面），
+  // 「更多」面板：切换路由即收起（点了里面的会话/设置就该露出新页面），
   // 回到桌面版式时也一并复位，避免再切回窄屏时莫名其妙已经开着。
   useEffect(() => {
-    setComposeOpen(false);
+    setMoreOpen(false);
   }, [pathname, isMobile]);
 
   // 移动端主区内容：设置路由挂「返回 + 标题」条（/settings 是分区列表页，
@@ -278,7 +307,12 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
               ? "设置"
               : (settingsSections.find((s) => s.id === activeSettings)?.label ?? "设置")
           }
-          backHref={(isSettingsIndex ? "/my" : "/settings") as Route}
+          // 银玻璃：设置从「更多」面板进，列表页的返回按历史回到打开面板的那一页
+          // （无历史落发现页）；Netflix 维持回「我的」页
+          backHref={
+            (isSettingsIndex ? (isNetflix ? "/my" : "/discover/movie") : "/settings") as Route
+          }
+          historyBack={isSettingsIndex && !isNetflix}
         />
         <div className="min-h-0 flex-1">{children}</div>
       </div>
@@ -397,6 +431,8 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
             onCompose={isAdmin ? openCompose : undefined}
             actions={topBarActions}
             title={topBarTitle?.text}
+            backHref={topBarTitle?.backHref}
+            onAvatar={isNetflix ? undefined : () => setMoreOpen(true)}
           />
         )}
         {/* 主区铺满外壳（absolute 而非 flex 子项）：全站页面清一色是
@@ -429,11 +465,15 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
       </div>
     )}
 
-    {/* —— 移动端底栏与新会话面板 ——
+    {/* —— 移动端底栏与「更多」面板 ——
       作为 .app-shell 的兄弟节点固定定位：外壳在命令面板打开时有缩放变换，
       fixed 元素挂在里面会被一起缩放、定位基准也会变（原抽屉同理挂在这里）。 */}
     {showGlassTabBar && <slots.mobileTabBar />}
-    {isMobile && isAdmin && <ComposeSheet open={composeOpen} onClose={closeCompose} />}
+    {isMobile && !isNetflix && (
+      <MobileSheet open={moreOpen} onClose={closeMore} title="更多" dismissLabel="完成">
+        <MorePage />
+      </MobileSheet>
+    )}
     </PageChromeProvider>
   );
 }
@@ -472,7 +512,8 @@ function pathOfNavId(id: string): Route {
 
 /**
  * 移动端顶栏：品牌字标（Netflix 主题回媒体库、银玻璃回发现）+ 页面级控件 +
- * 右侧按键（Netflix = 搜索；银玻璃 = 新会话撰写键，搜索在底栏尾端的圆钮里）。
+ * 右侧按键（Netflix = 搜索 + 新会话撰写键；银玻璃的搜索在底栏尾端的圆钮里，
+ * 顶栏右侧不放全局按键——新会话入口只在「更多」页，用户不要顶栏常驻撰写键）。
  *
  * 为什么是「浮在内容之上」而不是「占一行把内容推下去」：全站有一半页面是
  * 大图氛围页与 Hero 大剧照，顶栏若占位会在画面顶端切出一条硬边。这里做成
@@ -490,18 +531,28 @@ function MobileTopBar({
   onCompose,
   actions,
   title,
+  backHref,
+  onAvatar,
 }: {
   onSearch: (keyword: string, scope: SearchScope, options?: SearchSubmitOptions) => void;
   /** 是否在顶栏放搜索键（底栏已有搜索圆钮时 false：SearchCommand 全站只能挂一份） */
   showSearch: boolean;
-  /** 新会话撰写键的回调；不传则不渲染（成员没有 Agent 能力、Netflix 入口在「我的」） */
+  /** 新会话撰写键的回调；不传则不渲染（成员没有 Agent 能力、银玻璃入口在「更多」） */
   onCompose?: () => void;
   /** 当前页面挂上来的页面级控件（见 lib/page-chrome.tsx 的 setTopBarActions） */
   actions?: React.ReactNode;
   /** 当前页面挂上来的标题：有则顶替品牌字标（见 setTopBarTitle） */
   title?: string;
+  /** 标题页的返回落点（见 setTopBarTitle 的 backHref）；银玻璃下在标题左侧画返回键 */
+  backHref?: Route;
+  /** 右上角头像圆钮（银玻璃）：打开「更多」面板；不传则不渲染 */
+  onAvatar?: () => void;
 }) {
   const router = useRouter();
+  const back = useBackNavigation(backHref ?? ("/" as Route));
+  const { session } = useSession();
+  // 头像上的小圆点：有待安装的新版本 / 模型时提示（成员不查更新）
+  const pendingUpdate = usePendingUpdate(Boolean(onAvatar) && session.role !== "member");
   const { canSearch } = usePermissions();
   // 品牌随主题分叉：Netflix 用红色 SVG 字标、银玻璃用 rotor 图片 logo。
   // 雾层色由 globals.css 的 html[data-theme="netflix"] .mobile-topbar 覆盖，组件里不用管。
@@ -510,11 +561,26 @@ function MobileTopBar({
     <header className="mobile-topbar pointer-events-none absolute inset-x-0 top-0 z-40">
       <div className="pointer-events-auto flex h-[52px] items-center gap-2 px-3">
         {title ? (
-          // 页面标题顶替字标：min-w-0 + truncate 让超长标题在左缘与右侧控件
-          // 之间安全截断成省略号，绝不把搜索键挤出屏幕或撑破顶栏
-          <h1 className="min-w-0 flex-1 truncate text-body font-semibold tracking-[-0.01em] text-[var(--text)]">
-            {title}
-          </h1>
+          <>
+            {/* 返回键（银玻璃）：会话页这类深层页在手机上底栏收起、抽屉侧栏已退役，
+                顶栏是唯一能离开的地方；能回就按历史回，回不了落到页面给的地址。
+                Netflix 主题的顶栏形态不动。 */}
+            {backHref && !isNetflix && (
+              <button
+                type="button"
+                onClick={back}
+                aria-label="返回"
+                className={`${PAGE_NAV_BUTTON_CLASS} shrink-0`}
+              >
+                <ChevronLeftIcon className="size-[22px]" />
+              </button>
+            )}
+            {/* 页面标题顶替字标：min-w-0 + truncate 让超长标题在左缘与右侧控件
+                之间安全截断成省略号，绝不把搜索键挤出屏幕或撑破顶栏 */}
+            <h1 className="min-w-0 flex-1 truncate text-body font-semibold tracking-[-0.01em] text-[var(--text)]">
+              {title}
+            </h1>
+          </>
         ) : isNetflix ? (
           /* 字标可点区拉到 44px 高（与图标键同标准）——红色内联 SVG 本身保持
              h-7 的视觉大小（无 actions 时整词 ≈175px 宽、窄屏仍放得下），
@@ -531,11 +597,34 @@ function MobileTopBar({
                 在 390px 视口里会占掉近三分之一顶栏，M 标 24px 方正得下。 */}
             <MovieclawMark className="size-6" />
           </button>
+        ) : onAvatar ? (
+          /* 银玻璃手机（2026-09-24 用户拍板）：左上角放头像圆钮替掉字标——「左头像、
+             右新建」是 X / Reddit / Slack 首页一类的成熟布局；头像点开「更多」面板
+             （账号、设置、会话）。字标原本的「回发现」职责由底栏首个页签接管，品牌
+             只在启动页与设置里出现。右上角腾出来给撰写键（见右侧簇）。 */
+          <button
+            type="button"
+            onClick={onAvatar}
+            aria-label="更多"
+            className={`${PAGE_NAV_BUTTON_CLASS} relative shrink-0`}
+          >
+            <AvatarBadge
+              nickname={session.nickname}
+              avatarUrl={session.avatar_url}
+              className="size-[26px] text-caption"
+            />
+            {pendingUpdate && (
+              <span
+                aria-hidden="true"
+                className="absolute right-0.5 top-0.5 size-[7px] rounded-full bg-[var(--info)] shadow-[0_0_0_2px_rgba(22,25,34,0.75)]"
+              />
+            )}
+          </button>
         ) : (
           /* 字标可点区拉到 44px 高（与图标键同标准）——图片本身保持 h-7 的视觉
              大小，命中区靠按钮撑起，否则 28px 高的字标在触屏上很难点中。
              银玻璃移动端的首页就是底栏首个页签「发现」（/ 在手机上 replace 到
-             /discover/movie，新任务收进撰写键），字标直达它，省一次重定向 */
+             /discover/movie），字标直达它，省一次重定向 */
           <button
             type="button"
             onClick={() => router.push("/discover/movie" as Route)}
@@ -566,8 +655,9 @@ function MobileTopBar({
               <SearchCommand onSearch={onSearch} triggerClassName={PAGE_NAV_BUTTON_CLASS} />
             </div>
           )}
-          {/* 新会话撰写键：iOS 信息 / 邮件的 compose 惯例（液态玻璃下导航栏按钮
-              是独立圆钮），点开从底部升起撰写面板；与 PageNav 同一副圆形玻璃键 */}
+          {/* 新会话撰写键：iOS 信息 / 邮件的 compose 惯例，点开进 /new，四个顶层页与
+              会话页（聊完直接开下一个）都有；与 PageNav 同一副圆形玻璃键。银玻璃用
+              「+」（用户拍板，比撰写图标好看），Netflix 维持原来的光笔 */}
           {onCompose && (
             <button
               type="button"
@@ -575,7 +665,11 @@ function MobileTopBar({
               aria-label="新会话"
               className={`${PAGE_NAV_BUTTON_CLASS} shrink-0`}
             >
-              <PencilIcon className="size-[20px]" />
+              {isNetflix ? (
+                <PencilIcon className="size-[20px]" />
+              ) : (
+                <PlusIcon className="size-[22px]" />
+              )}
             </button>
           )}
         </div>

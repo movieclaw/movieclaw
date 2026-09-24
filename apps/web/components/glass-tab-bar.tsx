@@ -12,7 +12,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 
-import { BookmarkIcon, CompassIcon, LibraryIcon, MoreIcon } from "@/components/icons";
+import { ActivityIcon, BookmarkIcon, CompassIcon, LibraryIcon } from "@/components/icons";
 import { SearchCommand } from "@/components/search-command";
 import {
   liquidKeyframes,
@@ -23,6 +23,7 @@ import {
 } from "@/lib/liquid-spring";
 import { usePageChrome } from "@/lib/page-chrome";
 import { usePermissions } from "@/lib/permissions";
+import { taskActivityBadge, useTaskActivity } from "@/lib/task-activity";
 
 /**
  * 移动端底部标签栏的基础实现：iOS 26 液态玻璃悬浮胶囊
@@ -46,8 +47,8 @@ import { usePermissions } from "@/lib/permissions";
  *
  * 页签：发现 / 媒体库 / 订阅 / 更多。「订阅」按 canSubscribe 显隐；「更多」
  * 落到 /my（主题 pages.my 坑位，基础实现 = components/more-page.tsx），收纳
- * 活动、设置、AI 会话、切换账号等低频入口；「新会话」不占页签，入口在顶栏
- * 右侧的撰写键（外壳的 ComposeSheet）。
+ * 活动、设置、AI 会话、切换账号等低频入口；「新会话」不占页签，入口在「更多」
+ * 面板里的一行（进 /new 整页，那一页与会话页同样不显示底栏）。
  *
  * 玻璃走 CSS backdrop-filter 而不是 vendor/liquid-glass 的 WebGL：后者只能
  * 折射一张静态背景图，底栏浮在滚动的海报墙上必须对真实内容实时取样——
@@ -65,28 +66,28 @@ const SUBSCRIPTION_TAB = {
   href: "/subscriptions",
   Icon: BookmarkIcon,
 } as const;
-const MORE_TAB = { id: "more", label: "更多", href: "/my", Icon: MoreIcon } as const;
+/** 活动（任务中心）：高频入口，从「更多」页提到底栏（2026-09-24 用户要求）；
+ *  Agent 能力，管理员专属——与侧栏 memberNavItems 同口径。iOS 标签栏上限 5 个，
+ *  375pt 机型上胶囊内每格约 51pt，五格仍在 44pt 触控下限之上。 */
+const ACTIVITY_TAB = { id: "activity", label: "活动", href: "/activity", Icon: ActivityIcon } as const;
+// 「更多」不再是页签（2026-09-24）：五格太挤，而它装的是账号/设置/会话这些非内容
+// 入口——按 Apple 自家 App 的惯例改由顶栏右上角头像弹出半屏面板（app-shell）。
 
 /** pathname → 当前页签 id（详情等子页落在所属的顶层页签上；无归属返回空串） */
 function activeTabId(pathname: string): string {
   if (pathname.startsWith("/discover") || pathname.startsWith("/media")) return "discover";
   if (pathname.startsWith("/library")) return "library";
   if (pathname.startsWith("/subscriptions")) return "subscriptions";
-  // 「更多」里的二级页面（设置、活动）保持父页签高亮——iOS 惯例，进二级页后
-  // 页签全部熄灭会让用户失去「我在哪」的位置感
-  if (
-    pathname === "/my" ||
-    pathname.startsWith("/settings") ||
-    pathname.startsWith("/activity") ||
-    pathname.startsWith("/tasks")
-  ) {
-    return "more";
-  }
+  // 活动有自己的页签；非管理员看不到该页签时这里返回的 id 匹配不到任何格，
+  // 页签全灭（他们本来也进不了活动页）
+  if (pathname.startsWith("/activity") || pathname.startsWith("/tasks")) return "activity";
+  // /my 与 /settings 是从头像面板进的，不属于任何页签（iOS 账号页也不点亮页签）
   return "";
 }
 
-/** 下滑多少才收缩：离顶太近时收起会让首屏显得局促 */
-const MINIMIZE_MIN_SCROLL = 48;
+/** 下滑多少才收缩：iOS 26 的 onScrollDown 是向下滑一小段就收（相册实测），
+ *  但离顶太近时收起会让首屏显得局促，留一点余量 */
+const MINIMIZE_MIN_SCROLL = 24;
 /** 手指横移超过这个距离才算「拖动擦选」，否则仍按点击处理 */
 const DRAG_SLOP = 8;
 
@@ -113,17 +114,34 @@ export function GlassTabBar() {
   const pathname = usePathname();
   const router = useRouter();
   const chrome = usePageChrome();
-  const { canSubscribe, canSearch } = usePermissions();
-  const tabs = canSubscribe
-    ? [DISCOVER_TAB, LIBRARY_TAB, SUBSCRIPTION_TAB, MORE_TAB]
-    : [DISCOVER_TAB, LIBRARY_TAB, MORE_TAB];
+  const accessory = chrome?.tabBarAccessory ?? null;
+  const { canSubscribe, canSearch, isAdmin } = usePermissions();
+  const tabs = [
+    DISCOVER_TAB,
+    LIBRARY_TAB,
+    ...(canSubscribe ? [SUBSCRIPTION_TAB] : []),
+    ...(isAdmin ? [ACTIVITY_TAB] : []),
+  ];
+  // 活动页签的任务圆点（iOS 页签红点惯例）：告警红 / 否则提示蓝；数据来自全站 Provider
+  const activityBadge = taskActivityBadge(useTaskActivity());
   const count = tabs.length;
   const activeIndex = tabs.findIndex((tab) => tab.id === activeTabId(pathname));
   const ActiveIcon = activeIndex >= 0 ? tabs[activeIndex].Icon : null;
 
   const [minimized, setMinimized] = useState(false);
-  // 换页即展开：新页面从顶部开始，收着的底栏会让用户找不到导航
-  useEffect(() => setMinimized(false), [pathname]);
+  // 有底部附件的页面（发现页）：页面在顶部时正常展开主菜单（附件隐藏）；向下滑
+  // 一小段就收成圆钮、附件在圆钮与搜索圆钮之间露出并常驻；往回滑**不**展开，
+  // 只有滚回顶部或点圆钮才展开；选完页签 / 再点当前页签也收回。这是用户拍板的
+  // 形态：附件不浮到底栏上方去挤内容，进页面第一眼看到的仍是完整菜单。
+  const hasAccessory = accessory != null;
+  const [expandedOverAccessory, setExpandedOverAccessory] = useState(true);
+  const hasAccessoryRef = useRef(hasAccessory);
+  hasAccessoryRef.current = hasAccessory;
+  // 换页即回默认态（新页面从顶部开始）：两种模式都展开
+  useEffect(() => {
+    setMinimized(false);
+    setExpandedOverAccessory(true);
+  }, [pathname]);
 
   /**
    * 滚动方向监听。全站页面是「外层 h-full + 内层 overflow-y-auto」结构，滚动
@@ -141,6 +159,12 @@ export function GlassTabBar() {
       const dy = top - (lastTop.get(el) ?? top);
       lastTop.set(el, top);
       if (dy === 0) return;
+      if (hasAccessoryRef.current) {
+        // 附件模式：回到顶部展开；向下滑一小段收起露出附件；往回滑不展开
+        if (top <= 8) setExpandedOverAccessory(true);
+        else if (dy > 6 && top > MINIMIZE_MIN_SCROLL) setExpandedOverAccessory(false);
+        return;
+      }
       if (top <= 8) setMinimized(false);
       else if (dy > 6 && top > MINIMIZE_MIN_SCROLL) setMinimized(true);
       else if (dy < -10) setMinimized(false);
@@ -149,9 +173,9 @@ export function GlassTabBar() {
     return () => document.removeEventListener("scroll", onScroll, { capture: true });
   }, []);
 
-  // 没有归属页签的路由（/new、/search 等）不收缩：收起后只剩「当前页签」的
+  // 没有归属页签的路由（/search 等）不收缩：收起后只剩「当前页签」的
   // 圆钮，而这里没有当前页签可显示
-  const isMinimized = minimized && ActiveIcon !== null;
+  const isMinimized = (hasAccessory ? !expandedOverAccessory : minimized) && ActiveIcon !== null;
 
   // ———— 液态选中胶囊 ————
   const navRef = useRef<HTMLElement>(null);
@@ -312,6 +336,21 @@ export function GlassTabBar() {
       {/* 滚动边缘效果：内容滚到底栏下方时渐暗渐糊，把玻璃托起来（iOS 26
           scroll edge effect）。属于内容层之上、玻璃之下，不与玻璃叠玻璃 */}
       <div className="glass-tabbar-edge" data-minimized={isMinimized} aria-hidden="true" />
+      {/* 底部附件（iOS 26 tab bar bottom accessory）：常驻在收起圆钮与搜索圆钮之间，
+          主菜单展开时隐藏（样式见 .glass-tabbar-accessory） */}
+      {accessory != null && (
+        <div
+          className="glass-tabbar-accessory glass-capsule"
+          data-minimized={isMinimized}
+          data-search={Boolean(canSearch && chrome)}
+          onPointerDown={glowAt}
+          onPointerUp={glowOff}
+          onPointerCancel={glowOff}
+          onPointerLeave={glowOff}
+        >
+          {accessory}
+        </div>
+      )}
       <nav ref={navRef} aria-label="主导航" className="glass-tabbar" data-minimized={isMinimized}>
         <div
           className="glass-tabbar__bar glass-capsule"
@@ -357,11 +396,29 @@ export function GlassTabBar() {
                 className="glass-tabbar__tab"
                 style={{ "--i": index } as CSSProperties}
                 // 点击即起跳，不等路由真正切换完（新页面渲染可能要几百毫秒）
-                onClick={() => slideTo(index * cellWidth())}
+                onClick={(e) => {
+                  // 附件模式下再点当前页签 = 收回主菜单（不导航）
+                  if (hasAccessory && index === activeIndex) {
+                    e.preventDefault();
+                    setExpandedOverAccessory(false);
+                    return;
+                  }
+                  slideTo(index * cellWidth());
+                }}
                 draggable={false}
               >
                 <Icon />
                 <span>{label}</span>
+                {/* 小圆点而不是数字：iOS 标签栏的「有新动态」惯例，数字角标在 26px
+                    图标旁太重（用户看过实机截图直接否掉）；具体数量进活动页看 */}
+                {id === "activity" && activityBadge.count > 0 && (
+                  <span
+                    className="glass-tabbar__badge"
+                    data-alert={activityBadge.alert}
+                    title={activityBadge.hint}
+                    aria-label={activityBadge.hint}
+                  />
+                )}
               </Link>
             ))}
           </div>
@@ -369,7 +426,7 @@ export function GlassTabBar() {
               钉在胶囊左端而不是居中，胶囊收窄时图标原地不动 */}
           <button
             type="button"
-            onClick={() => setMinimized(false)}
+            onClick={() => (hasAccessory ? setExpandedOverAccessory(true) : setMinimized(false))}
             aria-label="展开标签栏"
             aria-hidden={!isMinimized}
             tabIndex={isMinimized ? 0 : -1}
@@ -393,5 +450,42 @@ export function GlassTabBar() {
         )}
       </nav>
     </>
+  );
+}
+
+/**
+ * 底部附件里的分段切换（相册「年 / 月 / 全部」的形态）：撑满附件胶囊、各段等宽，
+ * 选中段一枚白系药丸。页面用 chrome.setTabBarAccessory 挂进来。
+ */
+export function AccessorySegmented<T extends string>({
+  options,
+  value,
+  onChange,
+  label,
+}: {
+  options: ReadonlyArray<{ value: T; label: string }>;
+  value: T;
+  onChange: (value: T) => void;
+  label: string;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      className="glass-tabbar-accessory__seg"
+      style={{ "--seg-count": options.length } as CSSProperties}
+    >
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={value === option.value}
+          data-active={value === option.value}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
   );
 }

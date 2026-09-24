@@ -237,6 +237,20 @@ def test_segments_are_fmp4_not_mpegts():
     assert pair(argv, "-hls_time") == str(SEGMENT_SECONDS)
 
 
+def test_mpegts_segments_when_plan_container_is_hls_ts():
+    """申报 MPEG-TS 的第三方播放器（Infuse 8 只认 ts）：分片 .ts、没有 init 段、
+    不带 fMP4 专用的 movflags；其余 HLS 参数（分片时长、event 列表）不变。"""
+    from dataclasses import replace
+
+    argv = argv_of(replace(plan(PlaybackTier.SOFTWARE_TRANSCODE), container="hls-ts"))
+    assert pair(argv, "-hls_segment_type") == "mpegts"
+    assert "-hls_fmp4_init_filename" not in argv
+    assert pair(argv, "-hls_segment_filename").endswith("seg%05d.ts")
+    assert "-hls_segment_options" not in argv
+    assert pair(argv, "-hls_time") == str(SEGMENT_SECONDS)
+    assert pair(argv, "-hls_playlist_type") == "event"
+
+
 def test_playlist_is_event_type_so_it_can_be_served_before_segments_exist():
     argv = argv_of(plan(PlaybackTier.REMUX))
     assert pair(argv, "-hls_playlist_type") == "event"

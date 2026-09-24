@@ -89,12 +89,13 @@ def compute_uniform_plan(duration_s: float, *, target_s: float) -> SegmentPlan:
 def build_media_playlist(
     plan: SegmentPlan,
     *,
-    init_name: str,
+    init_name: str | None,
     segment_name: str,
     query: str = "",
 ) -> str:
     """媒体播放列表（VOD）。``segment_name`` 是含 %05d 的文件名模板；
     ``query`` 形如 ``?token=xxx``，逐条附在 URI 上（HLS 客户端不继承查询串）。
+    ``init_name=None`` 即 MPEG-TS 分片：自含 PAT/PMT，没有 init 段，不写 EXT-X-MAP。
     """
     max_duration = max((plan.duration_of(i) for i in range(plan.count)), default=1.0)
     lines = [
@@ -104,8 +105,9 @@ def build_media_playlist(
         "#EXT-X-MEDIA-SEQUENCE:0",
         "#EXT-X-PLAYLIST-TYPE:VOD",
         "#EXT-X-INDEPENDENT-SEGMENTS",
-        f'#EXT-X-MAP:URI="{init_name}{query}"',
     ]
+    if init_name is not None:
+        lines.append(f'#EXT-X-MAP:URI="{init_name}{query}"')
     for i in range(plan.count):
         lines.append(f"#EXTINF:{plan.duration_of(i):.6f},")
         lines.append(f"{segment_name % i}{query}")

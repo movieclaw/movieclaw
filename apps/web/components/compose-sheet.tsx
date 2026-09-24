@@ -1,17 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-
-import { NewTask } from "@/components/new-task";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 
 /**
- * 移动端「新会话」撰写面板：从底部升起的模态 sheet，内容就是 NewTask 输入台
- * （docs/design/web-themes-mobile/04-iOS-液态玻璃底栏.md §3.1）。
+ * 移动端底部 sheet 容器（docs/design/web-themes-mobile/04）。
  *
- * 新会话在手机上不是高频操作，不占底栏页签；入口是顶栏右侧的撰写键与「更多」
- * 里的一行——对齐 iOS 信息 / 邮件的 compose 惯例：点开是盖住底栏的模态面板，
- * 「取消」、点暗处或按住把手往下拖都能收回。发起任务后 NewTask 会跳
- * /sessions/[id]，外壳在路由变化时收起面板。
+ * 首版是「新会话」撰写面板（内嵌 NewTask），2026-09-24 起新会话改为进 /new 整页
+ * （见 components/new-task.tsx），本文件只剩通用的 MobileSheet，当前唯一使用方
+ * 是右上角头像打开的「更多」面板。文件名与 .compose-sheet / data-compose-open
+ * 这组 CSS 名沿用，改名要连 CSS 一起动，暂不动。
  *
  * 动效（样式见 globals.css 的 .compose-sheet 组）：
  *   - 打开时给 <html> 打 data-compose-open，底下整个应用退成一张缩小下沉的
@@ -21,14 +24,29 @@ import { NewTask } from "@/components/new-task";
  *     松手时拖过面板高度的 1/4、或向下甩出（> 0.5px/ms）就收回，否则弹回。
  *     往上拖只给 1/5 的阻尼位移，表达「已经到顶了」。
  *
- * 首次打开后保持挂载（关闭只做位移）：用户写了一半收起、再打开时草稿还在，
- * 与 iOS 撰写面板下滑暂存草稿的行为一致。
- *
  * 挂在 .app-shell 之外（外壳负责）：外壳自己会被缩放后推，fixed 元素挂在里面会被
  * 一起缩放、定位基准也会变。层级沿用原移动端抽屉的档位（遮罩 55 / 面板 60），
- * 低于菜单浮层 70——Composer 的模型、技能菜单能正常弹出。
+ * 低于菜单浮层 70——面板内的菜单能正常弹出。
+ *
+ * ``children`` 首次打开后保持挂载（关闭只做位移）：更多面板的会话列表不用重来。
  */
-export function ComposeSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function MobileSheet({
+  open,
+  onClose,
+  title,
+  closeLabel,
+  dismissLabel = "取消",
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  /** 遮罩与对话框的无障碍名（默认「关闭{title}」） */
+  closeLabel?: string;
+  /** 把手行左侧的文字键（更多面板「完成」） */
+  dismissLabel?: string;
+  children: ReactNode;
+}) {
   const [mounted, setMounted] = useState(open);
   const sheetRef = useRef<HTMLElement>(null);
   const drag = useRef({ id: -1, startY: 0, lastY: 0, lastT: 0, v: 0, offset: 0 });
@@ -121,7 +139,7 @@ export function ComposeSheet({ open, onClose }: { open: boolean; onClose: () => 
     <>
       <button
         type="button"
-        aria-label="关闭新会话"
+        aria-label={closeLabel ?? `关闭${title}`}
         tabIndex={-1}
         onClick={onClose}
         className="compose-scrim cursor-default"
@@ -131,7 +149,7 @@ export function ComposeSheet({ open, onClose }: { open: boolean; onClose: () => 
         ref={sheetRef}
         role="dialog"
         aria-modal="true"
-        aria-label="新会话"
+        aria-label={title}
         className="compose-sheet"
         data-open={open}
         inert={!open}
@@ -150,13 +168,13 @@ export function ComposeSheet({ open, onClose }: { open: boolean; onClose: () => 
               onClick={onClose}
               className="justify-self-start py-2 text-body text-[var(--accent)] active:opacity-60"
             >
-              取消
+              {dismissLabel}
             </button>
-            <h2 className="text-body font-semibold text-[var(--text)]">新会话</h2>
+            <h2 className="text-body font-semibold text-[var(--text)]">{title}</h2>
             <span />
           </div>
         </div>
-        <div className="min-h-0 flex-1">{mounted && <NewTask />}</div>
+        <div className="min-h-0 flex-1">{mounted && children}</div>
       </section>
     </>
   );

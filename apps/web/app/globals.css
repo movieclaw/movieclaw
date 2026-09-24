@@ -178,9 +178,11 @@
   --mobile-topbar-h: 52px;
 
   /* 移动端液态玻璃底栏距视口底边的偏移（.glass-tabbar 组）：目标是距屏幕
-     物理底边约 22px（iOS 26 实测）——有 Home 指示条时 = safe-bottom − 12px，
-     再减去 iOS 独立 App 形态下视口与物理底边之间的那一截（--vp-overshoot） */
-  --tabbar-bottom: calc(max(22px, calc(var(--safe-bottom) - 12px)) - var(--vp-overshoot));
+     物理底边约 22px（iOS 26 实测）——有 Home 指示条时 = safe-bottom − 12px。
+     只按视口算，**不要**再减 --vp-overshoot：那是给铺底层用的补偿量，UI 必须
+     留在视口内（见该变量长注释）。2026-09-23 真机（iOS 26 PWA）实测视口底边就是
+     屏幕物理底边，减掉 overshoot 后整条底栏落到屏幕之下、只剩一条边可见。 */
+  --tabbar-bottom: max(22px, calc(var(--safe-bottom) - 12px));
 
   /* PageNav 吸顶雾的渐变（银玻璃蓝黑）：page-nav.tsx 的内联 style 引用它，
      Netflix 主题在覆盖组里换成纯黑系——内联 style 无法被 CSS 选择器压过，
@@ -1502,7 +1504,9 @@ html.immersive-route .page-solid {
 
 .viewport-app-height {
   height: calc(100vh - var(--keyboard-inset));
-  height: calc(100dvh - var(--keyboard-inset));
+  /* 键盘立着时 --app-height = 可视视口像素高（components/viewport-keyboard.tsx），
+     不再由 dvh 减差值倒推——见那里的说明；没有键盘时该变量不存在，回到 dvh */
+  height: var(--app-height, calc(100dvh - var(--keyboard-inset)));
 }
 
 /*
@@ -1628,9 +1632,8 @@ body.cmdk-open .app-shell {
  * docs/design/web-themes-mobile/04-iOS-液态玻璃底栏.md：
  *   - 胶囊高 62px、左右缩进 21px、与搜索圆钮间距 8px、距屏幕物理底边约 22px
  *     （苹果未公布数值，取社区对 iOS 26 截图的量测）；
- *   - 距底用 --vp-overshoot 折算：iOS 独立 App 形态下视口底边比屏幕物理底边
- *     高出一个 safe-top（见 :root 该变量的长注释），fixed 元素的 bottom 要减去
- *     这一截才落在物理底边往上 22px；其余形态该值为 0，按 safe-bottom 算。
+ *   - 距底按视口算（--tabbar-bottom = safe-bottom − 12px，最少 22px）；胶囊本身
+ *     留在视口内，只有下方的 .glass-tabbar-edge 铺底层向下超出 --vp-overshoot。
  *   - 玻璃 = Regular 变体：半透明底 + backdrop blur/saturate + 顶部内高光与
  *     描边 + 外投影；Safari 不支持 SVG 位移折射，边缘透镜感用 ::before 的
  *     径向亮环近似。元素自身不能 opacity<1（Safari 会让 backdrop-filter 失效），
@@ -1638,6 +1641,10 @@ body.cmdk-open .app-shell {
  */
 .glass-tabbar {
   --tabbar-h: 62px;
+  /* 收起态整排缩到 44px（对 iOS 26 相册收起态逐像素量出：收起圆钮、搜索圆钮
+     约 44pt，附件约 45pt，展开态标签栏 62pt），并且**贴着底边**收缩——底边不动、
+     顶边下来，所以原生看着「更小、更低」。--tabbar-h 一改，胶囊收起宽度、
+     搜索圆钮、收起圆钮都跟着变，各自的过渡见下 */
   /* 胶囊展开态的整宽：页签网格按它定宽，收缩时胶囊变窄只是把网格裁掉，
      图标不会跟着挤成一团（旧版的毛病） */
   --bar-full: calc(100vw - max(21px, var(--safe-left)) - max(21px, var(--safe-right)));
@@ -1649,7 +1656,74 @@ body.cmdk-open .app-shell {
   height: var(--tabbar-h);
   display: flex;
   gap: 8px;
+  transition: height 480ms var(--ease-spring);
   pointer-events: none;
+}
+
+.glass-tabbar[data-minimized="true"] {
+  --tabbar-h: 44px;
+}
+
+/* —— 底部附件（iOS 26 tab bar bottom accessory；组件 glass-tab-bar.tsx）——
+   常驻在底栏那一行、收起圆钮与搜索圆钮之间（左让 62px + 8px，有搜索键时右同），
+   与圆钮同高。主菜单展开时它隐藏（淡出 + 略缩），收回后再现——它不会浮到底栏
+   上方去挤内容（用户拍板）。
+   选择器带上 .glass-capsule 提一级特异度：.glass-capsule 自身声明了 position:relative
+   与 transition，且排在本组之后，单类选择器会被它压掉（2026-09-24 踩过）。 */
+.glass-tabbar-accessory.glass-capsule {
+  position: fixed;
+  z-index: 40;
+  /* 只在收起态可见，按收起态的 44px 圆钮排：左让 44 + 8，右同（有搜索键时） */
+  left: calc(max(21px, var(--safe-left)) + 44px + 8px);
+  right: max(21px, var(--safe-right));
+  bottom: var(--tabbar-bottom);
+  height: 44px;
+  display: flex;
+  align-items: stretch;
+  /* 与主菜单胶囊同一档内边距（3px）：两枚选中药丸并排在同一行，差 1px 都看得出 */
+  padding: 3px;
+  transition:
+    opacity 260ms ease,
+    transform 420ms var(--ease-spring);
+}
+
+.glass-tabbar-accessory.glass-capsule[data-search="true"] {
+  right: calc(max(21px, var(--safe-right)) + 44px + 8px);
+}
+
+/* 主菜单展开时隐藏：胶囊展开会盖住这一段，附件淡出让位 */
+.glass-tabbar-accessory.glass-capsule[data-minimized="false"] {
+  opacity: 0;
+  transform: scale(0.94);
+  pointer-events: none;
+}
+
+.glass-tabbar-accessory__seg {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(var(--seg-count, 2), minmax(0, 1fr));
+  gap: 2px;
+  width: 100%;
+}
+
+.glass-tabbar-accessory__seg > button {
+  border-radius: 999px;
+  color: var(--text-muted);
+  /* 相册附件里的「年 / 月 / 全部」是 17pt 正文字号；44px 高的胶囊里 16px 半粗最接近 */
+  font-size: 16px;
+  font-weight: 600;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color 200ms ease,
+    background-color 260ms ease;
+}
+
+/* 选中段与主菜单的选中药丸同一材质（平填充 + 1px 顶高光） */
+.glass-tabbar-accessory__seg > button[data-active="true"] {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .glass-tabbar:has(.glass-tabbar__search) {
@@ -1740,10 +1814,12 @@ body.cmdk-open .app-shell {
    （transform-origin = 当前页签中心）并糊掉；展开时延迟 60ms 跟上胶囊 */
 .glass-tabbar__tabs {
   position: absolute;
-  top: 4px;
-  bottom: 4px;
-  left: 4px;
-  width: calc(var(--bar-full) - 8px);
+  /* 选中药丸与胶囊边的间距 3px：对照 iOS 26 相册的标签栏量出来的（4px 时药丸
+     明显「缩了一圈」，与原生形态对不上） */
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(var(--bar-full) - 6px);
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
@@ -1775,11 +1851,11 @@ body.cmdk-open .app-shell {
   left: 0;
   width: calc(100% / var(--tab-count));
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.13);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
-    0 4px 12px -6px rgba(0, 0, 0, 0.6);
+  /* 静止态是一块**平的**略亮填充（iOS 26 相册的选中药丸就是这样，没有描边、
+     没有投影）；原先的内描边 + 外投影让它像一颗鼓起的气泡，在胶囊里显得
+     缩了一圈（2026-09-24 用户拿相册逐像素对照）。行进态的边光仍保留在下面 */
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   will-change: transform;
   transition:
     background 260ms ease,
@@ -1837,10 +1913,16 @@ body.cmdk-open .app-shell {
   color: var(--text-muted);
 }
 
-.glass-tabbar__tab svg,
-.glass-tabbar__mini svg {
+.glass-tabbar__tab svg {
   width: 26px;
   height: 26px;
+}
+
+/* 收起圆钮里的图标：相册收起态的图标约 22pt（44pt 圆钮的一半），比展开态页签的
+   26px 小一档 */
+.glass-tabbar__mini svg {
+  width: 22px;
+  height: 22px;
 }
 
 /* 图标按压回弹：按下缩到 0.84，松手按 --ease-spring 弹回并略微过冲 */
@@ -1858,6 +1940,24 @@ body.cmdk-open .app-shell {
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0.01em;
+}
+
+/* 页签圆点（活动页签「有任务在跑/待处理」）：贴在图标右上角，iOS 标签栏红点的
+   规格——6px 实心点、一圈与胶囊同色的描边把它从图标线条里托出来；告警态红、
+   否则提示蓝。不带数字：26px 图标旁的数字角标太重 */
+.glass-tabbar__badge {
+  position: absolute;
+  top: 9px;
+  left: calc(50% + 8px);
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--info);
+  box-shadow: 0 0 0 2px rgba(22, 25, 34, 0.75);
+}
+
+.glass-tabbar__badge[data-alert="true"] {
+  background: var(--danger-solid);
 }
 
 /* 收起态圆钮：钉在胶囊左端、与胶囊收拢后同宽，胶囊变窄时图标原地不动
@@ -1895,6 +1995,7 @@ body.cmdk-open .app-shell {
 
 .glass-tabbar__search {
   flex: 0 0 var(--tabbar-h);
+  transition: flex-basis 480ms var(--ease-spring);
 }
 
 .glass-tabbar__search-btn {
@@ -1910,7 +2011,16 @@ body.cmdk-open .app-shell {
 .glass-tabbar__search-btn svg {
   width: 24px;
   height: 24px;
-  transition: transform 460ms var(--ease-spring);
+  transition:
+    transform 460ms var(--ease-spring),
+    width 480ms var(--ease-spring),
+    height 480ms var(--ease-spring);
+}
+
+/* 收起态搜索圆钮 44px，放大镜跟着缩到 20px（相册量约 17pt 的字形 + 描边） */
+.glass-tabbar[data-minimized="true"] .glass-tabbar__search-btn svg {
+  width: 20px;
+  height: 20px;
 }
 
 .glass-tabbar__search-btn:active svg {
@@ -1929,6 +2039,7 @@ body.cmdk-open .app-shell {
   bottom: calc(-1 * var(--vp-overshoot));
   height: calc(var(--tabbar-bottom) + var(--vp-overshoot) + 62px + 44px);
   pointer-events: none;
+  transition: height 480ms var(--ease-spring);
   background: linear-gradient(180deg, transparent, rgba(8, 10, 15, 0.42) 62%, rgba(8, 10, 15, 0.58));
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
@@ -1967,6 +2078,7 @@ body.cmdk-open .app-shell {
   .app-shell[data-tabbar="true"] > main .scroll-safe::after {
     height: calc(var(--tabbar-bottom) + 62px + 12px);
   }
+
 }
 
 /*

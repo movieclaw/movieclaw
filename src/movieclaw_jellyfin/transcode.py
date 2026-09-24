@@ -48,6 +48,13 @@ class Negotiation:
     audio_stream_index: int | None = None
     #: 起播位置（毫秒）；None = 从头/客户端自行 seek。
     start_ms: int | None = None
+    #: 播放器 HLS 视频转码档申报的分片容器："ts" 或 "mp4"（缺省 mp4 = fMP4）。
+    #: Infuse 8 申报 ts，且只认 ts——给它 fMP4 分片探一下就报错。
+    segment_container: str = "mp4"
+    #: 该转码档申报的音频编码白名单（小写）；None = 未申报，服务端默认。
+    audio_codecs: tuple[str, ...] | None = None
+    #: 该转码档申报的最大声道数；None = 未申报。
+    max_audio_channels: int | None = None
 
     @property
     def wants_transcode(self) -> bool:
@@ -107,6 +114,7 @@ def parse_negotiation(query: Mapping[str, Any], body: Mapping[str, Any] | None) 
     if max_bitrate is not None and max_bitrate <= 0:
         max_bitrate = None
     start_ticks = _as_int(pick("StartTimeTicks"))
+    hls = _hls_video_transcoding_profile(_lookup(body, "DeviceProfile"))
     return Negotiation(
         max_bitrate_bps=max_bitrate,
         enable_direct_play=_as_bool(pick("EnableDirectPlay"), True),
@@ -115,7 +123,52 @@ def parse_negotiation(query: Mapping[str, Any], body: Mapping[str, Any] | None) 
         allow_video_stream_copy=_as_bool(pick("AllowVideoStreamCopy"), True),
         audio_stream_index=_as_int(pick("AudioStreamIndex")),
         start_ms=(max(0, start_ticks // TICKS_PER_MS) if start_ticks is not None else None),
+        segment_container=hls[0],
+        audio_codecs=hls[1],
+        max_audio_channels=hls[2],
     )
+
+
+def _codec_list(raw: Any) -> tuple[str, ...] | None:
+    """``"aac,ac3"`` → ``("aac", "ac3")``；空/非字符串 → None（未申报）。"""
+    if not isinstance(raw, str):
+        return None
+    codecs = tuple(c.strip().lower() for c in raw.split(",") if c.strip())
+    return codecs or None
+
+
+def _hls_video_transcoding_profile(
+    profile: Any,
+) -> tuple[str, tuple[str, ...] | None, int | None]:
+    """从 DeviceProfile.TranscodingProfiles 取 HLS 视频档的申报：
+    (分片容器, 音频编码白名单, 最大声道数)。
+
+    真 Jellyfin ``StreamBuilder`` 按 profile 顺序取第一条 ``Type=Video`` 且
+    ``Protocol=hls`` 的转码档决定容器与编码。分片容器只认 ``ts`` 与 ``mp4``
+    （``fmp4`` 视同 mp4），别的申报当作 mp4。没有 profile / 没有 HLS 视频档
+    → 全部缺省（mp4，音频不限），与解析该字段之前的行为一致。
+    """
+    default: tuple[str, tuple[str, ...] | None, int | None] = ("mp4", None, None)
+    if not isinstance(profile, dict):
+        return default
+    entries = _lookup(profile, "TranscodingProfiles")
+    if not isinstance(entries, list):
+        return default
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(_lookup(entry, "Type") or "").lower() != "video":
+            continue
+        if str(_lookup(entry, "Protocol") or "").lower() != "hls":
+            continue
+        container = str(_lookup(entry, "Container") or "").lower()
+        segment_container = "ts" if container == "ts" else "mp4"
+        return (
+            segment_container,
+            _codec_list(_lookup(entry, "AudioCodec")),
+            _as_int(_lookup(entry, "MaxAudioChannels")),
+        )
+    return default
 
 
 def direct_play_allowed(source_bitrate_bps: int | None, negotiation: Negotiation) -> bool:
@@ -144,6 +197,16 @@ class TranscodeParams:
     max_height: int | None = None
     audio_stream_index: int | None = None
     start_ms: int = 0
+    #: 分片容器（"ts" / "mp4"），来自 URL 的 SegmentContainer——决定 ffmpeg 出
+    #: MPEG-TS 还是 fMP4、媒体列表有没有 EXT-X-MAP、分片后缀。
+    segment_container: str = "mp4"
+    #: 播放器申报的音频编码白名单 / 最大声道数（URL 的 AudioCodec / MaxAudioChannels）。
+    audio_codecs: tuple[str, ...] | None = None
+    max_audio_channels: int | None = None
+
+
+#: 播放器没申报音频能力时写进 URL 的默认音频编码集（服务端 copy/转码的全部可能）。
+DEFAULT_AUDIO_CODECS = "aac,eac3,ac3,mp3,opus"
 
 
 def build_transcoding_url(
@@ -157,20 +220,27 @@ def build_transcoding_url(
     audio_stream_index: int | None,
     start_ms: int | None,
     bitrate_exceeded: bool,
+    segment_container: str = "mp4",
+    audio_codecs: tuple[str, ...] | None = None,
+    max_audio_channels: int | None = None,
 ) -> str:
     """形态对齐 ``StreamInfo.ToUrl``：``/Videos/{id}/master.m3u8?`` + 目标参数。
 
     参数名沿用 Jellyfin 的（VideoCodec / AudioCodec / VideoBitrate / MaxHeight /
-    TranscodeReasons…），客户端只会原样回传，但抓包对照时一眼能认。
-    ``ApiKey`` 拼在 URL 上——播放器媒体内核拉 HLS 不带自定义认证头。
+    SegmentContainer / MaxAudioChannels / TranscodeReasons…），客户端只会原样
+    回传，但抓包对照时一眼能认。``ApiKey`` 拼在 URL 上——播放器媒体内核拉 HLS
+    不带自定义认证头。播放器申报的容器与音频能力也在这里进 URL：master 只按
+    URL 装配计划，协商与开会话两处必然一致。
     """
     query: list[tuple[str, str]] = [
         ("MediaSourceId", media_source_id),
         ("PlaySessionId", play_session_id),
         ("VideoCodec", "h264"),
-        ("AudioCodec", "aac,eac3,ac3,mp3,opus"),
-        ("SegmentContainer", "mp4"),
+        ("AudioCodec", ",".join(audio_codecs) if audio_codecs else DEFAULT_AUDIO_CODECS),
+        ("SegmentContainer", "ts" if segment_container == "ts" else "mp4"),
     ]
+    if max_audio_channels:
+        query.append(("MaxAudioChannels", str(max_audio_channels)))
     if video_bitrate_bps:
         query.append(("VideoBitrate", str(video_bitrate_bps)))
     if max_height:
@@ -190,6 +260,10 @@ def parse_transcode_params(query: Mapping[str, Any]) -> TranscodeParams:
     start_ticks = _as_int(_lookup(query, "StartTimeTicks"))
     video_bitrate = _as_int(_lookup(query, "VideoBitrate"))
     max_height = _as_int(_lookup(query, "MaxHeight"))
+    audio_codecs = _codec_list(_lookup(query, "AudioCodec"))
+    if audio_codecs == tuple(DEFAULT_AUDIO_CODECS.split(",")):
+        audio_codecs = None  # 服务端默认集 = 未申报
+    max_channels = _as_int(_lookup(query, "MaxAudioChannels"))
     return TranscodeParams(
         media_source_id=(_lookup(query, "MediaSourceId") or None),
         play_session_id=(_lookup(query, "PlaySessionId") or None),
@@ -197,6 +271,11 @@ def parse_transcode_params(query: Mapping[str, Any]) -> TranscodeParams:
         max_height=max_height if max_height and max_height > 0 else None,
         audio_stream_index=_as_int(_lookup(query, "AudioStreamIndex")),
         start_ms=max(0, start_ticks // TICKS_PER_MS) if start_ticks else 0,
+        segment_container=(
+            "ts" if str(_lookup(query, "SegmentContainer") or "").lower() == "ts" else "mp4"
+        ),
+        audio_codecs=audio_codecs,
+        max_audio_channels=max_channels if max_channels and max_channels > 0 else None,
     )
 
 

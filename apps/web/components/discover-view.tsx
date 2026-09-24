@@ -39,6 +39,7 @@ import {
 } from "@/lib/discovery-filters";
 import { upgradedTmdbOriginalUrl } from "@/lib/image-proxy";
 import { useMediaDetail } from "@/lib/media-detail";
+import { AccessorySegmented } from "@/components/glass-tab-bar";
 import { usePageChrome } from "@/lib/page-chrome";
 import { useTheme } from "@/lib/ui-prefs";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
@@ -274,11 +275,51 @@ export function DiscoverView({
   // 发现页是侧栏一级入口，没有 PageNav，数据源切换若自己吸一条顶栏，窄屏上
   // 就会摞在全局顶栏底下变成两排 header。移动端改为挂进全局顶栏那一行
   // （字标与搜索之间本来就空着），桌面端维持原来的吸顶工具栏不变。
+  // 银玻璃手机（2026-09-24 重排）：顶栏只留字标、数据源胶囊（TMDB / 豆瓣）、
+  // 筛选键（仅 TMDB 时占位）、头像；「电影 / 剧集」切换挂到液态玻璃底栏的
+  // 「底部附件」位（iOS 26 相册「年 / 月 / 全部」的位置与行为：展开时浮在底栏上方，
+  // 底栏随滚动收起成圆钮后下沉到圆钮与搜索圆钮之间）。Netflix 主题手机端维持
+  // 原来把三组控件都挂顶栏。
+  const silverMobile = isMobile && !isNf;
+  // 银玻璃手机：数据源胶囊 + 筛选键（仅 TMDB 时占位）贴顶栏右端、头像左侧（居中过一版，用户嫌不好看）
+  const silverTopBarControls = useMemo(
+    () =>
+      silverMobile ? (
+        <div className="flex items-center gap-2">
+          <SourceSwitcher value={source} onChange={switchSource} compact />
+          {source === "tmdb" && (
+            <DiscoveryFilterControl
+              mediaType={mediaType}
+              filters={filters}
+              currentYear={currentYear}
+              onApply={applyFilters}
+              compact
+            />
+          )}
+        </div>
+      ) : null,
+    [applyFilters, currentYear, filters, mediaType, silverMobile, source, switchSource],
+  );
   const setTopBarActions = chrome?.setTopBarActions;
   useEffect(() => {
     if (!isMobile || !setTopBarActions) return;
-    return setTopBarActions(controls);
-  }, [controls, isMobile, setTopBarActions]);
+    return setTopBarActions(silverMobile ? silverTopBarControls : controls);
+  }, [controls, isMobile, setTopBarActions, silverMobile, silverTopBarControls]);
+  const setTabBarAccessory = chrome?.setTabBarAccessory;
+  useEffect(() => {
+    if (!silverMobile || !setTabBarAccessory) return;
+    return setTabBarAccessory(
+      <AccessorySegmented
+        label="内容类型"
+        options={[
+          { value: "movie", label: "电影" },
+          { value: "tv", label: "剧集" },
+        ]}
+        value={mediaType}
+        onChange={switchMediaType}
+      />,
+    );
+  }, [mediaType, setTabBarAccessory, silverMobile, switchMediaType]);
 
   const toolbar = isMobile ? null : isNf ? (
     // Netflix：fixed 悬浮在视口右上（顶栏下方），不随页面滚动移位——发现页
@@ -322,36 +363,51 @@ export function DiscoverView({
   }
   if (!page) {
     return (
-      <div className={`flex flex-1 flex-col ${isNf ? "relative" : "max-md:pt-4"}`}>
+      // 银玻璃手机：与下方正式页面同一个顶边（抵掉主区为顶栏留的内边距），骨架
+      // Hero 与真实 Hero 原位替换、不跳版；Netflix 维持原样
+      <div className={`relative flex flex-1 flex-col ${isNf ? "" : "max-md:-mt-[calc(var(--safe-top)+var(--mobile-topbar-h))]"}`}>
         {toolbar}
         <DiscoverSkeleton fullBleed={isNf} />
       </div>
     );
   }
+  // 银玻璃手机的沉浸式 Hero：只在本页**真的会画 Hero** 时才把页面提到顶栏底下
+  // ——展示清单声明了 Hero 且数据不是「无/失败」（undefined = 还在加载、骨架占位）。
+  // 豆瓣视角的清单没有 Hero，若照样上提，第一行海报就钻进顶栏雾层里
+  // （2026-09-23 用户截图）；这种页面按普通页排，顶部留呼吸位。
+  const immersiveHero =
+    !isNf &&
+    page.sections.some((section) => section.presentation === "hero") &&
+    (hero === undefined || hero.length > 0);
   return (
     <div
       ref={scrollRef}
-      className={`scroll-thin scroll-safe flex-1 overflow-y-auto pb-10 ${
-        // Netflix 主题 Hero 全出血、顶栏透明悬浮：顶部不得再留内边距，否则
-        // Hero 上沿会露出一条页面底色的黑边；银玻璃 Hero 是圆角卡片，保留
-        // max-md:pt-4 作为顶栏雾层下的呼吸位。
-        isNf ? "relative" : "max-md:pt-4"
+      className={`scroll-thin scroll-safe relative flex-1 overflow-y-auto pb-10 ${
+        // 银玻璃手机：Hero 是沉浸式通栏大图，要从屏幕物理顶边开始、从状态栏与
+        // 顶栏雾层底下穿过——主区为顶栏预留的内边距（globals.css 的
+        // .app-shell > main）用等量负外边距抵掉，页面自己顶到最上沿；flex-1
+        // 会把多出来的这段补进高度，滚动视口仍是整块主区。银玻璃桌面维持圆角
+        // 卡片。Netflix 主题（两端）一律不动：它的 Hero 形态由主题自己定。
+        immersiveHero ? "max-md:-mt-[calc(var(--safe-top)+var(--mobile-topbar-h))]" : isNf ? "" : "max-md:pt-4"
       }`}
     >
       {toolbar}
       {/* Hero 区：展示清单声明 Hero 时先占位，数据到达后换成轮播。
           Netflix 主题全出血（无左右留白、无圆角描边），银玻璃维持圆角卡片。 */}
       {page.sections.some((section) => section.presentation === "hero") && hero === undefined && (
-        <div className={isNf ? undefined : "px-6 max-md:px-4"}>
+        <div className={isNf ? undefined : "px-6 max-md:px-0"}>
           <HeroSkeleton fullBleed={isNf} />
         </div>
       )}
       {hero && hero.length > 0 && (
-        <div className={isNf ? undefined : "px-6 max-md:px-4"}>
+        <div className={isNf ? undefined : "px-6 max-md:px-0"}>
           <HeroBanner items={hero} fullBleed={isNf} />
         </div>
       )}
-      <div className="mt-8 space-y-8">
+      {/* 银玻璃手机：有 Hero 时图已向下渐隐，常规行紧跟着接上（首行标题落在渐隐带里）；
+          没有 Hero（豆瓣清单）时容器自带的 max-md:pt-4 就是顶栏下的全部留白，行区不再
+          叠 mt-8——与媒体库页头「顶栏下 16px」同一档，否则首行标题离顶栏 48px 空得发虚 */}
+      <div className={`mt-8 space-y-8 ${immersiveHero ? "max-md:mt-3" : isNf ? "" : "max-md:mt-0"}`}>
         {page.sections.filter((section) => section.presentation !== "hero").map((section) => {
           const row = rowsByRef[section.collectionRef];
           // 失败或条目太少（空 items）的行整行收起
@@ -461,7 +517,7 @@ function MediaTypeSwitcher({
 function DiscoverSkeleton({ fullBleed = false }: { fullBleed?: boolean }) {
   return (
     <div
-      className={`flex-1 overflow-hidden pb-10 ${fullBleed ? "" : "px-6 max-md:px-4"}`}
+      className={`flex-1 overflow-hidden pb-10 ${fullBleed ? "" : "px-6 max-md:px-0"}`}
       aria-busy="true"
       aria-label="发现页加载中"
     >
@@ -478,12 +534,22 @@ function DiscoverSkeleton({ fullBleed = false }: { fullBleed?: boolean }) {
   );
 }
 
+/** 银玻璃手机端 Hero：沉浸式通栏大图占首屏六成上下（78% 试过，用户嫌太高），
+ *  下一行「今日热榜」整行从底栏上方露出来提示可下滑（流媒体 App 的 billboard 惯例）；
+ *  通栏形态不要圆角、描边与投影（图就是页面本身，不是一张贴在页面上的卡）。
+ *  用 svh 不用 vh：iOS Safari 工具栏收起前后 vh 会跳。
+ *  Netflix 主题（fullBleed）手机端维持它原来的 38vh 横幅，不套这一档。 */
+const HERO_MOBILE_SIZE = "max-md:h-[62svh] max-md:min-h-[440px]";
+const HERO_MOBILE_SIZE_NF = "max-md:h-[38vh] max-md:min-h-[230px]";
+
 /** Hero 大横幅的占位块（与真实 Hero 同尺寸，数据到达后原位替换不跳版）。 */
 function HeroSkeleton({ fullBleed = false }: { fullBleed?: boolean }) {
   return (
     <div
-      className={`h-[46vh] min-h-[320px] animate-pulse bg-white/[0.05] max-md:h-[38vh] max-md:min-h-[230px] ${
-        fullBleed ? "" : "rounded-2xl ring-1 ring-white/10"
+      className={`h-[46vh] min-h-[320px] animate-pulse bg-white/[0.05] ${
+        fullBleed
+          ? HERO_MOBILE_SIZE_NF
+          : `${HERO_MOBILE_SIZE} rounded-2xl ring-1 ring-white/10 max-md:rounded-none max-md:ring-0`
       }`}
     />
   );
@@ -605,10 +671,12 @@ function HeroBanner({ items, fullBleed = false }: { items: MediaItem[]; fullBlee
   const next = (index + 1) % items.length;
   return (
     <div
-      className={`group relative h-[46vh] min-h-[320px] w-full overflow-hidden max-md:h-[38vh] max-md:min-h-[230px] ${
+      className={`group relative h-[46vh] min-h-[320px] w-full overflow-hidden ${
+        // Netflix：全出血横幅（两端原样）；银玻璃：桌面是浮起的圆角卡片，手机是
+        // 通栏沉浸大图（见 HERO_MOBILE_SIZE）
         fullBleed
-          ? ""
-          : "rounded-2xl shadow-[0_24px_70px_-18px_rgba(0,0,0,0.62)] ring-1 ring-white/10"
+          ? HERO_MOBILE_SIZE_NF
+          : `${HERO_MOBILE_SIZE} rounded-2xl shadow-[0_24px_70px_-18px_rgba(0,0,0,0.62)] ring-1 ring-white/10 max-md:rounded-none max-md:shadow-none max-md:ring-0`
       }`}
       onTouchStart={(e) => {
         const t = e.touches[0];
@@ -775,27 +843,51 @@ function HeroSlide({
       }`}
     >
       {/* 宽幅剧照 + 双层渐变蒙版：左侧压暗保文字可读，底部渐隐融入页面 */}
+      {/* 银玻璃手机：图片层自己向下渐隐到透明（mask），让页面的氛围底色从图底下透
+          出来，Hero 与下方常规行之间没有任何一条可见的边——只用压暗层是做不到的：
+          压暗到底也是一块实色，与带光斑的银玻璃底色对不上，会横切出一道硬边。
+          Netflix（fullBleed）不套 mask，维持原横幅 */}
       <PosterImage
         src={backdropSrc}
         alt={`${item.title} 剧照`}
         className={`absolute inset-0 size-full object-cover object-top transition-transform duration-[9000ms] ease-linear ${
-          push ? "scale-[1.06]" : "scale-100"
-        }`}
+          fullBleed
+            ? ""
+            : "max-md:[-webkit-mask-image:linear-gradient(to_bottom,#000_55%,rgba(0,0,0,0.6)_78%,transparent_100%)] max-md:[mask-image:linear-gradient(to_bottom,#000_55%,rgba(0,0,0,0.6)_78%,transparent_100%)]"
+        } ${push ? "scale-[1.06]" : "scale-100"}`}
       />
-      <div className="absolute inset-0 bg-gradient-to-r from-[rgba(7,9,14,0.88)] via-[rgba(7,9,14,0.42)] to-transparent" />
-      <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-[rgba(7,9,14,0.72)] to-transparent max-md:h-3/4 max-md:from-[rgba(7,9,14,0.9)]" />
+      {fullBleed ? (
+        <>
+          <div className="absolute inset-0 bg-gradient-to-r from-[rgba(7,9,14,0.88)] via-[rgba(7,9,14,0.42)] to-transparent" />
+          <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-[rgba(7,9,14,0.72)] to-transparent max-md:h-3/4 max-md:from-[rgba(7,9,14,0.9)]" />
+        </>
+      ) : (
+        <>
+          {/* 横向压暗只给桌面宽幅构图（文字在左、画面在右）；手机是竖向通栏，文字压在
+              图的下段，横向压暗只会把整张图闷掉 */}
+          <div className="absolute inset-0 bg-gradient-to-r from-[rgba(7,9,14,0.88)] via-[rgba(7,9,14,0.42)] to-transparent max-md:hidden" />
+          <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-[rgba(7,9,14,0.72)] to-transparent max-md:h-[55%] max-md:from-[rgba(7,9,14,0.62)] max-md:via-[rgba(7,9,14,0.22)]" />
+          {/* 手机：图铺到屏幕物理顶边、从状态栏底下穿过，顶部补一层弱压暗保状态栏图标与
+              顶栏控件可读（顶栏雾层只盖到它自己那 52px，亮图上沿仍会晃眼） */}
+          <div className="absolute inset-x-0 top-0 hidden h-44 bg-gradient-to-b from-[rgba(7,9,14,0.55)] to-transparent max-md:block" />
+        </>
+      )}
 
       {/* 文字与操作区：随当前帧轻微上移淡入。全出血（Netflix）的左右边距走
           4vw 左基线与顶栏字标对齐，纵向节奏不变；圆角卡片形态（银玻璃）维持原样 */}
       <div
         className={`absolute inset-0 flex max-w-xl flex-col justify-end transition-all delay-150 duration-500 ease-out ${
-          fullBleed ? "page-inset py-7 max-md:py-4 sm:py-9" : "p-7 max-md:p-4 sm:p-9"
+          fullBleed ? "page-inset py-7 max-md:py-4 sm:py-9" : "p-7 max-md:p-4 max-md:pb-6 sm:p-9"
         } ${active ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"}`}
       >
         <p className="text-caption font-semibold uppercase tracking-[0.22em] text-[var(--accent-2)]">
           今日精选 · {item.type === "movie" ? "电影" : "剧集"}
         </p>
-        <h2 className="text-on-image mt-2 text-[34px] font-bold leading-[1.1] tracking-[-0.02em] text-white max-md:mt-1 max-md:text-[23px] sm:text-[40px]">
+        <h2
+          className={`text-on-image mt-2 text-[34px] font-bold leading-[1.1] tracking-[-0.02em] text-white max-md:mt-1 sm:text-[40px] ${
+            fullBleed ? "max-md:text-[23px]" : "max-md:text-[30px]"
+          }`}
+        >
           {item.title}
         </h2>
         <p className="text-on-image mt-1 truncate text-ui text-white/55 max-md:text-caption">{item.originalTitle}</p>

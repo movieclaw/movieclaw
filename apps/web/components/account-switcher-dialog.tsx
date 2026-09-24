@@ -129,7 +129,9 @@ export function AccountSwitcherDialog({ open, onClose }: { open: boolean; onClos
   const canAdd = (accounts?.length ?? 0) < MAX_SAVED_ACCOUNTS;
 
   return (
-    <Modal open={open} onClose={onClose} label="切换账号">
+    // raised：手机上本弹窗从「更多」底部面板（z-60）里点开，普通档 z-50 会被面板
+    // 盖住（2026-09-24 用户反馈）；抬到 z-60 并靠 Modal 后挂到 body 的 DOM 顺序压在面板与其遮罩（z-55）之上
+    <Modal open={open} onClose={onClose} label="切换账号" raised>
       <div className="p-6 max-md:p-5">
         <div className="flex items-start justify-between gap-4">
           <div>

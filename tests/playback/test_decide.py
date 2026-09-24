@@ -1094,6 +1094,34 @@ def test_capped_transcode_reencodes_heavy_audio_and_maps_hdr():
     assert chosen.audio.track_ref == "embedded:2"
 
 
+def test_capped_transcode_honors_player_audio_profile_and_ts_container():
+    """Infuse 8 的 HLS 视频转码档申报：Container=ts、AudioCodec=aac、MaxAudioChannels=2。
+    申报之内才 copy：AAC 立体声照旧 copy；AAC 5.1 超声道、AC-3 5.1 编码不在名单、
+    TrueHD 7.1 两者都不满足——一律转 AAC 立体声并降混；分片容器标成 hls-ts。"""
+    from movieclaw_playback.decide import plan_capped_transcode
+
+    infuse = dict(segment_container="ts", audio_codecs=frozenset({"aac"}), max_audio_channels=2)
+    aac_stereo = AudioTrack(ref="embedded:0", codec="aac", channels=2)
+    ac3_51 = AudioTrack(ref="embedded:0", codec="ac3", channels=6)
+
+    kept = plan_capped_transcode(media(audio_tracks=(aac_stereo,)), WITH_GPU, **infuse)
+    assert isinstance(kept, PlaybackPlan)
+    assert kept.container == "hls-ts"
+    assert kept.audio.action == "copy" and kept.audio.codec == "aac"
+
+    for track in (AAC_51, ac3_51, TRUEHD_71):
+        decision = plan_capped_transcode(media(audio_tracks=(track,)), WITH_GPU, **infuse)
+        assert isinstance(decision, PlaybackPlan), track
+        assert decision.audio.action == "transcode", track
+        assert decision.audio.codec == "aac" and decision.audio.channels == 2, track
+        assert decision.audio.downmix is True, track
+
+    # 没申报（网页端 / 旧客户端）：行为与以前完全一致——多声道转 E-AC-3、容器 fMP4
+    default = plan_capped_transcode(media(audio_tracks=(TRUEHD_71,)), WITH_GPU)
+    assert isinstance(default, PlaybackPlan)
+    assert default.container == "hls-fmp4" and default.audio.codec == "eac3"
+
+
 def test_capped_transcode_max_height_and_software_fallback():
     """无显卡但软转已开：档 4；max_height 是上限，只会把高度压得更低。"""
     from movieclaw_playback.decide import plan_capped_transcode
