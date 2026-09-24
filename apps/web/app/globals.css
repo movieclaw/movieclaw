@@ -1722,8 +1722,8 @@ body.cmdk-open .app-shell {
 /* 选中段与主菜单的选中药丸同一材质（平填充 + 1px 顶高光） */
 .glass-tabbar-accessory__seg > button[data-active="true"] {
   color: #fff;
-  background: rgba(255, 255, 255, 0.15);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
 .glass-tabbar:has(.glass-tabbar__search) {
@@ -1734,22 +1734,27 @@ body.cmdk-open .app-shell {
   pointer-events: auto;
 }
 
+/* 暗色液态玻璃（2026-09-25 按用户给的 Instagram iOS 26 底栏截图调）：近乎不透明的
+   深色玻璃，底下内容只隐约透出一点；轮廓靠一圈清晰的亮边 + 顶沿高光线 + 底沿
+   微弱回光撑起来，而不是靠半透明。模糊加大、饱和度压低，透上来的颜色不抢图标 */
 .glass-capsule {
   position: relative;
   border-radius: 999px;
-  background: rgba(22, 25, 34, 0.42);
-  -webkit-backdrop-filter: blur(22px) saturate(170%);
-  backdrop-filter: blur(22px) saturate(170%);
+  background: rgba(12, 14, 19, 0.8);
+  -webkit-backdrop-filter: blur(28px) saturate(140%);
+  backdrop-filter: blur(28px) saturate(140%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.3),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.13),
-    0 18px 40px -18px rgba(0, 0, 0, 0.75),
-    0 2px 6px rgba(0, 0, 0, 0.25);
+    inset 0 1px 0 rgba(255, 255, 255, 0.26),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.17),
+    inset 0 0 0 2px rgba(0, 0, 0, 0.35),
+    0 16px 36px -14px rgba(0, 0, 0, 0.85),
+    0 2px 8px rgba(0, 0, 0, 0.35);
   transition: transform 420ms var(--ease-spring);
 }
 
-/* 边缘透镜亮环 + 斜向高光（Safari 无折射的近似） */
+/* 边缘透镜：亮边内侧一圈极淡的回光（上沿更亮、下沿次之），模拟玻璃厚边的折射；
+   不再铺斜向大高光——暗玻璃上那块高光会显得脏 */
 .glass-capsule::before {
   content: "";
   position: absolute;
@@ -1757,8 +1762,7 @@ body.cmdk-open .app-shell {
   border-radius: inherit;
   pointer-events: none;
   background:
-    radial-gradient(120% 180% at 50% 130%, transparent 62%, rgba(255, 255, 255, 0.1) 78%, rgba(255, 255, 255, 0.02)),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.03) 30%, transparent 55%);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 28%, transparent 72%, rgba(255, 255, 255, 0.045));
 }
 
 /* 按压辉光：触点处由内发亮（HIG：玻璃从指尖照亮），按下 90ms 亮起、松手 520ms
@@ -1854,8 +1858,9 @@ body.cmdk-open .app-shell {
   /* 静止态是一块**平的**略亮填充（iOS 26 相册的选中药丸就是这样，没有描边、
      没有投影）；原先的内描边 + 外投影让它像一颗鼓起的气泡，在胶囊里显得
      缩了一圈（2026-09-24 用户拿相册逐像素对照）。行进态的边光仍保留在下面 */
-  background: rgba(255, 255, 255, 0.15);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  /* 暗玻璃上的选中药丸要更亮一档才分得出（参考截图约 24% 白） */
+  background: rgba(255, 255, 255, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   will-change: transform;
   transition:
     background 260ms ease,
@@ -1885,7 +1890,8 @@ body.cmdk-open .app-shell {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  color: var(--text-muted);
+  /* 暗玻璃上图标一律白色（参考截图），未选中略收一点，选中态靠药丸区分 */
+  color: rgba(255, 255, 255, 0.82);
   -webkit-tap-highlight-color: transparent;
   /* 展开时自左向右依次浮现（每格错开 35ms）；收起时一齐快速淡出 */
   transition:
@@ -1905,12 +1911,12 @@ body.cmdk-open .app-shell {
 
 .glass-tabbar__tab[aria-current="page"],
 .glass-tabbar__tab[data-hover] {
-  color: var(--accent-strong);
+  color: #fff;
 }
 
 /* 拖动擦选时，高亮跟着手指走：原选中页签若不在指下就先暗下去 */
 .glass-tabbar[data-dragging="true"] .glass-tabbar__tab[aria-current="page"]:not([data-hover]) {
-  color: var(--text-muted);
+  color: rgba(255, 255, 255, 0.82);
 }
 
 .glass-tabbar__tab svg {
@@ -1955,7 +1961,7 @@ body.cmdk-open .app-shell {
   height: 7px;
   border-radius: 999px;
   background: var(--info);
-  box-shadow: 0 0 0 2px rgba(22, 25, 34, 0.75);
+  box-shadow: 0 0 0 2px rgba(12, 14, 19, 0.9);
 }
 
 .glass-tabbar__badge[data-alert="true"] {
@@ -2081,7 +2087,7 @@ body.cmdk-open .app-shell {
 
 @media (prefers-reduced-transparency: reduce) {
   .glass-capsule {
-    background: rgba(22, 25, 34, 0.86);
+    background: rgba(12, 14, 19, 0.95);
     -webkit-backdrop-filter: blur(10px) saturate(120%);
     backdrop-filter: blur(10px) saturate(120%);
   }
