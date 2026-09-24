@@ -334,7 +334,7 @@ OCR 语言表示“PGS 图片中的文字语言”，与最终翻译目标无关
 翻译管线不 import `movieclaw_jellyfin` / `movieclaw_playback`——它是
 纯生产端，与播放两层互不感知（守护测试同款断言）。
 
-## 8. ASR 远期（P3，只定接口位）
+## 8. ASR 远期（P3，只定接口位；单独设计已完成，见 [subtitle-asr.md](subtitle-asr.md)）
 
 - 形态：`SubtitleSource` 抽象的第三个实现（现存外挂/内封抽取之外），
   产出"原语言 srt"后**汇入同一个翻译管线**——ASR 与翻译解耦，英语片
