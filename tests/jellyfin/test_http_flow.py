@@ -23,11 +23,56 @@ def test_system_info_public_shape(client: TestClient) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["ProductName"] == "Jellyfin Server"
-    assert body["Version"].startswith("10.10")
+    # 未识别的客户端报上游最新版（三段式，issue #445）
+    assert body["Version"] == "12.1.0"
     assert body["StartupWizardCompleted"] is True
     assert body["OperatingSystem"] == ""
     assert len(body["Id"]) == 32
     assert body["LocalAddress"].startswith("http")
+
+
+def test_system_info_version_by_client(client: TestClient) -> None:
+    """Infuse / VidHub 维持 10.10.7（改动前的行为），其余客户端报 12.1.0。"""
+    cases = [
+        # Infuse 官方文档公开的头形态：UA 与 X-Emby-Authorization 的 Client
+        ({"User-Agent": "Infuse-Direct/8.1"}, "10.10.7"),
+        ({"User-Agent": "Infuse-Library/8.1"}, "10.10.7"),
+        (
+            {
+                "X-Emby-Authorization": (
+                    'MediaBrowser Client="Infuse-Direct", Device="iPhone", '
+                    'DeviceId="d1", Version="8.1"'
+                )
+            },
+            "10.10.7",
+        ),
+        ({"User-Agent": "VidHub/2.3 CFNetwork/1568 Darwin/24.0"}, "10.10.7"),
+        (
+            {
+                "Authorization": (
+                    'MediaBrowser Client="VidHub", Device="Mac", DeviceId="d2", Version="2"'
+                )
+            },
+            "10.10.7",
+        ),
+        # 带最低版本门槛的客户端
+        ({"User-Agent": "Flow/0.9.3 CFNetwork/3826 Darwin/25.0"}, "12.1.0"),
+        (
+            {
+                "Authorization": (
+                    'MediaBrowser Client="Android TV", Device="Shield", '
+                    'DeviceId="d3", Version="0.19.0"'
+                )
+            },
+            "12.1.0",
+        ),
+        ({}, "12.1.0"),
+    ]
+    for headers, expected in cases:
+        for path in ("/System/Info/Public", "/emby/System/Info/Public"):
+            resp = client.get(path, headers=headers)
+            assert resp.status_code == 200
+            assert resp.json()["Version"] == expected, (path, headers)
 
 
 def test_system_info_public_uses_forwarded_external_address(client: TestClient) -> None:
@@ -42,6 +87,18 @@ def test_system_info_public_uses_forwarded_external_address(client: TestClient) 
     )
     assert resp.status_code == 200
     assert resp.json()["LocalAddress"] == "https://192.168.1.50:3000"
+
+
+def test_system_info_full_version_matches_public(client: TestClient) -> None:
+    """登录后的 /System/Info 与匿名探测对同一客户端报同一个版本号。"""
+    token = jf_login(client)
+    infuse = {"Authorization": f'{AUTH_HEADER}, Token="{token}"'}
+    flow = {"User-Agent": "Flow/0.9.3", "X-Emby-Token": token}
+    for headers, expected in ((infuse, "10.10.7"), (flow, "12.1.0")):
+        public = client.get("/System/Info/Public", headers=headers).json()
+        full = client.get("/System/Info", headers=headers)
+        assert full.status_code == 200
+        assert public["Version"] == full.json()["Version"] == expected
 
 
 def test_system_ping_returns_product_name_json_string(client: TestClient) -> None:

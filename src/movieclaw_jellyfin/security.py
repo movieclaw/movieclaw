@@ -1,6 +1,7 @@
 """Jellyfin 兼容层的认证：token 提取与设备凭据校验（设计文档 4.1/4.3）。
 
-token 的全部合法位置（面向 10.10 客户端，一律无条件支持）：
+token 的全部合法位置（一律无条件支持；上游 12.x 默认关掉了旧式写法，
+我们照收以兼容老播放器）：
 Authorization / X-Emby-Authorization 头的 ``Token=``、X-Emby-Token、
 X-MediaBrowser-Token、``?ApiKey=``、``?api_key=``。
 """

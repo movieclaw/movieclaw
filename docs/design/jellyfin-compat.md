@@ -243,7 +243,7 @@ docker-proxy 到达容器，**桥接下自动发现大概率整体不可用**（
 
 ```json
 {"LocalAddress": "http://192.168.1.10:8096", "ServerName": "MovieClaw",
- "Version": "10.10.7", "ProductName": "Jellyfin Server",
+ "Version": "12.1.0", "ProductName": "Jellyfin Server",
  "OperatingSystem": "", "Id": "<服务器ID，首启生成并持久化的32位hex>",
  "StartupWizardCompleted": true}
 ```
@@ -253,7 +253,19 @@ docker-proxy 到达容器，**桥接下自动发现大概率整体不可用**（
   **有意偏离**：真 Jellyfin 默认走 `GetSmartApiUrl`（`EnablePublishedServerUriByRequest`
   默认 false，且开启后 Host 反而优先于 PublishedServerUrl），我们的选择在
   容器部署下更可靠；
-- `Version` **报真实存在的 Jellyfin 版本号**（10.10.x），命中客户端兼容分支；
+- `Version` **报真实存在的 Jellyfin 版本号，按来访客户端区分**（issue #445，
+  `identity.reported_version`）：
+  - 默认报上游最新发布版 `12.1.0`。Jellyfin 在 10.11 之后直接跳到 12.0，
+    客户端的最低版本门槛随之抬高（Flow ≥ 12.0；官方 Android TV / Findroid
+    所用 Kotlin SDK 1.8.12 ≥ 10.11，其主干已是 12.0；Swift SDK ≥ 12.0）。
+    调研过的客户端都只设下限、不设上限；我们实现的接口在 10.10.7 → 12.1 之间
+    无破坏性差异（12.x 关掉的旧式鉴权头我们照收，`ApiKey=` 本就在用）；
+  - User-Agent 或 `Authorization`/`X-Emby-Authorization` 的 `Client=` 含
+    `Infuse`（官方公开的 UA 为 `Infuse-Direct/<ver>`、`Infuse-Library/<ver>`）
+    或 `VidHub` 时报 `10.10.7`——闭源播放器是否按版本号分支无从查证，
+    维持改动前已长期实测的形态，零风险；
+  - 必须三段式：Kotlin/Swift SDK 解析 `12.1` 这种两段式会失败并拒连；
+  - 同一客户端的标识恒定，`/System/Info` 走同一函数，两处版本号一致；
 - `StartupWizardCompleted` 必须 `true`（声明是 `bool?` 但真实现恒赋值），
   否则客户端进首次配置流程；
 - `ProductName` 保持 `"Jellyfin Server"`（客户端以此识别服务器类型）；
