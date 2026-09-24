@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from movieclaw_api.settings.schemas import get_jellyfin_compat
-from movieclaw_jellyfin.identity import PRODUCT_NAME, REPORTED_VERSION
+from movieclaw_jellyfin.identity import PRODUCT_NAME, reported_version
 from movieclaw_jellyfin.security import require_device
 
 router = APIRouter()
@@ -35,7 +35,7 @@ async def system_info_public(request: Request) -> JSONResponse:
         {
             "LocalAddress": await _local_address(request),
             "ServerName": setting.server_name,
-            "Version": REPORTED_VERSION,
+            "Version": reported_version(request),
             "ProductName": PRODUCT_NAME,
             "OperatingSystem": "",
             "Id": setting.server_id,
