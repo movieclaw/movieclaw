@@ -18,6 +18,11 @@ class RuleSet(TimestampMixin, table=True):
 
     ``spec`` 的 schema 是 ``movieclaw_matcher.RuleSetSpec``（此处存其 JSON 序列化，
     db 层不反向依赖 matcher 包）。空 spec = 全不限，即默认规则组的形态。
+
+    ``match_rules`` 是规则组的**适用范围声明**（docs/design/rule-set-scope.md）：
+    与媒体库收藏范围同构的条件列表，外加 ``kind`` 字段（电影/剧集）。新订阅
+    未显式指定规则组时，在全部规则组里找适用范围命中的那个（条件多者优先），
+    都不命中落 ``is_default`` 的组。空列表 = 未声明，只能被手选或作为默认兜底。
     """
 
     __tablename__ = "rule_set"
@@ -30,4 +35,12 @@ class RuleSet(TimestampMixin, table=True):
         default_factory=dict,
         sa_column=Column(JSON, nullable=False),
         description="RuleSetSpec 的 JSON；空对象=全不限",
+    )
+    # 适用范围：[{"field": "kind"|"genres"|"origin_countries", "op": "any_of",
+    # "values": [...]}]，条件间 AND、条件内交集即满足。只决定新订阅的预选，
+    # 不影响已挂靠本组的订阅
+    match_rules: list = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, server_default="[]"),
+        description="适用范围条件列表；空=未声明（只能手选或作默认兜底）",
     )

@@ -258,11 +258,23 @@ export interface RuleSetSpec {
   sites?: string[];
 }
 
+/**
+ * 规则组适用范围的一条条件（与媒体库收藏范围同构，外加 kind）。
+ * 条件间「且」、条件内任一命中；新订阅未指定规则组时据此自动选组。
+ */
+export interface ScopeRule {
+  field: "kind" | "genres" | "origin_countries";
+  op: "any_of";
+  values: (number | string)[];
+}
+
 export interface RuleSet {
   id: number;
   name: string;
   is_default: boolean;
   spec: RuleSetSpec;
+  /** 适用范围；空 = 未声明（只能手选或作为默认兜底） */
+  match_rules: ScopeRule[];
   /** 正在引用本组的订阅数；>0 时后端禁删 */
   reference_count: number;
 }
@@ -312,6 +324,13 @@ export interface DispatchPreview {
   route_matched: boolean | null;
   /** 路由理由（中文整句，徽标直接展示） */
   route_reason: string | null;
+  /** 按规则组适用范围自动选出的组（与 route_* 同条件：走了路由才有） */
+  rule_set_id?: number | null;
+  rule_set_name?: string | null;
+  /** true=命中某组适用范围 / false=默认规则组兜底 */
+  rule_set_matched?: boolean | null;
+  /** 选组理由（中文整句） */
+  rule_set_reason?: string | null;
   /** 按当前配置投递能否顺利入库 */
   ok: boolean;
   /** 不 ok 时的中文指引 */
@@ -782,21 +801,31 @@ export function listRuleSets(init?: RequestInit): Promise<RuleSet[]> {
   return unwrap(request<ApiEnvelope<RuleSet[]>>("/rule-sets", init));
 }
 
-export function createRuleSet(name: string, spec: RuleSetSpec): Promise<RuleSet> {
+export function createRuleSet(
+  name: string,
+  spec: RuleSetSpec,
+  matchRules: ScopeRule[] = [],
+): Promise<RuleSet> {
   return unwrap(
     request<ApiEnvelope<RuleSet>>("/rule-sets", {
       method: "POST",
-      body: JSON.stringify({ name, spec }),
+      body: JSON.stringify({ name, spec, match_rules: matchRules }),
     }),
   );
 }
 
-/** 更新规则组（只影响之后的匹配评估，不追溯已投递的工单）。 */
-export function updateRuleSet(id: number, name: string, spec: RuleSetSpec): Promise<RuleSet> {
+/** 更新规则组（只影响之后的匹配评估，不追溯已投递的工单）。
+ *  `matchRules` 不传 = 不改适用范围，传 [] = 清空。 */
+export function updateRuleSet(
+  id: number,
+  name: string,
+  spec: RuleSetSpec,
+  matchRules?: ScopeRule[],
+): Promise<RuleSet> {
   return unwrap(
     request<ApiEnvelope<RuleSet>>(`/rule-sets/${id}`, {
       method: "PUT",
-      body: JSON.stringify({ name, spec }),
+      body: JSON.stringify({ name, spec, match_rules: matchRules }),
     }),
   );
 }

@@ -94,6 +94,11 @@ export function SubscribeDialog({
   // 收藏范围路由的预选结论：打开弹窗时按作品特征算出的默认库 + 中文理由。
   // 规则只决定默认值——用户改选其它库即显式指定，徽标随之消失
   const [routed, setRouted] = useState<{ libraryId: number; reason: string | null } | null>(null);
+  // 规则组适用范围的预选结论（docs/design/rule-set-scope.md）：与选库同一次
+  // 预检算出，同样只决定默认值——用户改选其它组即显式指定，徽标随之消失
+  const [ruleRouted, setRuleRouted] = useState<{ ruleSetId: number; reason: string } | null>(
+    null,
+  );
   const routingKind = prepared?.media?.kind ?? target?.kind;
 
   useEffect(() => {
@@ -140,21 +145,15 @@ export function SubscribeDialog({
         const resolvedKind = result.media?.kind ?? t.kind;
         const libs = canManageSubscriptions ? await listLibraries(resolvedKind) : [];
         setRuleSets(rules);
-        if (t.upgradeIntent) {
-          // 洗版变体：只在带洗版目标的组里选默认（默认组带目标则优先它）
-          const candidates = rules.filter((r) => upgradeTargetLabel(r.spec));
-          setRuleSetId(
-            (candidates.find((r) => r.is_default) ?? candidates[0])?.id ?? null,
-          );
-        } else {
-          setRuleSetId(rules.find((r) => r.is_default)?.id ?? rules[0]?.id ?? null);
-        }
         setLibraries(libs);
         // 默认库 = 收藏范围路由的结论（按作品的类型/区域自动选库，带中文理由）；
         // 预检失败或没有路由结论时回落该类型默认库
         const fallbackId = libs.find((l) => l.is_default)?.id ?? libs[0]?.id ?? null;
         setRouted(null);
+        setRuleRouted(null);
         let pickedId = fallbackId;
+        let pickedRuleSetId: number | null = null;
+        let pickedRuleReason: string | null = null;
         if (canManageSubscriptions && result.status === "ready" && result.media) {
           const p = await previewSubscriptionDownloadRouting(
             resolvedKind,
@@ -165,6 +164,23 @@ export function SubscribeDialog({
             pickedId = p.library_id;
             setRouted({ libraryId: p.library_id, reason: p.route_reason });
           }
+          // 同一次预检顺带给出按适用范围选中的规则组（后端与创建时同一套选组逻辑）
+          if (p?.rule_set_id != null) {
+            pickedRuleSetId = p.rule_set_id;
+            pickedRuleReason = p.rule_set_matched ? (p.rule_set_reason ?? null) : null;
+          }
+        }
+        // 规则组预选：适用范围的结论优先；洗版变体只在带洗版目标的组里选
+        //（结论组不带目标时退回默认组/第一个候选）
+        const candidates = t.upgradeIntent
+          ? rules.filter((r) => upgradeTargetLabel(r.spec))
+          : rules;
+        const scoped = candidates.find((r) => r.id === pickedRuleSetId);
+        setRuleSetId(
+          (scoped ?? candidates.find((r) => r.is_default) ?? candidates[0])?.id ?? null,
+        );
+        if (scoped && pickedRuleReason) {
+          setRuleRouted({ ruleSetId: scoped.id, reason: pickedRuleReason });
         }
         setLibraryId(pickedId);
         setPrepared(result);
@@ -549,6 +565,12 @@ export function SubscribeDialog({
                       </option>
                     ))}
                   </select>
+                  )}
+                  {/* 适用范围徽标：说明"为什么默认选了这个组"；用户改组即消失 */}
+                  {ruleRouted && ruleSetId === ruleRouted.ruleSetId && (
+                    <p className="mt-1.5 text-caption leading-relaxed text-[var(--accent)]/90">
+                      自动选组：{ruleRouted.reason}
+                    </p>
                   )}
                   {/* 所选组的条件摘要：选规则不再是「盲选」 */}
                   {(() => {

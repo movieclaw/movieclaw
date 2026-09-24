@@ -42,8 +42,9 @@ import type { LibraryKind } from "@/lib/media-types";
  *  相同请求。失败时清空缓存，下一个调用方重试。 */
 let routingOptionsPromise: Promise<RoutingOptions> | null = null;
 
-/** 收藏范围可选项（后端静态常量）；加载失败降级为 null（相关 UI 不渲染）。 */
-function useRoutingOptions(): RoutingOptions | null {
+/** 收藏范围可选项（后端静态常量）；加载失败降级为 null（相关 UI 不渲染）。
+ *  规则组的适用范围编辑器（rule-sets-panel）复用同一份可选项。 */
+export function useRoutingOptions(): RoutingOptions | null {
   const [options, setOptions] = useState<RoutingOptions | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -84,7 +85,7 @@ function buildMatchRules(genres: number[], regions: string[]): MatchRule[] {
 
 /** 把区域国家码折叠成展示名：整组命中的折叠成预设组名（如「日韩」），
  *  折不进组的逐个显示中文名。用于表单弹窗底栏的当前声明摘要。 */
-function regionLabels(regions: string[], options: RoutingOptions): string[] {
+export function regionLabels(regions: string[], options: RoutingOptions): string[] {
   const parts: string[] = [];
   let rest = [...regions];
   for (const preset of options.region_presets) {
@@ -287,8 +288,25 @@ function RootsPicker({
   );
 }
 
-/** 收藏范围：区域逐国勾选（预设组是一键整组的快捷键）+ 类型多选，两个维度间是"且"。 */
-function ScopeEditor({
+/** 类型可选项：按作品类型取对应的 TMDB 类型表；kind 为 null（规则组适用范围
+ *  不限电影/剧集）时取两表并集，同 ID 只保留一个。 */
+export function genreOptionsFor(
+  kind: LibraryKind | null,
+  options: RoutingOptions,
+): { id: number; label: string }[] {
+  if (kind === "movie") return options.movie_genres;
+  if (kind !== null) return options.tv_genres;
+  const seen = new Set<number>();
+  return [...options.movie_genres, ...options.tv_genres].filter((g) => {
+    if (seen.has(g.id)) return false;
+    seen.add(g.id);
+    return true;
+  });
+}
+
+/** 收藏范围：区域逐国勾选（预设组是一键整组的快捷键）+ 类型多选，两个维度间是"且"。
+ *  规则组的适用范围也用它（kind 为 null = 不限电影/剧集）。 */
+export function ScopeEditor({
   kind,
   regions,
   genres,
@@ -296,7 +314,7 @@ function ScopeEditor({
   onGenres,
   options,
 }: {
-  kind: LibraryKind;
+  kind: LibraryKind | null;
   regions: string[];
   genres: number[];
   onRegions: (next: string[]) => void;
@@ -310,7 +328,7 @@ function ScopeEditor({
       </p>
     );
   }
-  const genreOptions = kind === "movie" ? options.movie_genres : options.tv_genres;
+  const genreOptions = genreOptionsFor(kind, options);
   const allCountries = Object.keys(options.country_names);
   return (
     <>

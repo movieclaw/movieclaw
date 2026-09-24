@@ -498,8 +498,9 @@ async def preview_dispatch_route(
     返回字段：mode（watch/inplace/downloader_default）、path（movieclaw
     视角的投递基底目录）、entry_dir（条目目录的完整路径预览，见下）、
     library_id/library_name、downloader_name、
-    route_matched/route_reason（走了路由才有）、ok、warning
-    （不 ok 时的中文指引）。
+    route_matched/route_reason（走了路由才有）、rule_set_id/rule_set_name/
+    rule_set_matched/rule_set_reason（按规则组适用范围的预选，同样走了路由才有）、
+    ok、warning（不 ok 时的中文指引）。
     """
     from movieclaw_api.services.library.config import LibraryConfigService, derive_save_path
     from movieclaw_api.services.library.routing import resolve_save_path
@@ -510,14 +511,24 @@ async def preview_dispatch_route(
     route_matched: bool | None = None
     route_reason: str | None = None
     routed_item = None
+    rule_set_fields: dict = {}
     if library_id is None and tmdb_id is not None:
         from movieclaw_api.services.library.routing import route_for_tmdb
+        from movieclaw_api.services.rule_sets import RuleSetService
 
         route_decision = await route_for_tmdb(session, kind, tmdb_id)
         library = route_decision.library
         route_matched = route_decision.matched
         route_reason = route_decision.reason
         routed_item = route_decision.item
+        # 规则组按适用范围的预选与库路由同一时机、同一份作品事实（不重复装配）
+        pick = await RuleSetService(session).pick(kind, route_decision.facts)
+        rule_set_fields = {
+            "rule_set_id": pick.rule_set.id,
+            "rule_set_name": pick.rule_set.name,
+            "rule_set_matched": pick.matched,
+            "rule_set_reason": pick.reason,
+        }
     else:
         library = await LibraryConfigService(session).resolve_for_subscription(library_id, kind)
     # 投递目录口径与真实投递同源（预检不给 title：条目目录到投递时才推导）
@@ -613,6 +624,7 @@ async def preview_dispatch_route(
         "downloader_name": downloader.name if downloader else None,
         "route_matched": route_matched,
         "route_reason": route_reason,
+        **rule_set_fields,
         "ok": ok,
         "warning": warning,
     }

@@ -201,6 +201,17 @@ class DispatchPreviewView(BaseModel):
     route_reason: str | None = Field(
         default=None, description="路由理由（中文整句，弹窗徽标直接展示）"
     )
+    rule_set_id: int | None = Field(
+        default=None,
+        description="按规则组适用范围自动选出的规则组（与 route_* 同条件：走了路由才有）",
+    )
+    rule_set_name: str | None = None
+    rule_set_matched: bool | None = Field(
+        default=None, description="true=命中某组适用范围 / false=默认规则组兜底"
+    )
+    rule_set_reason: str | None = Field(
+        default=None, description="选组理由（中文整句，弹窗与模拟一单直接展示）"
+    )
     ok: bool = Field(description="按当前配置投递能否顺利入库")
     warning: str | None = Field(default=None, description="不 ok 时的中文指引")
 
@@ -238,7 +249,9 @@ class SubscriptionCreatePayload(BaseModel):
         ),
     )
     follow_future: bool = Field(default=False, description="自动续订：未来新集与新季自动纳入订阅")
-    rule_set_id: int | None = Field(default=None, description="缺省用默认规则组")
+    rule_set_id: int | None = Field(
+        default=None, description="缺省按规则组适用范围自动选组，都不命中用默认规则组"
+    )
     library_id: int | None = Field(default=None, description="入库目标库；缺省用该类型默认库")
 
 
@@ -854,6 +867,18 @@ class RuleSetPayload(BaseModel):
             '示例：{"resolutions":["2160p"],"free_only":true,"upgrade_source":"remux"}'
         ),
     )
+    match_rules: list[dict] | None = Field(
+        default=None,
+        description=(
+            "适用范围（新订阅未指定规则组时据此自动选组）：条件列表，条件间为「且」，"
+            '每条形如 {"field": ..., "op": "any_of", "values": [...]}。field 取值：'
+            "kind（movie/tv）、genres（TMDB 类型 ID）、origin_countries（国家码如 JP、KR）。"
+            "多个规则组同时命中时条件多者优先，都不命中用默认规则组。"
+            "创建时缺省=不声明；更新时缺省=不改，传 [] 清空。"
+            '示例：[{"field":"kind","op":"any_of","values":["tv"]},'
+            '{"field":"origin_countries","op":"any_of","values":["JP","KR"]}]'
+        ),
+    )
 
 
 class HealthCheckView(BaseModel):
@@ -945,6 +970,9 @@ class RuleSetView(BaseModel):
     name: str
     is_default: bool
     spec: dict
+    match_rules: list[dict] = Field(
+        default_factory=list, description="适用范围条件；空=未声明（只能手选或作默认兜底）"
+    )
     reference_count: int = Field(default=0, description="正在引用本规则组的订阅数；>0 时不可删除")
 
     @classmethod
@@ -954,5 +982,6 @@ class RuleSetView(BaseModel):
             name=row.name,
             is_default=row.is_default,
             spec=dict(row.spec),
+            match_rules=list(row.match_rules or []),
             reference_count=reference_count,
         )
