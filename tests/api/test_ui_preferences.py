@@ -42,6 +42,9 @@ def client(tmp_path, monkeypatch):
 DEFAULT_PREFS = {
     # 主题 id：银玻璃为出厂主题，Netflix 主题切换后存 "netflix"
     "theme": "silver",
+    # 按端主题覆盖：未单独设置（null）= 跟随 theme，前端 resolveThemeId 解析
+    "theme_desktop": None,
+    "theme_mobile": None,
     "sidebar": {"transparency": 0.49, "brightness": -0.36, "depth": 28.0},
     "scrim": {"blur": 13.0, "dark": 0.69},
     # 空顺序 = 侧栏主导航用内置默认排布
@@ -131,6 +134,50 @@ def test_scrim_prefs_out_of_range_rejected(client: TestClient) -> None:
         assert resp.status_code == 422
 
     assert client.get("/api/v1/ui/preferences").json()["data"] == DEFAULT_PREFS
+
+
+# ---------------------------------------------------------------------------
+# 按端主题覆盖（2026-09：桌面 / 移动端可分别选主题，前端 resolveThemeId 解析）
+# ---------------------------------------------------------------------------
+
+
+def test_save_per_form_factor_theme_persists(client: TestClient) -> None:
+    """桌面 / 移动端主题覆盖各自落库，互不牵连；通用 theme 字段保持不动。"""
+    resp = client.put(
+        "/api/v1/ui/preferences",
+        json={"theme": "netflix", "theme_desktop": "silver", "theme_mobile": "netflix"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert (data["theme"], data["theme_desktop"], data["theme_mobile"]) == (
+        "netflix",
+        "silver",
+        "netflix",
+    )
+
+    # 再次 GET：真正落库（超管走全局配置域）
+    saved = client.get("/api/v1/ui/preferences").json()["data"]
+    assert (saved["theme_desktop"], saved["theme_mobile"]) == ("silver", "netflix")
+
+
+def test_per_form_factor_theme_defaults_follow_theme(client: TestClient) -> None:
+    """未设置的端保持 None：前端解析时回落 theme，老账号行为与升级前完全一致。"""
+    resp = client.put("/api/v1/ui/preferences", json={"theme": "netflix"})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["theme"] == "netflix"
+    assert data["theme_desktop"] is None and data["theme_mobile"] is None
+
+
+def test_per_form_factor_theme_accepts_unknown_ids(client: TestClient) -> None:
+    """未知主题 id 不拒绝（前向兼容，与 theme 同口径）：读取端负责兜底。"""
+    resp = client.put(
+        "/api/v1/ui/preferences", json={"theme_desktop": "future-theme", "theme_mobile": None}
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["theme_desktop"] == "future-theme"
+    assert data["theme_mobile"] is None
 
 
 def test_save_nav_order_persists(client: TestClient) -> None:

@@ -521,6 +521,20 @@ class UiPreferencesSetting(SettingSchema):
             "老后端读到新主题 id 也不会整体拒绝（前向兼容）。"
         ),
     )
+    theme_desktop: str | None = Field(
+        default=None,
+        max_length=32,
+        description=(
+            "桌面端（≥768px 视口）的主题 id 覆盖；空 = 跟随 theme。校验口径与 "
+            "theme 相同（纯字符串、前端兜底未知值），2026-09 起桌面 / 移动端可"
+            "分别选主题，见前端 lib/ui-prefs.tsx 的 resolveThemeId。"
+        ),
+    )
+    theme_mobile: str | None = Field(
+        default=None,
+        max_length=32,
+        description="移动端（<768px 视口）的主题 id 覆盖；空 = 跟随 theme。",
+    )
     sidebar: SidebarUiPrefs = Field(default_factory=SidebarUiPrefs, description="侧边栏玻璃面板")
     scrim: ScrimUiPrefs = Field(default_factory=ScrimUiPrefs, description="全站背景蒙版")
     nav: NavUiPrefs = Field(default_factory=NavUiPrefs, description="侧边栏主导航排序")

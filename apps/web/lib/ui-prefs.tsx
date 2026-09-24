@@ -16,6 +16,7 @@ import {
   type UiPreferences,
 } from "@/lib/api/ui";
 import { DEFAULT_THEME_ID, normalizeThemeId, themeMeta, type ThemeMeta } from "@/lib/themes";
+import { useIsMobile } from "@/lib/use-media-query";
 import { readUiPrefsCache, writeUiPrefsCache } from "@/lib/ui-prefs-cache";
 
 /**
@@ -60,6 +61,17 @@ const THEME_BROWSER_CHROME: Record<string, string> = {
   netflix: "#000000",
   [DEFAULT_THEME_ID]: "#0a0b10",
 };
+
+/**
+ * 按版式解析生效主题（2026-09-24 起桌面 / 移动端可分别选主题）：
+ * 当前版式有覆盖字段（theme_desktop / theme_mobile）就用它，没有（老账号、
+ * 未单独设置）回落通用 theme——老数据唯一来源，行为与升级前完全一致。
+ * 覆盖值可能是老后端 / 坏缓存里的垃圾，最终由 normalizeThemeId 兜底。
+ */
+function resolveThemeId(prefs: UiPreferences, isMobile: boolean): string {
+  const override = isMobile ? prefs.theme_mobile : prefs.theme_desktop;
+  return normalizeThemeId(override ?? prefs.theme);
+}
 
 export function UiPrefsProvider({ children }: { children: React.ReactNode }) {
   // 惰性初始化读缓存：本 Provider 只在 AuthGate 确认登录后于客户端渲染
@@ -106,11 +118,23 @@ export function UiPrefsProvider({ children }: { children: React.ReactNode }) {
   // 全站换肤；结构层（外壳分支）由 useTheme() 的消费方跟随同一份值渲染。
   // 默认主题移除属性而不是写 data-theme="silver"，与防闪烁脚本（只认 netflix）
   // 的落点保持一致，SSR 首屏也无需任何属性。
-  const effectiveTheme = normalizeThemeId((preview ?? prefs).theme);
+  // 同一个 effect 里顺带把外壳让位契约（ThemeMeta.chrome 声明的几何）写到
+  // <html> 上（--mobile-topbar-h / --mobile-tabbar-h / --mobile-tabbar-offset /
+  // data-tabbar-mode）：首帧值由 layout.tsx 的防闪烁脚本按 localStorage 缓存
+  // 写入，这里负责设置页切主题（含实时预览）后的即时跟随。两处是同一份逻辑
+  // 的两个副本，改一处要看另一处。
+  const isMobile = useIsMobile();
+  const effectiveTheme = resolveThemeId(preview ?? prefs, isMobile);
   useEffect(() => {
     const root = document.documentElement;
     if (effectiveTheme === DEFAULT_THEME_ID) root.removeAttribute("data-theme");
     else root.setAttribute("data-theme", effectiveTheme);
+    const chrome = themeMeta(effectiveTheme).chrome;
+    root.style.setProperty("--mobile-topbar-h", `${chrome.mobileTopBarHeight}px`);
+    root.style.setProperty("--mobile-tabbar-h", `${chrome.mobileTabBar.height}px`);
+    root.style.setProperty("--mobile-tabbar-offset", chrome.mobileTabBar.bottomOffset);
+    if (chrome.mobileTabBar.mode === "docked") root.setAttribute("data-tabbar-mode", "docked");
+    else root.removeAttribute("data-tabbar-mode");
     // 浏览器 UI 框颜色与画布同源跟随（含设置页实时预览切主题的瞬间）。
     // Next 的路由元数据机制可能在客户端导航时把 viewport 导出的静态
     // themeColor（银玻璃值）写回 meta——用观察器持续断言当前主题的画布色，
@@ -177,7 +201,10 @@ export function useUiPrefs(): UiPrefsContextValue {
  */
 export function useTheme(): ThemeMeta {
   const ctx = useContext(UiPrefsContext);
-  return themeMeta(ctx ? ctx.prefs.theme : DEFAULT_THEME_ID);
+  // hooks 必须无条件调用：先取版式，再解析（桌面 / 移动端可分别选主题，
+  // 见 resolveThemeId）。Provider 外（登录页等）没有偏好可依，按默认主题渲染
+  const isMobile = useIsMobile();
+  return themeMeta(ctx ? resolveThemeId(ctx.prefs, isMobile) : DEFAULT_THEME_ID);
 }
 
 /**
@@ -193,8 +220,9 @@ export function useTheme(): ThemeMeta {
  */
 export function useThemeState(): { theme: ThemeMeta; loading: boolean } {
   const ctx = useContext(UiPrefsContext);
+  const isMobile = useIsMobile();
   return {
-    theme: themeMeta(ctx ? ctx.prefs.theme : DEFAULT_THEME_ID),
+    theme: themeMeta(ctx ? resolveThemeId(ctx.prefs, isMobile) : DEFAULT_THEME_ID),
     // Provider 外（登录页等）没有偏好可等，直接按「已落定」处理
     loading: ctx ? ctx.loading : false,
   };

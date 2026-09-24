@@ -55,7 +55,7 @@ export function NetflixTabBar() {
   return (
     <nav
       aria-label="主导航"
-      className="nf-tabbar fixed inset-x-0 bottom-0 z-40 flex h-[calc(49px+var(--safe-bottom))] items-stretch border-t border-white/[0.06] pb-[var(--safe-bottom)]"
+      className="nf-tabbar fixed inset-x-0 bottom-0 z-40 flex h-[calc(var(--mobile-tabbar-h)+var(--safe-bottom))] items-stretch border-t border-white/[0.06] pb-[var(--safe-bottom)]"
     >
       {tabs.map(({ id, label, href, Icon }) => (
         <Link

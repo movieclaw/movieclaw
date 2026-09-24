@@ -5,6 +5,23 @@ import { useEffect } from "react";
 import { softKeyboardPossible } from "@/lib/soft-keyboard";
 
 /**
+ * --vp-overshoot 的实测重算（首帧值由 layout.tsx 的内联脚本在绘制前写入，逻辑
+ * 与注释见那边；本函数是同一份逻辑的运行期副本，改一处要看另一处）。
+ * 旋转 / iPad 调整分屏会同时改变 safe-top 与布局视口高度，CSS 猜测值和首帧
+ * 实测值都会过期，跟着可视视口 resize 重测一遍。键盘不参与：iOS 弹键盘不改
+ * 布局视口（innerHeight 纹丝不动），测量天然免疫。
+ */
+export function syncViewportOvershoot() {
+  if (!window.matchMedia("(display-mode: standalone)").matches) return;
+  if (!window.CSS || !CSS.supports("(-webkit-touch-callout: none)")) return;
+  const root = document.documentElement;
+  const safeTop = parseFloat(getComputedStyle(root).getPropertyValue("--safe-top"));
+  if (!Number.isFinite(safeTop)) return;
+  const gap = Math.min(Math.max(screen.height - window.innerHeight, 0), safeTop);
+  root.style.setProperty("--vp-overshoot", `${gap}px`);
+}
+
+/**
  * 软键盘适配的全站收口：撑出键盘占位 + 窗口滚动归位。两件事同源（都由
  * 可视视口的变化驱动），放在一个 effect 里，也保证「先改高度、再归位」的顺序。
  *
@@ -112,6 +129,8 @@ export function ViewportKeyboard() {
     // 随后的 resize 会兜住。
     const onResize = () => {
       applyInset();
+      // 旋转 / 分屏后重测视口超铺量（见上方 syncViewportOvershoot）
+      syncViewportOvershoot();
       window.setTimeout(resetScroll, 0);
     };
     // 推迟一拍等焦点落定（focusout 触发时 activeElement 还没换过去），

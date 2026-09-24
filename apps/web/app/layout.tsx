@@ -115,7 +115,50 @@ const THEME_COLOR_MAP = JSON.stringify(
     THEMES.filter((theme) => theme.id !== DEFAULT_THEME_ID).map((theme) => [theme.id, theme.themeColor]),
   ),
 );
-const RESTORE_THEME_SCRIPT = `try{var p=JSON.parse(localStorage.getItem("movieclaw.ui-prefs")||"null");var c=${THEME_COLOR_MAP};if(p&&c[p.theme]){document.documentElement.setAttribute("data-theme",p.theme);var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute("content",c[p.theme])}}catch(e){}`;
+/**
+ * 外壳让位契约的序列化（ThemeMeta.chrome →「id → 几何」JSON）：首帧绘制前按
+ * 当前主题把 --mobile-topbar-h / --mobile-tabbar-h / --mobile-tabbar-offset 与
+ * data-tabbar-mode 写到 <html> 上——globals.css 的让位规则只消费变量，主题
+ * 不再自带全局布局规则（见 lib/themes.ts 的 ThemeChrome）。压缩成短键以省
+ * 内联体积：t=顶栏让位高、m=底栏形态、b=底栏高、o=距底偏移表达式。
+ */
+const THEME_CHROME_MAP = JSON.stringify(
+  Object.fromEntries(
+    THEMES.map((theme) => [
+      theme.id,
+      {
+        t: theme.chrome.mobileTopBarHeight,
+        m: theme.chrome.mobileTabBar.mode,
+        b: theme.chrome.mobileTabBar.height,
+        o: theme.chrome.mobileTabBar.bottomOffset,
+      },
+    ]),
+  ),
+);
+/**
+ * 首帧主题与外壳几何的落位（同一份脚本，避免两个脚本的先后歧义）：
+ * - 主题按**版式**解析：移动端（<768px）优先取 theme_mobile 覆盖、桌面端优先
+ *   theme_desktop，都没有（老账号 / 未单独设置）回落 theme——与
+ *   lib/ui-prefs.tsx 的 resolveThemeId 同一份语义，改一处要看另一处；
+ * - 几何按解析出的主题查 chrome 映射，未知 id（缓存被改坏）回落银玻璃；
+ * - data-theme / theme-color 只在非默认主题写（默认 = 无属性，与 ui-prefs
+ *   的写入口径一致）。
+ */
+const RESTORE_THEME_SCRIPT = `try{var p=JSON.parse(localStorage.getItem("movieclaw.ui-prefs")||"null");var c=${THEME_COLOR_MAP};var k=${THEME_CHROME_MAP};var mobile=window.matchMedia&&matchMedia("(max-width:767px)").matches;var t=p?(mobile?(p.theme_mobile||p.theme):(p.theme_desktop||p.theme)):null;var ch=(t&&k[t])||k.silver;var d=document.documentElement;var s=d.style;s.setProperty("--mobile-topbar-h",ch.t+"px");s.setProperty("--mobile-tabbar-h",ch.b+"px");s.setProperty("--mobile-tabbar-offset",ch.o);if(ch.m==="docked")d.setAttribute("data-tabbar-mode","docked");else d.removeAttribute("data-tabbar-mode");if(t&&c[t]){d.setAttribute("data-theme",t);var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute("content",c[t])}}catch(e){}`;
+
+/**
+ * 视口超铺补偿的实测校准（--vp-overshoot，globals.css 该变量处的长注释）。
+ * CSS 媒体查询按「视口比屏幕矮一个 safe-top」的老几何把它猜成 safe-top；iOS 26
+ * 起 standalone 视口已铺满整屏，再减这一截会把贴底固定元素（液态玻璃底栏）推到
+ * 物理底边之外——PWA 里切到银玻璃主题后底栏被屏幕下边界裁掉一半即是此因。
+ * 改为实测「布局视口底边到屏幕物理底边的真实距离」（screen.height −
+ * innerHeight），并以 safe-top 为上限（iPad 分屏等形态下 innerHeight 远小于
+ * 屏幕，差值不是超铺量，退回 CSS 猜测值）：老系统实测差值 == safe-top，行为
+ * 不变；新系统为 0，自动归位。必须在首帧绘制前执行——CSS 猜测值先就位、这里
+ * 立刻覆写成内联样式，用户看不到跳动。旋转后的重测见 viewport-keyboard.tsx
+ * 的 syncViewportOvershoot（与本段是同一份逻辑的两处副本，改一处要看另一处）。
+ */
+const SYNC_VIEWPORT_OVERSHOOT_SCRIPT = `try{if(window.matchMedia("(display-mode: standalone)").matches&&window.CSS&&CSS.supports("(-webkit-touch-callout: none)")){var d=document.documentElement,s=parseFloat(getComputedStyle(d).getPropertyValue("--safe-top"));if(isFinite(s)){var g=Math.min(Math.max(screen.height-window.innerHeight,0),s);d.style.setProperty("--vp-overshoot",g+"px")}}}catch(e){}`;
 
 export default function RootLayout({
   children,
@@ -133,6 +176,7 @@ export default function RootLayout({
         {/* 必须是 body 最前的同步内联脚本：解析即执行，赶在首帧绘制之前 */}
         <script dangerouslySetInnerHTML={{ __html: RESTORE_BACKDROP_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: RESTORE_THEME_SCRIPT }} />
+        <script dangerouslySetInnerHTML={{ __html: SYNC_VIEWPORT_OVERSHOOT_SCRIPT }} />
         {/* 挂在根布局：登录页等 AppShell 之外的页面也有输入框，同样需要键盘适配 */}
         <ViewportKeyboard />
         {children}

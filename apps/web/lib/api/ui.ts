@@ -1,6 +1,6 @@
 import { request } from "@/lib/http";
 import type { HomeUiPrefs } from "@/lib/home-rows";
-import { normalizeThemeId } from "@/lib/themes";
+import { isValidThemeId, normalizeThemeId } from "@/lib/themes";
 
 /** 后端统一响应信封（见 movieclaw_api.schemas.response.ApiResponse） */
 interface ApiEnvelope<T> {
@@ -48,6 +48,13 @@ export interface NavUiPrefs {
 export interface UiPreferences {
   /** 主题 id，取值来自 lib/themes.ts 的注册表；未知值由 normalizeThemeId 兜底为 silver */
   theme: string;
+  /**
+   * 桌面端（≥768px 视口）的主题 id 覆盖；null = 跟随 theme（老账号 / 未单独
+   * 设置时的唯一来源）。两端解析见 lib/ui-prefs.tsx 的 resolveThemeId。
+   */
+  theme_desktop: string | null;
+  /** 移动端（<768px 视口）的主题 id 覆盖；null = 跟随 theme。 */
+  theme_mobile: string | null;
   sidebar: SidebarUiPrefs;
   scrim: ScrimUiPrefs;
   nav: NavUiPrefs;
@@ -61,6 +68,9 @@ export interface UiPreferences {
 export const DEFAULT_UI_PREFS: UiPreferences = {
   // 默认主题 = 银玻璃（现有观感）。主题列表见 lib/themes.ts 的 THEMES。
   theme: "silver",
+  // 按端覆盖未设置（null = 跟随 theme）；见 lib/ui-prefs.tsx 的 resolveThemeId
+  theme_desktop: null,
+  theme_mobile: null,
   sidebar: { transparency: 0.49, brightness: -0.36, depth: 28 },
   scrim: { blur: 13, dark: 0.69 },
   // 空顺序 = 内置默认顺序（导航项在 components/sidebar.tsx 的 SIDEBAR_NAV_ITEMS）
@@ -68,6 +78,13 @@ export const DEFAULT_UI_PREFS: UiPreferences = {
   // 空清单 = 出厂布局（接下来继续 → 我的收藏 → 我的媒体库 → 每库一行最近添加）
   home: { rows: [] },
 };
+
+/** 按端主题覆盖的归一化：合法 id 原样保留；垃圾值 / 老后端缺项一律视为
+ *  「未设置」（null = 跟随 theme），不能像 theme 那样兜成默认主题——兜了
+ *  就再也回落不回通用主题了。 */
+function normalizeThemeOverride(value: unknown): string | null {
+  return isValidThemeId(value) ? value : null;
+}
 
 /** 把偏好与内置默认逐分组合并：老版本后端（不认识新分组/新字段）返回的数据会
  *  缺项，缺什么补什么的默认值，保证消费者拿到的结构永远完整。
@@ -78,6 +95,8 @@ export function normalizeUiPreferences(
   return {
     // 老后端不认识 theme 字段时返回 undefined，兜底为默认主题（天然向前兼容）
     theme: normalizeThemeId(data?.theme),
+    theme_desktop: normalizeThemeOverride(data?.theme_desktop),
+    theme_mobile: normalizeThemeOverride(data?.theme_mobile),
     sidebar: { ...DEFAULT_UI_PREFS.sidebar, ...data?.sidebar },
     scrim: { ...DEFAULT_UI_PREFS.scrim, ...data?.scrim },
     // order 必须兜住非数组：老后端不认识这个分组时返回的是 undefined，
