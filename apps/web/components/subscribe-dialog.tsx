@@ -88,7 +88,6 @@ export function SubscribeDialog({
   const [cancelling, setCancelling] = useState(false);
   const [libraryId, setLibraryId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
-  const [selectedTitleRef, setSelectedTitleRef] = useState("");
   // 投递路由预检：选库即预演"下载会落到哪、能否自动入库"，配置问题当场亮出
   const [dispatchPreview, setDispatchPreview] = useState<DispatchPreview | null>(null);
   // 收藏范围路由的预选结论：打开弹窗时按作品特征算出的默认库 + 中文理由。
@@ -127,23 +126,28 @@ export function SubscribeDialog({
   /** 预检并按结果初始化表单默认值（候选确认后会带着 tmdbId 再次进入）。 */
   const runPrepare = useCallback(
     async (t: SubscribeTarget) => {
-      setSelectedTitleRef(t.titleRef);
       setPrepared(null);
       setError(null);
       setUpgradeReport(null);
       try {
         // 洗版变体成员也要选「洗到哪一档」（换组由 upgrade-runs 按订阅归属
         // 者权限执行，与后端口径一致），故规则列表不再只对管理员拉取
-        const [result, rules] = await Promise.all([
+        const [result, rules, initialLibs] = await Promise.all([
           previewSubscriptionTitle({ title_ref: t.titleRef }),
           canManageSubscriptions || t.upgradeIntent
             ? listRuleSets()
             : Promise.resolve([]),
+          // 媒体库列表与预检并行拉，少等一个往返：TMDB 引用的类型是确定的，
+          // 只有豆瓣引用偶尔会被后端收敛成另一类型，那时再按 canonical kind 补拉
+          canManageSubscriptions ? listLibraries(t.kind) : Promise.resolve([]),
         ]);
         // 豆瓣条目可能没有可靠的前端类型；媒体库和投递路由必须以后端
         // 收敛后的 canonical kind 为准，避免电影/剧集选到错误的库。
         const resolvedKind = result.media?.kind ?? t.kind;
-        const libs = canManageSubscriptions ? await listLibraries(resolvedKind) : [];
+        const libs =
+          !canManageSubscriptions || resolvedKind === t.kind
+            ? initialLibs
+            : await listLibraries(resolvedKind);
         setRuleSets(rules);
         setLibraries(libs);
         // 默认库 = 收藏范围路由的结论（按作品的类型/区域自动选库，带中文理由）；
@@ -234,12 +238,12 @@ export function SubscribeDialog({
     setBusy(true);
     setError(null);
     try {
+      // 提交预检已经收敛好的 TMDB 引用，而不是入口的豆瓣引用：豆瓣→TMDB 的
+      // 收敛（多路 TMDB 搜索 + 逐候选季表）没有缓存，再传豆瓣引用会让创建接口
+      // 把这一整套外网请求重跑一遍。豆瓣身份靠 source_title_ref 原样带回。
       const created = await createSubscription({
-        title_ref: selectedTitleRef || target.titleRef,
-        source_title_ref:
-          target.titleRef.startsWith("douban:") && selectedTitleRef !== target.titleRef
-            ? target.titleRef
-            : null,
+        title_ref: `tmdb:${prepared.media.kind}:${prepared.media.tmdb_id}`,
+        source_title_ref: target.titleRef.startsWith("douban:") ? target.titleRef : null,
         selected_seasons: [...selectedSeasons].sort((a, b) => a - b),
         follow_future: followFuture,
         rule_set_id: canManageSubscriptions ? ruleSetId : null,

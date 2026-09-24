@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from movieclaw_api.services.subscription.matching import (
     publish_calendar_date,
     to_candidate,
 )
+from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
     ConfigStatus,
     MediaEpisode,
@@ -168,16 +170,25 @@ async def _load_recent_candidates(
             SiteTorrent.publish_time >= now - _OBSERVATION_LOOKBACK,
         )
     )
-    candidates: list[tuple[SiteTorrent, TorrentCandidate]] = []
-    invalid_attrs = 0
-    for row in result.scalars().all():
-        try:
-            candidate = to_candidate(row)
-        except ValueError:
-            invalid_attrs += 1
-            continue
-        if candidate is not None:
-            candidates.append((row, candidate))
+    rows = list(result.scalars().all())
+
+    def _parse() -> tuple[list[tuple[SiteTorrent, TorrentCandidate]], int]:
+        parsed: list[tuple[SiteTorrent, TorrentCandidate]] = []
+        invalid = 0
+        for row in rows:
+            try:
+                candidate = to_candidate(row)
+            except ValueError:
+                invalid += 1
+                continue
+            if candidate is not None:
+                parsed.append((row, candidate))
+        return parsed, invalid
+
+    # 逐行 pydantic 校验是纯 CPU：站点同步了几个月的索引有几万行，放在事件循环
+    # 里跑会把同一时刻的所有 HTTP 请求一起卡住。行已经读进内存、列都已加载，
+    # 线程里只做只读属性访问，不碰会话
+    candidates, invalid_attrs = await asyncio.to_thread(_parse)
     if invalid_attrs:
         logger.warning(
             "生成资源发布时间预测时跳过 %s 条属性格式异常的种子索引，请检查富化数据",
@@ -436,7 +447,9 @@ async def refresh_release_forecasts(
             .scalars()
             .all()
         )
-        observations = _observations_for_item(
+        # 身份匹配同样是纯 CPU（每个候选跑一遍 match_identity），与解析同理进线程
+        observations = await asyncio.to_thread(
+            _observations_for_item,
             item=item,
             episodes=episodes,
             candidates=candidates,
@@ -463,6 +476,42 @@ async def refresh_release_forecasts(
         await session.commit()
         logger.info("已更新 %s 个订阅单集的资源发布时间预测", changed)
     return changed
+
+
+# fire-and-forget 任务的强引用集合：asyncio 只持弱引用，不留强引用的话
+# 任务可能在执行前被垃圾回收（与 wanted_search._kick_tasks 同一套路）。
+_refresh_tasks: set[asyncio.Task] = set()
+
+
+async def _refresh_once(media_item_ids: set[int]) -> None:
+    """后台刷新的执行体：自开会话，失败只记日志（定时任务会兜底全量重算）。"""
+    try:
+        async with get_database().session() as session:
+            await refresh_release_forecasts(session, media_item_ids=media_item_ids)
+    except Exception:  # noqa: BLE001 -- 环境未就绪（如关停中）时静默降级
+        logger.warning(
+            "后台刷新条目 %s 的资源发布时间预测失败，等待定时任务兜底",
+            sorted(media_item_ids),
+            exc_info=True,
+        )
+
+
+def refresh_release_forecasts_soon(media_item_ids: set[int]) -> None:
+    """把预测刷新挪出请求路径（订阅创建/调整/恢复共用的唯一触发点）。
+
+    预测快照是可重算的派生值，晚几秒落库对功能没有影响：首页预告在快照缺席时
+    按播出日期兜底，站点探测计划也只在到点时才读取它。而同步刷新要把近 90 天的
+    全部种子索引读出来逐行解析、匹配，索引一大就是秒级——用户点一下「订阅」
+    没有理由等这个。请求会话在响应后即关闭，所以这里必须自开会话。
+    没有运行中的事件循环时（如同步脚本）静默跳过，交给定时任务兜底。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_refresh_once(set(media_item_ids)))
+    _refresh_tasks.add(task)
+    task.add_done_callback(_refresh_tasks.discard)
 
 
 def _forecast_site_probes(

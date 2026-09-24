@@ -224,6 +224,13 @@ def _mute_instant_search_kick(monkeypatch):
     monkeypatch.setattr(
         "movieclaw_api.services.subscription.wanted_search.kick_search_soon", lambda: None
     )
+    # 同理打桩后台的预测刷新：它自开会话跑在用例的事件循环上，循环随用例结束
+    # 关闭后任务会变成悬空的 pending task。要验证预测的测试显式
+    # ``await refresh_release_forecasts()``（预测测试即如此）。
+    monkeypatch.setattr(
+        "movieclaw_api.services.subscription.release_forecast.refresh_release_forecasts_soon",
+        lambda media_item_ids: None,
+    )
 
 
 @pytest.fixture(autouse=True)
