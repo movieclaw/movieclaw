@@ -127,11 +127,13 @@ function NetflixBillboard({
         libraryItem ? kindLabel(libraryItem.kind) : null,
       ]
   const metaText = meta.filter(Boolean).join(" · ");
-  // 画面：横版剧照直出（billboard 的正确素材）——继续观看用集剧照/背景图，
-  // 库内条目用接口给的 backdrop_url（与海报同一套本地资产优先规则）。
+  // 画面：横版背景图直出（billboard 的正确素材）——分集剧照的下载档位是
+  // w300（小卡片省磁盘的取舍，见 TMDB_STILL_SIZE），撑不起全屏横幅，故
+  // 继续观看也优先用 backdrop_url，集剧照只作无背景图时的兜底；库内条目
+  // 同样用接口给的 backdrop_url（与海报同一套本地资产优先规则）。
   // 连横图都没有的条目（家庭录像等）才回落海报模糊铺底。
   const artworkUrl = upNextItem
-    ? (upNextItem.episode_still_url ?? upNextItem.backdrop_url)
+    ? (upNextItem.backdrop_url ?? upNextItem.episode_still_url)
     : (libraryItem?.backdrop_url ?? null);
   const playHref = upNextItem
     ? playHrefOf(upNextItem)
