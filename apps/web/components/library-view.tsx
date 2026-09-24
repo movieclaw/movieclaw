@@ -16,6 +16,7 @@ import {
   PlusIcon,
 } from "@/components/icons";
 import { MediaRow } from "@/components/media-row";
+import { PAGE_NAV_BUTTON_CLASS } from "@/components/page-nav";
 import type { PosterCardAction } from "@/components/poster-card";
 import { UpNextRow } from "@/components/up-next-row";
 import {
@@ -49,10 +50,12 @@ import { formatBytes } from "@/lib/format";
 import { cardVariantFor, imageUrl } from "@/lib/image-proxy";
 import { libraryInventoryAction } from "@/lib/library-inventory-summary";
 import type { MediaItem } from "@/lib/media-types";
+import { usePageChrome } from "@/lib/page-chrome";
 import { usePermissions } from "@/lib/permissions";
 import { buildRecentAdditionOverlay } from "@/lib/recent-addition";
 import { formatRelativeTime } from "@/lib/time";
-import { useUiPrefs } from "@/lib/ui-prefs";
+import { useTheme, useUiPrefs } from "@/lib/ui-prefs";
+import { useIsMobile } from "@/lib/use-media-query";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 
@@ -140,6 +143,39 @@ let lastLoadedHome: {
 
 export function LibraryView({ hero }: { hero?: ReactNode }) {
   const { canManageLibraries } = usePermissions();
+  // 银玻璃手机：页面级动作（自定义首页 / 管理媒体库）按 iOS 导航栏惯例挂到全局
+  // 顶栏右端（与发现页的类型/数据源切换同一机制，见 lib/page-chrome.tsx），页头
+  // 只留标题与统计。Netflix 主题两端与银玻璃桌面维持页头右端的动作区不变。
+  const chrome = usePageChrome();
+  const isMobile = useIsMobile();
+  const isNf = useTheme().structural;
+  const actionsInTopBar = isMobile && !isNf;
+  const setTopBarActions = chrome?.setTopBarActions;
+  useEffect(() => {
+    if (!actionsInTopBar || !setTopBarActions) return;
+    return setTopBarActions(
+      <div className="flex items-center gap-2">
+        <Link
+          href={"/library/customize" as Route}
+          aria-label="自定义首页"
+          title="自定义首页"
+          className={PAGE_NAV_BUTTON_CLASS}
+        >
+          <ListIcon className="size-[18px]" />
+        </Link>
+        {canManageLibraries && (
+          <Link
+            href={"/library/manage" as Route}
+            aria-label="管理媒体库"
+            title="管理媒体库"
+            className={PAGE_NAV_BUTTON_CLASS}
+          >
+            <GearIcon className="size-[18px]" />
+          </Link>
+        )}
+      </div>,
+    );
+  }, [actionsInTopBar, canManageLibraries, setTopBarActions]);
   // 首页的行清单存在界面偏好里（成员各存各的），应用启动时已随全站偏好拉过一次
   const { prefs } = useUiPrefs();
   const homePrefs = prefs.home;
@@ -493,9 +529,11 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
               : libraryStatsSummary(libraries === null ? null : visibleLibraries)}
           </p>
         </div>
-        {/* 两个页面级动作都是图标钮：自定义首页（所有人）、管理媒体库（有权限的人） */}
+        {/* 两个页面级动作都是图标钮：自定义首页（所有人）、管理媒体库（有权限的人）。
+            银玻璃手机上它们已挂进全局顶栏，页头不再重复；「我的收藏」兜底入口按用户
+            要求在银玻璃下撤掉（收藏行在场时行内自带「查看全部」），Netflix 保留。 */}
         <div className="flex shrink-0 items-center gap-2">
-          {favoritesEntryInHeader && (
+          {favoritesEntryInHeader && isNf && (
             <Link
               href={"/library/favorites" as Route}
               className="shrink-0 text-ui text-[var(--text-faint)] transition hover:text-[var(--text)]"
@@ -511,15 +549,17 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
               全部合集 ›
             </Link>
           )}
-          <Link
-            href={"/library/customize" as Route}
-            aria-label="自定义首页"
-            title="自定义首页"
-            className="btn-glass mt-1 grid size-8 shrink-0 place-items-center !p-0 max-md:mt-0"
-          >
-            <ListIcon className="size-4" />
-          </Link>
-          {canManageLibraries && (
+          {!actionsInTopBar && (
+            <Link
+              href={"/library/customize" as Route}
+              aria-label="自定义首页"
+              title="自定义首页"
+              className="btn-glass mt-1 grid size-8 shrink-0 place-items-center !p-0 max-md:mt-0"
+            >
+              <ListIcon className="size-4" />
+            </Link>
+          )}
+          {!actionsInTopBar && canManageLibraries && (
             <Link
               href={"/library/manage" as Route}
               aria-label="管理媒体库"
