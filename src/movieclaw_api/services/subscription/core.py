@@ -400,24 +400,35 @@ class SubscriptionService:
         if kind is MediaKind.MOVIE:
             follow_future = False  # 电影没有"生长"，开关无意义，落库前归一
 
-        if rule_set_id is None:
-            rule_set_id = (await self._rule_sets.ensure_default()).id
-        else:
+        from movieclaw_api.services.library.routing import gather_facts, route_for_item
+
+        if rule_set_id is not None:
             await self._rule_sets.get(rule_set_id)  # 不存在则抛 404
-        assert rule_set_id is not None
         # 入库目标：显式指定优先；否则按收藏范围路由并**创建时定格**——粘性
         # 的实现（docs/design/library-routing.md 2.1）：之后每次投递读定格值，
         # 规则中途变更不影响既有订阅，一部剧不会裂在两个库
         route_note: str | None = None
+        facts_known = False
+        facts = None
         if library_id is not None:
             await self._validate_library(kind.value, library_id)
         else:
-            from movieclaw_api.services.library.routing import route_for_item
-
             decision = await route_for_item(self._session, kind.value, item)
+            facts, facts_known = decision.facts, True
             if decision.library is not None:
                 library_id = decision.library.id
                 route_note = decision.reason
+        # 规则组：显式指定优先；否则按适用范围自动选组（docs/design/rule-set-scope.md），
+        # 都不命中落默认组。成员订阅、补下缺失单元等不带规则组的路径都走这里
+        rule_note: str | None = None
+        if rule_set_id is None:
+            if not facts_known:
+                facts = await gather_facts(self._session, item)
+            pick = await self._rule_sets.pick(kind.value, facts)
+            rule_set_id = pick.rule_set.id
+            if pick.matched:
+                rule_note = pick.reason
+        assert rule_set_id is not None
 
         # 订阅弹层打开时（prepare）用户还没选库，条目多半没有刮削归属；
         # 这里入库目标定格了，同一时刻把归属补上（设计文档 §14），
@@ -457,6 +468,8 @@ class SubscriptionService:
             created_message += f"；库里已有 {len(skipped_owned)} 个单元，无需重复下载"
         if route_note:
             created_message += f"；{route_note}"
+        if rule_note:
+            created_message += f"；{rule_note}"
         await self._log(
             subscription,
             ActivityType.CREATED,

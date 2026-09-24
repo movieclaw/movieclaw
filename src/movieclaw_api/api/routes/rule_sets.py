@@ -39,7 +39,7 @@ async def create_rule_set(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[RuleSetView]:
     service = RuleSetService(session)
-    row = await service.create(payload.name, payload.spec)
+    row = await service.create(payload.name, payload.spec, payload.match_rules)
     return ok(RuleSetView.from_model(row), message="规则组已创建")
 
 
@@ -55,7 +55,9 @@ async def update_rule_set(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[RuleSetView]:
     service = RuleSetService(session)
-    row = await service.update(rule_set_id, name=payload.name, spec=payload.spec)
+    row = await service.update(
+        rule_set_id, name=payload.name, spec=payload.spec, match_rules=payload.match_rules
+    )
     references = await service.count_references(rule_set_id)
     return ok(
         RuleSetView.from_model(row, reference_count=references), message="规则组已更新"

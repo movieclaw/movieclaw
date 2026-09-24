@@ -596,8 +596,8 @@ function SimulatePanel() {
     <section>
       <h3 className="mb-2 text-body font-semibold text-white/90">模拟一单</h3>
       <p className="mb-3 text-sub leading-6 text-[var(--text-muted)]">
-        搜一部片，看它订阅后会进哪个库、投递到哪、怎么入库——只做预演，不会真的订阅。
-        配完收藏范围想确认「某类片会进哪」，在这里试一下就知道。
+        搜一部片，看它订阅后会进哪个库、用哪个规则组、投递到哪、怎么入库——只做预演，
+        不会真的订阅。配完收藏范围或规则组的适用范围，在这里试一下就知道。
       </p>
       <input
         type="text"
@@ -646,8 +646,11 @@ function SimulatePanel() {
                   (preview.library_name ? `入库到「${preview.library_name}」` : "没有可用的媒体库")
                 }
               />
+              {preview.rule_set_reason && (
+                <SimStep n={2} text={preview.rule_set_reason} />
+              )}
               <SimStep
-                n={2}
+                n={preview.rule_set_reason ? 3 : 2}
                 text={
                   preview.mode === "watch"
                     ? preview.staging_path
@@ -661,7 +664,7 @@ function SimulatePanel() {
               />
               {preview.staging_path && (
                 <SimStep
-                  n={3}
+                  n={preview.rule_set_reason ? 4 : 3}
                   text="等待文件进入媒体库根目录后自动扫描入账（上传/转存等外部流转由你的工具完成）"
                 />
               )}

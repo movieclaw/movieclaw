@@ -60,6 +60,9 @@ class RouteDecision:
     预检展示条目目录时要用它渲染命名模板里的 {original_title}/{tmdb_id}
     ——预览与真实落点必须出自同一套模板（命名同源，见 library/naming.py）。
     未建档的临时条目（id 为 None）标题是占位符，展示前需自行判别。"""
+    facts: RoutingFacts | None = None
+    """本次路由所依据的作品事实（走 route_for_item/route_for_tmdb 才有）。
+    规则组按适用范围选组时复用它，同一次请求不再重复装配事实。"""
 
 
 def evaluate(rules: list, facts: RoutingFacts | None) -> bool:
@@ -91,10 +94,13 @@ def evaluate(rules: list, facts: RoutingFacts | None) -> bool:
     return True
 
 
-def _hit_reason(kind: str, library: Library, facts: RoutingFacts) -> str:
-    """命中理由：逐条件展示**实际命中**的值（作品事实 ∩ 条件值）。"""
+def hit_parts(kind: str, rules: list, facts: RoutingFacts) -> list[str]:
+    """逐条件列出**实际命中**的值（作品事实 ∩ 条件值），如 ``类型=动画``。
+
+    库路由与规则组适用范围共用：命中理由口径同源。未知字段跳过（求值已挡掉）。
+    """
     parts: list[str] = []
-    for rule in library.match_rules:
+    for rule in rules:
         fld = rule.get("field")
         values = set(rule.get("values") or [])
         if fld == "genres":
@@ -105,6 +111,12 @@ def _hit_reason(kind: str, library: Library, facts: RoutingFacts) -> str:
             continue
         if hit:
             parts.append(f"{_FIELD_LABELS[fld]}={'/'.join(hit)}")
+    return parts
+
+
+def _hit_reason(kind: str, library: Library, facts: RoutingFacts) -> str:
+    """命中理由：逐条件展示**实际命中**的值（作品事实 ∩ 条件值）。"""
+    parts = hit_parts(kind, library.match_rules, facts)
     detail = "、".join(parts) if parts else "收藏范围命中"
     return f"命中「{library.name}」：{detail}"
 
@@ -168,8 +180,9 @@ async def gather_facts(session: AsyncSession, item: MediaItem) -> RoutingFacts |
 
 async def route_for_item(session: AsyncSession, kind: str, item: MediaItem) -> RouteDecision:
     """便捷入口：装配事实 + 选库（订阅创建定格、监听导入 auto 模式共用）。"""
-    decision = await route(session, kind, await gather_facts(session, item))
-    return replace(decision, item=item)
+    facts = await gather_facts(session, item)
+    decision = await route(session, kind, facts)
+    return replace(decision, item=item, facts=facts)
 
 
 async def route_for_tmdb(session: AsyncSession, kind: str, tmdb_id: int) -> RouteDecision:
@@ -270,12 +283,13 @@ async def resolve_save_path(
     )
 
 
-def validate_match_rules(raw: list | None) -> list[dict]:
+def validate_match_rules(raw: list | None, *, label: str = "收藏范围") -> list[dict]:
     """收藏范围条件的写入侧校验（library_config 保存时调用）。
 
     返回清洗后的条件列表；结构非法抛 BadRequestException（中文报错）。
     值类型按字段收紧：genres 必须是 int（TMDB genre ID），
     origin_countries 必须是非空字符串（国家码，统一大写）。
+    ``label`` 是报错文案里的名词：规则组的适用范围复用本校验时传「适用范围」。
     """
     from movieclaw_api.exceptions import BadRequestException
 
@@ -284,15 +298,15 @@ def validate_match_rules(raw: list | None) -> list[dict]:
     cleaned: list[dict] = []
     for rule in raw:
         if not isinstance(rule, dict):
-            raise BadRequestException("收藏范围条件必须是对象列表")
+            raise BadRequestException(f"{label}条件必须是对象列表")
         fld = rule.get("field")
         if fld not in RULE_FIELDS:
-            raise BadRequestException(f"收藏范围条件包含不支持的字段：{fld}")
+            raise BadRequestException(f"{label}条件包含不支持的字段：{fld}")
         if rule.get("op", "any_of") != "any_of":
-            raise BadRequestException("收藏范围条件目前只支持 any_of（任一匹配）")
+            raise BadRequestException(f"{label}条件目前只支持 any_of（任一匹配）")
         values = rule.get("values")
         if not isinstance(values, list) or not values:
-            raise BadRequestException(f"收藏范围条件「{_FIELD_LABELS[fld]}」的取值不能为空")
+            raise BadRequestException(f"{label}条件「{_FIELD_LABELS[fld]}」的取值不能为空")
         if fld == "genres":
             if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
                 raise BadRequestException("类型条件的取值必须是 TMDB 类型 ID（整数）")
@@ -303,5 +317,5 @@ def validate_match_rules(raw: list | None) -> list[dict]:
             deduped = sorted({v.strip().upper() for v in values})
         cleaned.append({"field": fld, "op": "any_of", "values": deduped})
     if len({r["field"] for r in cleaned}) != len(cleaned):
-        raise BadRequestException("收藏范围里同一字段只能出现一次（取值本身就是多选）")
+        raise BadRequestException(f"{label}里同一字段只能出现一次（取值本身就是多选）")
     return cleaned

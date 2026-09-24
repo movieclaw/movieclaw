@@ -3,7 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { useConfirm, useToast } from "@/components/feedback";
+import {
+  genreOptionsFor,
+  regionLabels,
+  ScopeEditor,
+  useRoutingOptions,
+} from "@/components/library-form-dialog";
 import { Modal } from "@/components/modal";
+import type { RoutingOptions } from "@/lib/api/libraries";
 import {
   createRuleSet,
   deleteRuleSet,
@@ -12,6 +19,7 @@ import {
   updateRuleSet,
   type RuleSet,
   type RuleSetSpec,
+  type ScopeRule,
 } from "@/lib/api/subscriptions";
 import { PLATFORM_OPTIONS, platformLabel } from "@/lib/platforms";
 import {
@@ -37,6 +45,10 @@ import {
  * - **删除保护前置**：默认组与被订阅引用的组直接禁用删除按钮并说明原因，
  *   不让用户点了再吃后端 409。
  *
+ * - **适用范围自动选组**（docs/design/rule-set-scope.md）：每个组可声明
+ *   「适用于什么作品」（电影/剧集、区域、类型），新订阅按它自动预选；多组命中
+ *   时条件多者优先，都不命中用「默认」组。只写电影或剧集 = 该类型的默认组。
+ *
  * specSummary 与 RuleSetEditorDialog 导出复用：订阅弹窗（选组时看清内容、
  * 快捷新建）与订阅详情页（换组）共用同一套摘要与编辑器。
  */
@@ -53,6 +65,7 @@ export function RuleSetsPanel() {
   const [ruleSets, setRuleSets] = useState<RuleSet[] | null>(null);
   const [editing, setEditing] = useState<EditorTarget | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const routingOptions = useRoutingOptions();
 
   const reload = () => {
     void listRuleSets()
@@ -107,7 +120,8 @@ export function RuleSetsPanel() {
       </div>
       <p className="mb-4 text-sub leading-6 text-[var(--text-muted)]">
         规则组定义「什么样的资源可接受」——硬性条件（分辨率、编码、体积、免费等）
-        与偏好顺序，在订阅弹窗中按订阅选用；标「默认」的组是新订阅的初始选择。
+        与偏好顺序。给规则组设置「适用范围」（电影/剧集、区域、类型）后，订阅时会自动
+        选中匹配的组：多个组都匹配时条件更多的优先，都不匹配时用标「默认」的组。
         修改只影响之后的资源评估，已下载的内容不受影响。
       </p>
 
@@ -125,6 +139,7 @@ export function RuleSetsPanel() {
         <div className="space-y-1.5">
           {ruleSets.map((rs) => {
             const chips = specSummary(rs.spec);
+            const scope = scopeSummary(rs.match_rules, routingOptions);
             const deleteBlock = rs.is_default
               ? "默认规则组不可删除"
               : rs.reference_count > 0
@@ -141,6 +156,14 @@ export function RuleSetsPanel() {
                     {rs.is_default && (
                       <span className="shrink-0 rounded-full border border-white/[0.14] bg-white/[0.1] px-2 py-0.5 text-micro font-semibold text-white/80">
                         默认
+                      </span>
+                    )}
+                    {scope && (
+                      <span
+                        title="新订阅的作品符合这些条件时自动选用本组"
+                        className="truncate rounded-full border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-0.5 text-micro font-semibold text-white/85"
+                      >
+                        适用：{scope}
                       </span>
                     )}
                     {rs.reference_count > 0 && (
@@ -169,7 +192,7 @@ export function RuleSetsPanel() {
                 {!rs.is_default && (
                   <button
                     type="button"
-                    title="新订阅未指定规则组时使用本组（不改已有订阅）"
+                    title="新订阅不匹配任何组的适用范围时使用本组（不改已有订阅）"
                     onClick={() => void makeDefault(rs)}
                     className="btn-glass shrink-0 px-3 py-1.5 text-sub font-medium"
                   >
@@ -224,6 +247,57 @@ export function RuleSetsPanel() {
       )}
     </section>
   );
+}
+
+// ---------------------------------------------------------------------------
+// 适用范围：条件 ↔ 表单状态 ↔ 一句话摘要
+// ---------------------------------------------------------------------------
+
+type ScopeKind = "movie" | "tv" | null;
+
+/** 适用范围条件 → 表单状态（kind 为 null = 不限电影/剧集）。 */
+function parseScope(rules: ScopeRule[]): { kind: ScopeKind; regions: string[]; genres: number[] } {
+  const kinds = rules.find((r) => r.field === "kind")?.values ?? [];
+  return {
+    kind: kinds.length === 1 && (kinds[0] === "movie" || kinds[0] === "tv") ? kinds[0] : null,
+    regions: (rules.find((r) => r.field === "origin_countries")?.values ?? []).filter(
+      (v): v is string => typeof v === "string",
+    ),
+    genres: (rules.find((r) => r.field === "genres")?.values ?? []).filter(
+      (v): v is number => typeof v === "number",
+    ),
+  };
+}
+
+/** 表单状态 → 适用范围条件（空维度不生成条件；全空 = 不声明）。 */
+function buildScope(kind: ScopeKind, regions: string[], genres: number[]): ScopeRule[] {
+  const rules: ScopeRule[] = [];
+  if (kind) rules.push({ field: "kind", op: "any_of", values: [kind] });
+  if (regions.length) rules.push({ field: "origin_countries", op: "any_of", values: regions });
+  if (genres.length) rules.push({ field: "genres", op: "any_of", values: genres });
+  return rules;
+}
+
+/** 适用范围的一句话摘要（如「剧集 · 日韩 · 动画」）；未声明返回 null。 */
+function scopeSummary(rules: ScopeRule[], options: RoutingOptions | null): string | null {
+  if (!rules.length) return null;
+  const { kind, regions, genres } = parseScope(rules);
+  const parts: string[] = [];
+  if (kind) parts.push(kind === "movie" ? "电影" : "剧集");
+  if (regions.length) {
+    parts.push(options ? regionLabels(regions, options).join("/") : `${regions.length} 个区域`);
+  }
+  if (genres.length) {
+    parts.push(
+      options
+        ? genreOptionsFor(kind, options)
+            .filter((g) => genres.includes(g.id))
+            .map((g) => g.label)
+            .join("/")
+        : `${genres.length} 个类型`,
+    );
+  }
+  return parts.join(" · ");
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +496,12 @@ export function RuleSetEditorDialog({
   );
 
   const [name, setName] = useState(ruleSet?.name ?? template?.name ?? "");
+  // 适用范围（复制场景不带过去：两个组范围一模一样时只有更早的那个会被选中）
+  const initialScope = useMemo(() => parseScope(ruleSet?.match_rules ?? []), [ruleSet]);
+  const [scopeKind, setScopeKind] = useState<ScopeKind>(initialScope.kind);
+  const [scopeRegions, setScopeRegions] = useState<string[]>(initialScope.regions);
+  const [scopeGenres, setScopeGenres] = useState<number[]>(initialScope.genres);
+  const routingOptions = useRoutingOptions();
   const [resolutions, setResolutions] = useState<string[]>(spec.resolutions ?? []);
   const [codecFamilies, setCodecFamilies] = useState<Set<string>>(
     () =>
@@ -718,6 +798,14 @@ export function RuleSetEditorDialog({
     [draft.spec, ladderPreview],
   );
 
+  // 切换过电影/剧集时，另一类型独有的类型 ID 不带进保存结果
+  const validScopeGenres =
+    routingOptions === null
+      ? scopeGenres
+      : scopeGenres.filter((id) => genreOptionsFor(scopeKind, routingOptions).some((g) => g.id === id));
+  const scopeRules = buildScope(scopeKind, scopeRegions, validScopeGenres);
+  const scopeText = scopeSummary(scopeRules, routingOptions) ?? "未设置（只能手动选用，或作为默认组兜底）";
+
   const submit = async () => {
     if (draft.error) {
       setError(draft.error);
@@ -729,8 +817,8 @@ export function RuleSetEditorDialog({
     try {
       const saved =
         ruleSet === null
-          ? await createRuleSet(name.trim(), next)
-          : await updateRuleSet(ruleSet.id, name.trim(), next);
+          ? await createRuleSet(name.trim(), next, scopeRules)
+          : await updateRuleSet(ruleSet.id, name.trim(), next, scopeRules);
       onSaved(saved);
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败，请稍后重试");
@@ -775,6 +863,42 @@ export function RuleSetEditorDialog({
               className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3.5 py-2.5 text-ui text-[var(--text)] outline-none focus:border-[var(--accent)]/60"
             />
           </Field>
+
+          {/* 适用范围：订阅时自动选组的依据。放在画质条件之前——"这个组给谁用"
+              是建组时的第一个问题；折叠头直接显示当前范围 */}
+          <Section title="适用范围" summary={scopeText}>
+            <p className="-mt-1 text-caption leading-relaxed text-[var(--text-faint)]">
+              订阅的作品符合这里的条件时，自动选用本规则组；多个组都符合时条件更多的优先，
+              都不符合时用默认组。只选「电影」或「剧集」即可让本组成为该类型的默认选择。
+            </p>
+            <Field label="作品类型">
+              <div className="flex flex-wrap gap-1.5">
+                {(
+                  [
+                    [null, "不限"],
+                    ["movie", "电影"],
+                    ["tv", "剧集"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <ToggleChip
+                    key={label}
+                    active={scopeKind === value}
+                    onClick={() => setScopeKind(value)}
+                  >
+                    {label}
+                  </ToggleChip>
+                ))}
+              </div>
+            </Field>
+            <ScopeEditor
+              kind={scopeKind}
+              regions={scopeRegions}
+              genres={validScopeGenres}
+              onRegions={setScopeRegions}
+              onGenres={setScopeGenres}
+              options={routingOptions}
+            />
+          </Section>
 
           <Field
             label="分辨率"
