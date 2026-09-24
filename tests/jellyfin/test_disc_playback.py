@@ -220,8 +220,9 @@ def test_multi_clip_disc_advertises_transcoding_url_and_serves_master(
     assert master.headers["content-type"].startswith("application/vnd.apple.mpegurl")
     lines = master.text.splitlines()
     assert lines[0] == "#EXTM3U"
-    media_line = next(line for line in lines if line.startswith("/api/v1/playback/sessions/"))
-    assert media_line.endswith("index.m3u8?token=" + media_line.split("token=")[1])
+    # 媒体列表是同目录相对地址（Infuse 按「master 目录 + 地址」拼接，不解析绝对路径）
+    media_line = next(line for line in lines if not line.startswith("#"))
+    assert media_line.startswith("main.m3u8?session=") and "&token=" in media_line
 
     # 会话按 concat 清单起，音轨是客户端选的第二条（AC-3），视频与音频都 copy
     assert transcode_env, "应当已起一个 ffmpeg 会话"
@@ -235,9 +236,10 @@ def test_multi_clip_disc_advertises_transcoding_url_and_serves_master(
     assert concat_text.startswith("ffconcat version 1.0\n")
     assert concat_text.count("\nfile '") == 2
 
-    # 媒体列表能拉到（网页播放器会话端点，带 token）
-    playlist = client.get(media_line)
+    # 媒体列表能拉到（与网页播放器会话端点同源，分片指向 hls1/main/）
+    playlist = client.get(f"/Videos/{guid}/{media_line}")
     assert playlist.status_code == 200 and playlist.text.startswith("#EXTM3U")
+    assert "hls1/main/init.mp4?session=" in playlist.text
 
     # 不指定音轨：默认轨是 TrueHD，装不进 fMP4，自动回退到 AC-3 核心（第二条）
     fallback = client.get(
@@ -248,12 +250,10 @@ def test_multi_clip_disc_advertises_transcoding_url_and_serves_master(
     assert fallback.status_code == 200, fallback.text
     assert transcode_env[-1]["plan"].audio.track_ref == "embedded:1"
     assert transcode_env[-1]["plan"].audio.codec == "ac3"
-    media_line = next(
-        line for line in fallback.text.splitlines() if line.startswith("/api/v1/playback/sessions/")
-    )
+    media_line = next(line for line in fallback.text.splitlines() if not line.startswith("#"))
 
     # 播放器上报 Stopped → 这台设备的会话被收掉
-    session_id = media_line.split("/sessions/")[1].split("/")[0]
+    session_id = media_line.split("session=")[1].split("&")[0]
     assert get_session_manager().get(session_id, member_id=0) is not None
     resp = client.post(
         "/Sessions/Playing/Stopped",

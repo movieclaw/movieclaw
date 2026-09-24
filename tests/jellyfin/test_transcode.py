@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from urllib.parse import parse_qsl
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,9 +32,14 @@ FAKE_FFMPEG = """
 import sys, time, pathlib
 out = pathlib.Path(sys.argv[1])
 out.parent.mkdir(parents=True, exist_ok=True)
-out.write_text("#EXTM3U\\n#EXT-X-VERSION:7\\n#EXT-X-MAP:URI=\\"init.mp4\\"\\n")
 (out.parent / "init.mp4").write_bytes(b"INIT")
 (out.parent / "seg00000.m4s").write_bytes(b"SEGMENT-DATA")
+(out.parent / "seg00000.ts").write_bytes(b"TS-SEGMENT-DATA")
+# 列表登记首个分片（fMP4 与 TS 两种名字都写：会话管理器按列表台账判分片完成）
+out.write_text(
+    "#EXTM3U\\n#EXT-X-VERSION:7\\n#EXT-X-MAP:URI=\\"init.mp4\\"\\n"
+    "#EXTINF:4.000000,\\nseg00000.m4s\\n#EXTINF:4.000000,\\nseg00000.ts\\n"
+)
 time.sleep(300)
 """
 
@@ -92,7 +98,8 @@ def test_transcoding_url_roundtrip():
     assert url.startswith("/Videos/item/master.m3u8?")
     assert "TranscodeReasons=ContainerBitrateExceedsLimit" in url
     assert "ApiKey=tok" in url and "VideoCodec=h264" in url
-    query = dict(pair.split("=", 1) for pair in url.split("?", 1)[1].split("&"))
+    assert "SegmentContainer=mp4" in url and "MaxAudioChannels" not in url
+    query = dict(parse_qsl(url.split("?", 1)[1]))
     params = transcode.parse_transcode_params(query)
     assert params == transcode.TranscodeParams(
         media_source_id="ms",
@@ -102,6 +109,26 @@ def test_transcoding_url_roundtrip():
         audio_stream_index=1,
         start_ms=90_000,
     )
+    # 播放器申报了容器与音频能力（Infuse）：原样进 URL、master 端原样还原
+    infuse = transcode.build_transcoding_url(
+        "item",
+        media_source_id="ms",
+        play_session_id="psid",
+        token="tok",
+        video_bitrate_bps=None,
+        max_height=None,
+        audio_stream_index=None,
+        start_ms=None,
+        bitrate_exceeded=False,
+        segment_container="ts",
+        audio_codecs=("aac",),
+        max_audio_channels=2,
+    )
+    assert "SegmentContainer=ts" in infuse and "AudioCodec=aac&" in infuse
+    assert "MaxAudioChannels=2" in infuse
+    restored = transcode.parse_transcode_params(dict(parse_qsl(infuse.split("?", 1)[1])))
+    assert restored.segment_container == "ts"
+    assert restored.audio_codecs == ("aac",) and restored.max_audio_channels == 2
     bare = transcode.build_transcoding_url(
         "item",
         media_source_id="ms",
@@ -217,9 +244,19 @@ def _auth(client: TestClient) -> dict:
 
 
 def _media_line(master_text: str) -> str:
-    return next(
-        line for line in master_text.splitlines() if line.startswith("/api/v1/playback/sessions/")
-    )
+    """master 里的媒体列表地址：必须是同目录相对路径 ``main.m3u8?session=…&token=…``。
+
+    Infuse 把「master 所在目录 + 地址串」直接拼接（不按 RFC 3986 解析），绝对路径
+    会被拼成 ``/Videos/{item}//api/…`` 而 404（2026-09-23 真机）。
+    """
+    line = next(line for line in master_text.splitlines() if not line.startswith("#"))
+    assert line.startswith("main.m3u8?session=") and "&token=" in line, line
+    assert "&ApiKey=" in line, "每条 HLS 地址自带设备凭据（播放器媒体内核不带认证头）"
+    return line
+
+
+def _session_id(media_line: str) -> str:
+    return media_line.split("session=")[1].split("&")[0]
 
 
 def test_playback_info_stays_direct_when_bitrate_fits(
@@ -252,7 +289,8 @@ def test_bitrate_limit_negotiates_transcode_and_starts_session(
     协商：不可直连 + TranscodingUrl（高度/码率按与网页端同一条规则：3 Mbps
     × 0.8 装不下 1080p 阶梯的七五折 → 降到 480p、限 1.5 Mbps）；内封 SRT 改为
     旁挂投递、PGS 从流列表撤掉；DTS 默认轨要转 E-AC-3。
-    master.m3u8：按 URL 起软转会话，播放列表指到网页播放器的会话端点。
+    master.m3u8：按 URL 起软转会话，媒体列表与分片都挂在 /Videos/{item}/ 下
+    （Jellyfin 形态的相对地址），内容与网页播放器的会话端点同源。
     """
     _enable_software_transcode(client)
     movie = _seed_sdr_movie(client, seeded, media_root)
@@ -286,7 +324,6 @@ def test_bitrate_limit_negotiates_transcode_and_starts_session(
     assert master.status_code == 200, master.text
     assert master.headers["content-type"].startswith("application/vnd.apple.mpegurl")
     media_line = _media_line(master.text)
-    assert "index.m3u8?token=" in media_line
 
     assert transcode_env, "应当已起一个 ffmpeg 会话"
     call = transcode_env[-1]
@@ -300,11 +337,33 @@ def test_bitrate_limit_negotiates_transcode_and_starts_session(
     # 起播位置：StartTimeTicks 60 秒 → 对齐到 4 秒分片边界
     assert call["start_ms"] == 60_000
 
-    playlist = client.get(media_line)
-    assert playlist.status_code == 200 and "#EXT-X-PLAYLIST-TYPE:VOD" in playlist.text
+    # 媒体列表按 Infuse 的拼接方式取：master 目录 + 相对地址
+    playlist = client.get(f"/Videos/{guid}/{media_line}")
+    assert playlist.status_code == 200, playlist.text
+    assert "#EXT-X-PLAYLIST-TYPE:VOD" in playlist.text
+    session_id = _session_id(media_line)
+    query = f"?session={session_id}&token="
+    assert f'#EXT-X-MAP:URI="hls1/main/init.mp4{query}' in playlist.text
+    segment_line = next(
+        line for line in playlist.text.splitlines() if line.startswith("hls1/main/seg")
+    )
+    assert segment_line.startswith(f"hls1/main/seg00000.m4s{query}")
+    # 分片同样从 /Videos/{item}/ 目录下拼出来；初始化段由假 ffmpeg 写好
+    segment_query = "?" + segment_line.split("?", 1)[1]
+    init = client.get(f"/Videos/{guid}/hls1/main/init.mp4{segment_query}")
+    assert init.status_code == 200 and init.content == b"INIT"
+    # 文件名不在白名单 / token 不对 → Jellyfin 形态的空 404
+    bad_name = client.get(f"/Videos/{guid}/hls1/main/..%2Fetc%2Fpasswd{segment_query}")
+    assert bad_name.status_code == 404
+    bad_token = client.get(
+        f"/Videos/{guid}/main.m3u8", params={**auth, "session": session_id, "token": "nope"}
+    )
+    assert bad_token.status_code == 404
+    # 没有设备凭据：与本路由组其他端点一样 401
+    no_device = client.get(f"/Videos/{guid}/main.m3u8?session={session_id}&token=x")
+    assert no_device.status_code == 401
 
     # 播放器上报 Stopped（带 PlaySessionId）→ 精确停掉这个会话
-    session_id = media_line.split("/sessions/")[1].split("/")[0]
     manager = get_session_manager()
     assert manager.get(session_id, member_id=0) is not None
     resp = client.post(
@@ -315,6 +374,83 @@ def test_bitrate_limit_negotiates_transcode_and_starts_session(
     )
     assert resp.status_code == 204
     assert manager.get(session_id, member_id=0) is None
+
+
+#: Infuse 8.5 发来的 DeviceProfile 转码档（2026-09-23 NAS 抓包原样，去掉无关键）：
+#: 视频只接受 HLS + MPEG-TS 容器、音频只要 AAC 双声道。
+INFUSE_TRANSCODING_PROFILES = [
+    {
+        "Type": "Audio",
+        "Container": "aac",
+        "Protocol": "hls",
+        "AudioCodec": "aac",
+        "MaxAudioChannels": "2",
+        "Context": "Streaming",
+    },
+    {
+        "Type": "Video",
+        "Container": "ts",
+        "Protocol": "hls",
+        "VideoCodec": "hevc,h264,av1",
+        "AudioCodec": "aac",
+        "MaxAudioChannels": "2",
+        "ManifestSubtitles": "vtt",
+        "Context": "Streaming",
+    },
+]
+
+
+def test_infuse_profile_gets_mpegts_segments_and_aac_stereo(
+    client: TestClient, seeded: dict, media_root: Path, transcode_env: list
+) -> None:
+    """Infuse 形态的完整申报：TranscodingProfiles 说只认 ts + aac 双声道。
+
+    协商：TranscodingContainer=ts，URL 带 SegmentContainer=ts / AudioCodec=aac /
+    MaxAudioChannels=2；master 起会话时计划容器 hls-ts、DTS 5.1 默认轨转 AAC 立体声；
+    媒体列表没有 EXT-X-MAP，分片是 .ts 且以 video/mp2t 交付——2026-09-23 真机：
+    Infuse 拿到 fMP4 分片用 Range 探一下就报错，连 init.mp4 都不取。
+    """
+    _enable_software_transcode(client)
+    movie = _seed_sdr_movie(client, seeded, media_root)
+    guid = item_guid(movie["item"])
+    auth = _auth(client)
+
+    info = client.post(
+        f"/Items/{guid}/PlaybackInfo",
+        params=auth,
+        json={
+            "DeviceProfile": {
+                "MaxStreamingBitrate": 3_000_000,
+                "TranscodingProfiles": INFUSE_TRANSCODING_PROFILES,
+            }
+        },
+    ).json()
+    ms = info["MediaSources"][0]
+    assert ms["SupportsDirectPlay"] is False and ms["SupportsTranscoding"] is True
+    assert ms["TranscodingContainer"] == "ts" and ms["TranscodingSubProtocol"] == "hls"
+    url = ms["TranscodingUrl"]
+    assert "SegmentContainer=ts" in url and "AudioCodec=aac&" in url
+    assert "MaxAudioChannels=2" in url
+
+    master = client.get(url, headers={"Authorization": AUTH_HEADER})
+    assert master.status_code == 200, master.text
+    media_line = _media_line(master.text)
+    plan = transcode_env[-1]["plan"]
+    assert plan.container == "hls-ts"
+    assert plan.audio.action == "transcode" and plan.audio.codec == "aac"
+    assert plan.audio.channels == 2 and plan.audio.downmix is True
+
+    playlist = client.get(f"/Videos/{guid}/{media_line}")
+    assert playlist.status_code == 200, playlist.text
+    assert "#EXT-X-MAP" not in playlist.text, "TS 分片自含 PAT/PMT，没有 init 段"
+    segment_line = next(
+        line for line in playlist.text.splitlines() if line.startswith("hls1/main/seg")
+    )
+    assert segment_line.startswith("hls1/main/seg00000.ts?session=")
+    segment = client.get(f"/Videos/{guid}/{segment_line}", headers={"Range": "bytes=0-"})
+    assert segment.status_code in (200, 206), segment.text
+    assert segment.headers["content-type"].startswith("video/mp2t")
+    assert segment.content == b"TS-SEGMENT-DATA"
 
 
 def test_forced_transcode_without_bitrate_and_audio_selection(
@@ -398,7 +534,7 @@ def test_progress_keeps_session_alive_and_active_encodings_stops_it(
             info["MediaSources"][0]["TranscodingUrl"], headers={"Authorization": AUTH_HEADER}
         )
         assert master.status_code == 200, master.text
-        session_id = _media_line(master.text).split("/sessions/")[1].split("/")[0]
+        session_id = _session_id(_media_line(master.text))
         return info["PlaySessionId"], session_id
 
     def _stop(**params) -> None:

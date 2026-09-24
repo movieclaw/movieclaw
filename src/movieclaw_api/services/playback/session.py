@@ -49,9 +49,9 @@ from movieclaw_api.services.playback.disc_source import CONCAT_LIST_NAME
 from movieclaw_api.services.playback.ffmpeg_args import (
     LIVE_PLAYLIST_NAME,
     PLAYLIST_NAME,
-    SEGMENT_PATTERN,
     TranscodeCommand,
     build_hls_command,
+    segment_pattern,
 )
 from movieclaw_api.services.playback.limits import auto_quota_bytes
 from movieclaw_api.services.playback.remote_signing import issue_remote_grant
@@ -137,9 +137,10 @@ def _dir_size(directory: Path) -> int:
 
 def _segment_index_from_name(name: str) -> int | None:
     """从安全的分片文件名取编号；其它 HLS 产物返回 None。"""
-    if not (name.startswith("seg") and name.endswith(".m4s")):
+    stem, _, suffix = name.rpartition(".")
+    if not (stem.startswith("seg") and suffix in ("m4s", "ts")):
         return None
-    number = name[3:-4]
+    number = stem[3:]
     if len(number) != 5 or not number.isdigit():
         return None
     return int(number)
@@ -1164,7 +1165,7 @@ class TranscodeSessionManager:
         plan = session.segment_plan
         if plan is None or not (0 <= index < plan.count):
             return None
-        target = session.directory / (SEGMENT_PATTERN % index)
+        target = session.directory / (segment_pattern(session.plan) % index)
         waited_from = time.monotonic()
         head_before = session.head_segment
         generation = session.restart_generation
@@ -1303,7 +1304,7 @@ class TranscodeSessionManager:
         随机临时文件，完整接收后才原子替换目标文件并返回 201；远程目标存在
         本身就是完整写入信号，不能再依赖另一条可能被 Worker 取消的 playlist
         上传，否则播放器会对着已经落盘的分片等待到超时。"""
-        target = session.directory / (SEGMENT_PATTERN % index)
+        target = session.directory / (segment_pattern(session.plan) % index)
         if not target.exists():
             return False
         if session.remote:
@@ -1328,7 +1329,7 @@ class TranscodeSessionManager:
         按 (mtime_ns, size) 门控：文件没变就不重解析（理由见字段注释）。
         重启会删掉旧列表重写，新文件的签名必然不同，门控自然失效。
 
-        远程产物由上传端点原子替换，目录里的 ``segNNNNN.m4s`` 都是完整文件；
+        远程产物由上传端点原子替换，目录里的 ``segNNNNN.m4s``/``.ts`` 都是完整文件；
         先扫描目录，使远程 playlist 上传失败时仍能正确计算连续产出头。"""
         if session.remote:
             try:
@@ -1338,7 +1339,7 @@ class TranscodeSessionManager:
             if directory_mtime_ns == session._remote_artifact_dir_mtime_ns:
                 return
             session._remote_artifact_dir_mtime_ns = directory_mtime_ns
-            for artifact in session.directory.glob("seg*.m4s"):
+            for artifact in session.directory.glob("seg*.*"):
                 name = artifact.name
                 index = _segment_index_from_name(name)
                 if index is None or not artifact.is_file():
@@ -1365,15 +1366,13 @@ class TranscodeSessionManager:
             return
         for line in text.splitlines():
             line = line.strip()
-            # 本地 ffmpeg 写的是 `seg00001.m4s`，远程 HLS muxer 上传的
-            # live.m3u8 可能写绝对 HTTPS URL 并带 artifact token；两者都要
-            # 归一到安全的文件名后再记账，否则远程 VOD 会一直等到整片结束。
+            # 本地 ffmpeg 写的是 `seg00001.m4s`（TS 会话是 `.ts`），远程 HLS
+            # muxer 上传的 live.m3u8 可能写绝对 HTTPS URL 并带 artifact token；
+            # 都要归一到安全的文件名后再记账，否则远程 VOD 会一直等到整片结束。
             filename = urlsplit(line).path.rsplit("/", 1)[-1]
-            if filename.endswith(".m4s") and filename.startswith("seg"):
-                try:
-                    session.completed_segments.add(int(filename[3:8]))
-                except ValueError:
-                    continue
+            index = _segment_index_from_name(filename)
+            if index is not None:
+                session.completed_segments.add(index)
         session._playlist_sig = sig
 
     async def _maybe_restart_for(self, session: TranscodeSession, index: int) -> None:

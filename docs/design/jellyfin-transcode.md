@@ -26,9 +26,14 @@ jellyfin-web 的码率菜单），服务端要按要求把码率压下来。
    （`EnableDirectPlay=false` / `AllowVideoStreamCopy=false`）时才转。
    这条与 jellyfin-compat.md 硬边界 2「本层不转码」的精神一致——修订的只是
    「不转码」变为「不主动转码」。
-2. **DeviceProfile 的编码条件不解析**。Infuse/VidHub 的 profile 就是
-   「我全都能解」，解析它换不来任何行为；真正会让它们要求转码的只有线路。
-   只取 `DeviceProfile.MaxStreamingBitrate` 这一个数（Infuse 只在 profile 里带）。
+2. **DeviceProfile 只解析三样**：`MaxStreamingBitrate`（Infuse 只在 profile 里带），
+   以及 HLS 视频转码档（第一条 `Type=Video` 且 `Protocol=hls` 的
+   `TranscodingProfiles`）的 `Container` / `AudioCodec` / `MaxAudioChannels`。
+   直连/直流判定仍不看编码条件——全解码播放器「我全都能解」，解析它换不来任何
+   行为；但**转码输出必须按它的申报出**：Infuse 8 申报 `Container=ts`、
+   `AudioCodec=aac`、`MaxAudioChannels=2`，首版一律给 fMP4 分片，它用 Range 探一下
+   首分片就报错、连 init.mp4 都不取（2026-09-23 NAS 抓包）。申报之外的容器当 mp4，
+   没申报则全部走服务端默认（fMP4、音频有损 copy / 多声道 E-AC-3）。
 3. **strm 不转码**（沿用 web-player.md 硬边界 2）；**原盘不按码率转码**
    （单剪辑直出、多剪辑 copy remux，disc-playback.md 不变，转码留作后续）。
 4. **转码能力不可用时行为与今天完全一致**：无硬件加速且软件转码未开、
@@ -154,8 +159,26 @@ master 也不查任何服务端状态，播放器重放同一 URL 得到同样�
    `manager.start(...)`，参数与网页端开会话一致（并发/配额自动推导、转码缓存开关、
    设备标识进活动页）；
 4. 登记 `PlaySessionId → session.id`；签取流 token；返回 master 列表，媒体列表
-   指向 `/api/v1/playback/sessions/{id}/index.m3u8?token=`——之后的分片、seek、
-   限速、缓存全部是网页播放器的会话端点在服务。
+   是**同目录相对地址** `main.m3u8?session={id}&token=&ApiKey=`，分片是
+   `hls1/main/{name}?session=&token=&ApiKey=`——整棵 HLS 树都挂在 `/Videos/{item}/` 下，
+   形态对齐真 Jellyfin（它也给每条 HLS 地址附 `api_key`：播放器媒体内核拉列表和
+   分片不带认证头，设备鉴权只能靠 query）。`GET /Videos/{item}/main.m3u8` 与 `GET /Videos/{item}/hls1/main/{name}`
+   只是网页播放器会话端点（`/api/v1/playback/sessions/{id}/…`）的同源包装：列表
+   内容、分片等待/seek 重起、限速、缓存全部复用，鉴权只看取流 token。
+
+   **分片容器按 URL 的 `SegmentContainer`**：`ts` → `PlaybackPlan.container="hls-ts"`，
+   ffmpeg `-hls_segment_type mpegts`、分片 `segNNNNN.ts`、媒体列表不写 EXT-X-MAP、
+   分片以 `video/mp2t` 交付；`mp4` → 与网页播放器同一套 fMP4。转码缓存的成分里本来
+   就含 `container`，两种分片各占各的缓存目录。`AudioCodec` / `MaxAudioChannels` 进
+   `plan_capped_transcode`：源轨编码与声道都在申报内才 copy，否则转 AAC 并把声道压到
+   申报上限（Infuse 的 DTS 5.1 → AAC 立体声降混）。远程 Worker 的产物白名单同步放行 `.ts`。
+
+   **为什么不能直接指到 `/api/v1/playback/sessions/…`**（首版就是这么写的，
+   2026-09-23 真机翻车）：Infuse 解析 Jellyfin 转码列表不按 RFC 3986，而是把
+   「master 所在目录 + 地址串」直接拼接——绝对路径被拼成
+   `/Videos/{item}//api/v1/playback/sessions/{id}/index.m3u8`，404 后直接报错。
+   真 Jellyfin 的 master 一直是 `main.m3u8?…`、分片一直是 `hls1/main/0.mp4?…`，
+   Infuse 从没遇到过别的形态。
 
 `StartTimeTicks` → `start_ms`：会话从该位置所在分片起转（VOD 时间轴是文件绝对
 时间，客户端 seek 到哪都行）。

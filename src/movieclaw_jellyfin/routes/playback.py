@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import secrets
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -31,6 +32,8 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy import select
 
+from movieclaw_api.api.routes.playback import get_session_segment
+from movieclaw_api.exceptions import NotFoundException
 from movieclaw_api.services.library.access import member_visible_ids
 from movieclaw_api.services.playback import watch as playback_watch
 from movieclaw_api.services.playback.adaptive import adapt_to_downlink
@@ -39,7 +42,12 @@ from movieclaw_api.services.playback.embedded_subs import (
     embedded_subtitle_format,
     extract_embedded_subtitle_async,
 )
-from movieclaw_api.services.playback.ffmpeg_args import SEGMENT_SECONDS
+from movieclaw_api.services.playback.ffmpeg_args import (
+    INIT_NAME,
+    SEGMENT_SECONDS,
+    is_mpegts,
+    segment_pattern,
+)
 from movieclaw_api.services.playback.hwprobe import (
     available_backends,
     available_local_backends,
@@ -60,7 +68,7 @@ from movieclaw_api.services.playback.session import (
     SessionStartError,
     get_session_manager,
 )
-from movieclaw_api.services.playback.signing import issue_stream_token
+from movieclaw_api.services.playback.signing import issue_stream_token, verify_stream_token
 from movieclaw_api.settings import PlaybackPolicySetting
 from movieclaw_api.settings.store import get_setting_store
 from movieclaw_db.engine import get_database
@@ -80,7 +88,7 @@ from movieclaw_jellyfin.ids import (
     item_guid,
     media_source_guid,
 )
-from movieclaw_jellyfin.security import RequestIdentity, require_device
+from movieclaw_jellyfin.security import RequestIdentity, extract_token, require_device
 from movieclaw_jellyfin.transcode import (
     Negotiation,
     TranscodeParams,
@@ -105,6 +113,7 @@ from movieclaw_playback.events import ClientInfo
 from movieclaw_playback.hls_vod import (
     SegmentPlan,
     build_master_playlist,
+    build_media_playlist,
     compute_segment_plan,
     compute_uniform_plan,
 )
@@ -317,7 +326,14 @@ def _apply_transcode_negotiation(
     if audio_ref is None:
         default_index = source.get("DefaultAudioStreamIndex")
         audio_ref = audio_track_for_index(f, default_index) if default_index is not None else None
-    decision = plan_capped_transcode(media_profile_from_file(f), policy, preferred_audio=audio_ref)
+    decision = plan_capped_transcode(
+        media_profile_from_file(f),
+        policy,
+        preferred_audio=audio_ref,
+        segment_container=negotiation.segment_container,
+        audio_codecs=frozenset(negotiation.audio_codecs) if negotiation.audio_codecs else None,
+        max_audio_channels=negotiation.max_audio_channels,
+    )
     if isinstance(decision, PlaybackRejected):
         if not direct_ok:
             logger.warning(
@@ -341,7 +357,9 @@ def _apply_transcode_negotiation(
     audio_index = _audio_index_for_ref(f, decision.audio.track_ref)
     source["SupportsDirectPlay"] = False
     source["SupportsDirectStream"] = False
-    source["TranscodingContainer"] = "mp4"
+    # 分片容器按播放器转码档的申报回（Infuse = ts）：TranscodingContainer 与
+    # URL 里的 SegmentContainer 必须一致，播放器按前者准备解复用器
+    source["TranscodingContainer"] = negotiation.segment_container
     source["TranscodingSubProtocol"] = "hls"
     if audio_index is not None:
         source["DefaultAudioStreamIndex"] = audio_index
@@ -355,6 +373,9 @@ def _apply_transcode_negotiation(
         audio_stream_index=audio_index,
         start_ms=negotiation.start_ms,
         bitrate_exceeded=bitrate_exceeded,
+        segment_container=negotiation.segment_container,
+        audio_codecs=negotiation.audio_codecs,
+        max_audio_channels=negotiation.max_audio_channels,
     )
     _apply_embedded_subtitle_delivery(source, f, ref, token)
     logger.info(
@@ -783,9 +804,21 @@ async def video_hls_master(
     """HLS 转码入口（docs/design/jellyfin-transcode.md §4；原盘见 disc-playback.md §3.5）。
 
     做的事与网页播放器开会话同源：按 TranscodingUrl 里的目标（高度/码率/音轨）
-    装配计划，起一个 HLS 会话，把 master 列表指到网页播放器的会话端点（带取流
-    token，播放器媒体内核拉分片不带自定义头）。同片同成员的旧会话先停掉——
-    播放器换清晰度/换音轨/重开都会再打这一条，不清会积 ffmpeg。
+    装配计划，起一个 HLS 会话。同片同成员的旧会话先停掉——播放器换清晰度/
+    换音轨/重开都会再打这一条，不清会积 ffmpeg。
+
+    **master 里的媒体列表地址必须是同目录相对路径**（``main.m3u8?…``，与真
+    Jellyfin 形态一致）。Infuse 解析 Jellyfin 转码列表时不按 RFC 3986 解析地址，
+    而是把「master 所在目录 + 地址串」直接拼接：2026-09-23 真机上，master 写成
+    绝对路径 ``/api/v1/playback/sessions/{id}/index.m3u8`` 后，Infuse 请求的是
+    ``/Videos/{item}//api/v1/playback/sessions/…`` → 404，切低画质必失败。因此
+    整棵 HLS 树都挂在 ``/Videos/{item}/`` 下：媒体列表 ``main.m3u8``、分片
+    ``hls1/main/{name}``（对齐 Jellyfin 的 ``hls1/main/`` 目录），鉴权靠 query 里
+    的取流 token（播放器媒体内核拉分片不带自定义头），会话 id 也走 query。
+
+    分片容器按 URL 的 ``SegmentContainer``（来自播放器 DeviceProfile 的申报）：
+    Infuse 只认 MPEG-TS——给它 fMP4 分片，它用 Range 探一下首分片就报错，连
+    init.mp4 都不会去取（同日真机抓包）；网页播放器与未申报的客户端仍是 fMP4。
     """
     ref = decode_guid(item_id)
     if ref is None or ref.kind not in (EntityKind.ITEM, EntityKind.EPISODE):
@@ -852,12 +885,98 @@ async def video_hls_master(
     )
     return Response(
         content=build_master_playlist(
-            media_uri=f"/api/v1/playback/sessions/{session.id}/index.m3u8",
-            query=f"?token={token}",
+            media_uri="main.m3u8",
+            query=_hls_query(session.id, token, extract_token(request)),
         ),
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": "no-store"},
     )
+
+
+#: 分片在 /Videos/{item}/ 下的子目录，形态对齐真 Jellyfin（``hls1/main/0.mp4``）。
+_HLS_SEGMENT_DIR = "hls1/main"
+
+
+def _hls_query(session_id: str, token: str, api_key: str) -> str:
+    """媒体列表与分片地址统一带的 query：会话 id + 取流 token + 设备 ApiKey。
+
+    HLS 客户端解析相对地址时不继承上级列表的 query，所以每一条地址都要完整带上。
+    ApiKey 是给本路由组的设备鉴权用的（播放器媒体内核拉列表/分片不带认证头），
+    与真 Jellyfin 给每条 HLS 地址都附 ``api_key`` 的做法一致；取流 token 绑定
+    会话与成员，是分片端点自己的凭据。
+    """
+    return f"?session={session_id}&token={token}&ApiKey={api_key}"
+
+
+#: 播放列表里 ``#EXT-X-MAP`` 那行的初始化段地址（``URI="init.mp4"``）。
+_PLAYLIST_MAP_URI = re.compile(r'(#EXT-X-MAP:.*?URI=")([^"]+)(")')
+
+
+def _relocate_playlist(playlist: str, *, prefix: str, query: str) -> str:
+    """把 ffmpeg 自写的媒体列表里的裸文件名（``init.mp4`` / ``seg00000.m4s``）
+    改写成 ``{prefix}/文件名{query}``——列表挂在 /Videos/{item}/main.m3u8 下，
+    分片却在 hls1/main/ 子目录里，且每条地址都要自带凭据。
+    只改地址行：``#`` 开头的是标签，除 EXT-X-MAP 里的 URI 之外不含地址。"""
+    lines: list[str] = []
+    for line in playlist.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped:
+            lines.append(line)
+        elif stripped.startswith("#"):
+            lines.append(_PLAYLIST_MAP_URI.sub(rf"\g<1>{prefix}/\g<2>{query}\g<3>", line))
+        else:
+            lines.append(line.replace(stripped, f"{prefix}/{stripped}{query}", 1))
+    return "".join(lines)
+
+
+@router.get("/Videos/{item_id}/main.m3u8")
+async def video_hls_media_playlist(
+    request: Request, item_id: str, session: str, token: str
+) -> Response:
+    """HLS 媒体列表（master 的同目录相对地址指到这里，见 video_hls_master）。
+
+    内容与网页播放器的 ``/api/v1/playback/sessions/{id}/index.m3u8`` 同源：有
+    分片规划就按规划一次生成完整 VOD 列表，否则转发 ffmpeg 边写的列表；区别只在
+    分片地址改成 ``hls1/main/…`` 并带上会话 id 与凭据。设备鉴权由路由组统一做，
+    会话归属看取流 token；路径里的 item_id 只为让播放器的相对地址落到本目录。
+    """
+    grant = await verify_stream_token(token, session_id=session)
+    if grant is None:
+        raise not_found()
+    live = get_session_manager().get(session, member_id=grant.member_id)
+    if live is None:
+        raise not_found()
+    live.touch()  # 拉列表也算活着
+    query = _hls_query(session, token, extract_token(request))
+    if live.segment_plan is not None:
+        # TS 会话没有 init 段（分片自含 PAT/PMT），列表不写 EXT-X-MAP
+        playlist = build_media_playlist(
+            live.segment_plan,
+            init_name=None if is_mpegts(live.plan) else f"{_HLS_SEGMENT_DIR}/{INIT_NAME}",
+            segment_name=f"{_HLS_SEGMENT_DIR}/{segment_pattern(live.plan)}",
+            query=query,
+        )
+    else:
+        if not live.playlist_path.exists():
+            raise not_found()
+        raw = await asyncio.to_thread(live.playlist_path.read_text, encoding="utf-8")
+        playlist = _relocate_playlist(raw, prefix=_HLS_SEGMENT_DIR, query=query)
+    return Response(
+        content=playlist,
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/Videos/{item_id}/hls1/main/{name}")
+async def video_hls_segment(request: Request, item_id: str, name: str, session: str, token: str):
+    """分片与初始化段：直接复用网页播放器的分片端点（文件名白名单、token 校验、
+    等 ffmpeg 转到位/seek 重起、限速与活动计量都在那里），只把 API 的 404 换成
+    Jellyfin 形态的空 404。"""
+    try:
+        return await get_session_segment(request, session, name, token)
+    except NotFoundException:
+        raise not_found() from None
 
 
 async def _capped_transcode_spec(f: LibraryFile, params: TranscodeParams) -> _SessionSpec:
@@ -879,7 +998,13 @@ async def _capped_transcode_spec(f: LibraryFile, params: TranscodeParams) -> _Se
         default_index = resolve_default_audio(f, None)
         audio_ref = embedded_track(default_index if default_index is not None else 0)
     decision = plan_capped_transcode(
-        media_profile_from_file(f), policy, preferred_audio=audio_ref, max_height=params.max_height
+        media_profile_from_file(f),
+        policy,
+        preferred_audio=audio_ref,
+        max_height=params.max_height,
+        segment_container=params.segment_container,
+        audio_codecs=frozenset(params.audio_codecs) if params.audio_codecs else None,
+        max_audio_channels=params.max_audio_channels,
     )
     if isinstance(decision, PlaybackRejected):
         logger.warning("Jellyfin 转码请求被拒绝：%s（%s）", f.file_path, decision.reason)

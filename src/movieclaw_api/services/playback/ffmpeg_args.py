@@ -54,6 +54,19 @@ PLAYLIST_NAME = "index.m3u8"
 LIVE_PLAYLIST_NAME = "live.m3u8"
 INIT_NAME = "init.mp4"
 SEGMENT_PATTERN = "seg%05d.m4s"
+#: MPEG-TS 分片的文件名模板（plan.container == "hls-ts"，只给申报 TS 的第三方播放器）
+TS_SEGMENT_PATTERN = "seg%05d.ts"
+
+
+def is_mpegts(plan: PlaybackPlan) -> bool:
+    """本计划是否出 MPEG-TS 分片（否则 fMP4/CMAF）。"""
+    return plan.container == "hls-ts"
+
+
+def segment_pattern(plan: PlaybackPlan) -> str:
+    """按计划容器取分片文件名模板：会话目录、播放列表、缓存台账都按它命名。"""
+    return TS_SEGMENT_PATTERN if is_mpegts(plan) else SEGMENT_PATTERN
+
 
 #: 分片时长（秒）。转码档自己控制 GOP，可以精确对齐；直通档 copy 模式下
 #: ffmpeg 只能切在源片已有的关键帧上，这个值是「至少多久」，实际分片会更长。
@@ -463,6 +476,7 @@ def build_hls_command(
         argv += ["-copyts", "-avoid_negative_ts", "disabled", "-start_at_zero"]
     argv += _hls_args(
         session_dir,
+        mpegts=is_mpegts(plan),
         start_number=start_number,
         output_base_url=output_base_url,
         output_url_suffix=output_url_suffix,
@@ -704,18 +718,23 @@ def _audio_args(plan: PlaybackPlan, *, has_audio: bool, absolute_ts: bool) -> li
 def _hls_args(
     session_dir: Path,
     *,
+    mpegts: bool = False,
     start_number: int | None = None,
     output_base_url: str | None = None,
     output_url_suffix: str = "",
 ) -> list[str]:
-    """fMP4/CMAF 分片。不用 MPEG-TS：同一份分片将来可同时喂 HLS 和 DASH，
-    加 DASH/离线只是多一份 manifest。
+    """默认 fMP4/CMAF 分片：同一份分片将来可同时喂 HLS 和 DASH，加 DASH/离线
+    只是多一份 manifest。``mpegts=True`` 改出 MPEG-TS 分片（无 init 段、``.ts``
+    后缀）——只给 DeviceProfile 申报 ``Container=ts`` 的第三方播放器（Infuse 拿到
+    fMP4 分片探一下就报错，见 docs/design/jellyfin-transcode.md §4）；hls muxer 对
+    mpegts 自动套 h264_mp4toannexb / ADTS，不用手工加 bsf。
 
     ``-hls_playlist_type event``：playlist 只增不改，边转边给——会话起来后
     立刻返回 m3u8，不等分片（首帧延迟的关键）。VOD 模式下这份列表只是内部
     进度追踪（客户端的列表由服务端预生成），``-start_number`` 让 seek 重启
     后的分片文件名接上全片编号。
     """
+    pattern = TS_SEGMENT_PATTERN if mpegts else SEGMENT_PATTERN
     if output_base_url:
         # HLS muxer 会把 fMP4 init、每个分片和 playlist 分别作为 HTTP 资源
         # 打开。init 文件名是个例外：muxer 会把它按播放列表 URL 的目录解析，
@@ -725,19 +744,21 @@ def _hls_args(
         # 端点负责把请求体写入临时文件后原子替换，避免浏览器读到半个 moof。
         output_base = output_base_url.rstrip("/")
         init_filename = f"{INIT_NAME}{output_url_suffix}"
-        segment_filename = f"{output_base}/{SEGMENT_PATTERN}{output_url_suffix}"
+        segment_filename = f"{output_base}/{pattern}{output_url_suffix}"
     else:
         init_filename = INIT_NAME
-        segment_filename = str(session_dir / SEGMENT_PATTERN)
+        segment_filename = str(session_dir / pattern)
 
     args = [
         *(["-rw_timeout", str(REMOTE_IO_TIMEOUT_US)] if output_base_url else []),
         "-f", "hls",
         "-hls_time", str(SEGMENT_SECONDS),
-        "-hls_segment_type", "fmp4",
-        "-hls_fmp4_init_filename", init_filename,
-        "-hls_segment_filename", segment_filename,
     ]
+    if mpegts:
+        args += ["-hls_segment_type", "mpegts"]
+    else:
+        args += ["-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", init_filename]
+    args += ["-hls_segment_filename", segment_filename]
     if output_base_url:
         # HTTP 输出必须显式使用 PUT：POST 会被 Starlette 当成普通接口请求，
         # 也无法用同一个 URL 做幂等重传。Jellyfin-ffmpeg 的 HLS muxer 会为
@@ -750,13 +771,14 @@ def _hls_args(
         "-hls_playlist_type", "event",
         "-hls_list_size", "0",
         "-hls_flags", "independent_segments",
+    ]
+    if not mpegts:
         # fMP4 分片的时间基修正（Jellyfin 同款，它注释写明了这两个 movflag
         # 就是治分片衔接处画面闪）：
         # +frag_discont —— 每个 moof 的 TFDT 写含初始 delay 的真实 DTS，
         #   不写就是「假定紧接上一段」，音频有编码器 delay 时拼接点错位；
         # +skip_sidx —— HLS 用不到 sidx，而 ffmpeg 写 sidx 时会回头改写
         #   open-GOP 边界包的 PTS，正是切片处闪一帧的经典成因。
-        "-hls_segment_options", "movflags=+frag_discont+skip_sidx",
-        "-y",
-    ]
+        args += ["-hls_segment_options", "movflags=+frag_discont+skip_sidx"]
+    args.append("-y")
     return args
