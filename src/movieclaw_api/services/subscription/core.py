@@ -40,7 +40,6 @@ from movieclaw_api.services.subscription.cleanup import (
 from movieclaw_api.services.subscription.matching import publish_calendar_date
 from movieclaw_api.services.subscription.release_forecast import (
     next_forecast_probe_times_by_wanted,
-    refresh_release_forecasts,
 )
 from movieclaw_api.services.system_notice import resolve_notices
 from movieclaw_db.models import (
@@ -483,7 +482,7 @@ class SubscriptionService:
             },
         )
         await self._recompute_status(subscription, item)
-        await refresh_release_forecasts(self._session, media_item_ids={item.id})
+        self._refresh_forecasts_soon(item.id)
         logger.info(
             "已订阅《%s》(%s)：勾选季 %s，自动续订 %s，生成工单 %d 个",
             item.title,
@@ -637,9 +636,7 @@ class SubscriptionService:
             },
         )
         await self._recompute_status(subscription, item)
-        await refresh_release_forecasts(
-            self._session, media_item_ids={subscription.media_item_id}
-        )
+        self._refresh_forecasts_soon(subscription.media_item_id)
         logger.info(
             "订阅 #%s 已调整：新增 %d 个，重新纳入 %d 个，退出范围 %d 个，取消尝试 %d 个",
             subscription_id,
@@ -937,9 +934,7 @@ class SubscriptionService:
         await self._log(subscription, ActivityType.RESUMED, "已恢复追踪")
         item = await self._media_repo_get(subscription.media_item_id)
         await self._recompute_status(subscription, item)
-        await refresh_release_forecasts(
-            self._session, media_item_ids={subscription.media_item_id}
-        )
+        self._refresh_forecasts_soon(subscription.media_item_id)
         self._kick_search()  # 暂停期间积压的到期工单立即处理
         return subscription
 
@@ -1521,6 +1516,19 @@ class SubscriptionService:
         from movieclaw_api.services.subscription.wanted_search import kick_search_soon
 
         kick_search_soon()
+
+    def _refresh_forecasts_soon(self, media_item_id: int) -> None:
+        """E 变化后在后台刷新该条目的资源发布时间预测，不挡在请求路径上。
+
+        与 ``_kick_search`` 同一收口方式：预测是派生值，晚几秒无害；同步跑则要
+        把近 90 天的种子索引整个读出来解析匹配（见 release_forecast）。延迟导入
+        让测试能整体打桩。
+        """
+        from movieclaw_api.services.subscription.release_forecast import (
+            refresh_release_forecasts_soon,
+        )
+
+        refresh_release_forecasts_soon({media_item_id})
 
     async def _movie_plan(self, item: MediaItem) -> tuple[datetime | None, int]:
         """电影哨兵工单的上映感知调度：上映日期取自条目档案（建档事务已写入）。"""

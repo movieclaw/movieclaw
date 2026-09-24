@@ -50,12 +50,13 @@ from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library.recycle import DEFAULT_RETENTION
 from movieclaw_api.services.media_discover import get_tmdb_client
 from movieclaw_api.services.media_library import MediaLibraryService
-from movieclaw_api.services.subscription import SubscriptionService
+from movieclaw_api.services.subscription import SubscriptionService, forecast_refresh_pending
 from movieclaw_api.services.title_discovery import (
     get_title_discovery_service,
     parse_title_ref,
 )
 from movieclaw_db.engine import get_session
+from movieclaw_db.models import MediaItem, Subscription, WantedItem
 from movieclaw_db.repositories import LibraryFileRepository, MediaItemRepository
 from movieclaw_media import DoubanError, TmdbError
 from movieclaw_media.library import ResolveStatus
@@ -85,6 +86,23 @@ def _job_origin(client_name: object) -> str:
     if isinstance(client_name, str) and client_name.lower() in {"web", "cli", "agent"}:
         return client_name.lower()
     return "web"
+
+
+def _detail_view(
+    sub: Subscription,
+    item: MediaItem,
+    wanted: list[WantedItem],
+    resource_timings: dict[tuple[int, int], dict[str, object]],
+    rule_spec: object | None = None,
+) -> SubscriptionDetailView:
+    """组装订阅详情，并标注预测是否还在后台刷新。
+
+    订阅创建/调整/恢复后预测刷新挪到了后台（见 release_forecast.refresh_release_forecasts_soon），
+    这几秒里返回的预测可能是旧值或空值；带上 forecast_pending，调用方就知道该稍后重取。
+    """
+    view = SubscriptionDetailView.from_detail(sub, item, wanted, resource_timings, rule_spec)
+    view.forecast_pending = forecast_refresh_pending(view.media.media_item_id)
+    return view
 
 
 async def _prepare_resolved_target(
@@ -278,7 +296,7 @@ async def create_subscription(
     resource_timings = await service.resource_timings(subscription.id)
     return ok(
         SubscriptionCreateView(
-            subscription=SubscriptionDetailView.from_detail(sub, item, wanted, resource_timings),
+            subscription=_detail_view(sub, item, wanted, resource_timings),
             download_routing=download_routing,
         ),
         message="已加入订阅，正在搜索缺失资源",
@@ -441,7 +459,7 @@ async def get_subscription(
             rule_spec = RuleSetSpec.model_validate(rule_set.spec or {})
         except ValueError:
             rule_spec = None
-    return ok(SubscriptionDetailView.from_detail(sub, item, wanted, resource_timings, rule_spec))
+    return ok(_detail_view(sub, item, wanted, resource_timings, rule_spec))
 
 
 @router.get(
@@ -513,7 +531,7 @@ async def update_subscription(
     sub, item, wanted = await service.detail(subscription_id)
     resource_timings = await service.resource_timings(subscription_id)
     return ok(
-        SubscriptionDetailView.from_detail(sub, item, wanted, resource_timings),
+        _detail_view(sub, item, wanted, resource_timings),
         message="订阅已调整",
     )
 
@@ -623,7 +641,7 @@ async def _set_tracking_state(
     resource_timings = await service.resource_timings(subscription_id)
     message = "已暂停，资源匹配与搜索将跳过该订阅" if paused else "已恢复追踪"
     return ok(
-        SubscriptionDetailView.from_detail(sub, item, wanted, resource_timings),
+        _detail_view(sub, item, wanted, resource_timings),
         message=message,
     )
 
@@ -670,7 +688,7 @@ async def set_subscription_follow_future(
     resource_timings = await service.resource_timings(subscription_id)
     message = "已开启自动续订" if payload.enabled else "已关闭自动续订"
     return ok(
-        SubscriptionDetailView.from_detail(sub, item, wanted, resource_timings),
+        _detail_view(sub, item, wanted, resource_timings),
         message=message,
     )
 

@@ -212,6 +212,11 @@ export interface WantedItem {
 
 export interface SubscriptionDetail extends Subscription {
   wanted: WantedItem[];
+  /**
+   * 资源发布时间预测正在后台刷新（订阅创建/调整/恢复后的几秒内）。
+   * 为 true 时 wanted[].release_forecast 可能还是旧值或空值，稍后重取即可。
+   */
+  forecast_pending: boolean;
 }
 
 /** 规则组过滤条件（见 movieclaw_matcher.RuleSetSpec）：全部键可缺省=不限。 */

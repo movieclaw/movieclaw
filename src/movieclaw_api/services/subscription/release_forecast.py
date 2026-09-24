@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
@@ -19,7 +20,9 @@ from datetime import UTC, date, datetime, timedelta
 from statistics import median
 from typing import Any
 
+from sqlalchemy import Row
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import StaleDataError
 from sqlmodel import select
 
 from movieclaw_api.services.subscription.matching import (
@@ -27,6 +30,7 @@ from movieclaw_api.services.subscription.matching import (
     publish_calendar_date,
     to_candidate,
 )
+from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
     ConfigStatus,
     MediaEpisode,
@@ -47,6 +51,8 @@ logger = logging.getLogger("movieclaw_api.subscription.release_forecast")
 FORECAST_VERSION = 1
 FORECAST_MIN_INTERVAL = timedelta(minutes=15)
 _OBSERVATION_LOOKBACK = timedelta(days=90)
+# 种子索引分批取回的批大小（见 _load_recent_candidates）
+_LOAD_CHUNK = 500
 _MAX_HISTORY_EPISODES = 4
 _MAX_WINDOW = timedelta(hours=12)
 _EARLY_RELEASE_TOLERANCE = timedelta(days=2)
@@ -158,26 +164,60 @@ def _same_forecast(left: dict[str, Any], right: dict[str, Any]) -> bool:
     )
 
 
+# 观测只用得上这几列（to_candidate 的输入 + 观测的 id/站点/发布时间）：按列取 Core 行
+# 而不是装配整行 ORM 对象——同样 4 万行，装配 3 秒缩到 1 秒，垃圾回收要扫的对象也少一大截
+_CANDIDATE_COLUMNS = (
+    SiteTorrent.id,
+    SiteTorrent.site_id,
+    SiteTorrent.torrent_id,
+    SiteTorrent.title,
+    SiteTorrent.subtitle,
+    SiteTorrent.category,
+    SiteTorrent.attrs,
+    SiteTorrent.imdb_id,
+    SiteTorrent.douban_id,
+    SiteTorrent.size_bytes,
+    SiteTorrent.seeders,
+    SiteTorrent.is_free,
+    SiteTorrent.hit_and_run,
+    SiteTorrent.download_url,
+    SiteTorrent.publish_time,
+)
+
+
 async def _load_recent_candidates(
     session: AsyncSession, *, now: datetime
-) -> list[tuple[SiteTorrent, TorrentCandidate]]:
+) -> list[tuple[Row, TorrentCandidate]]:
     """一次读取并解析近期种子，供本轮全部活跃剧集复用。"""
-    result = await session.execute(
-        select(SiteTorrent).where(
-            SiteTorrent.publish_time.is_not(None),  # type: ignore[union-attr]
-            SiteTorrent.publish_time >= now - _OBSERVATION_LOOKBACK,
-        )
+    statement = select(*_CANDIDATE_COLUMNS).where(
+        SiteTorrent.publish_time.is_not(None),  # type: ignore[union-attr]
+        SiteTorrent.publish_time >= now - _OBSERVATION_LOOKBACK,
     )
-    candidates: list[tuple[SiteTorrent, TorrentCandidate]] = []
-    invalid_attrs = 0
-    for row in result.scalars().all():
-        try:
-            candidate = to_candidate(row)
-        except ValueError:
-            invalid_attrs += 1
-            continue
-        if candidate is not None:
-            candidates.append((row, candidate))
+    # 分批取回而不是一次 .all()：几万行的装配只能在事件循环线程上做（会话不能跨
+    # 线程），一口气取回会把整个循环卡住好几秒；分批之后每批之间都把控制权还给
+    # 事件循环，其他请求最多只等一批的工夫（实测一次性取回卡 2 秒多，分批后不到 0.2 秒）
+    rows: list[Row] = []
+    result = await session.stream(statement.execution_options(yield_per=_LOAD_CHUNK))
+    async for partition in result.partitions(_LOAD_CHUNK):
+        rows.extend(partition)
+
+    def _parse() -> tuple[list[tuple[Row, TorrentCandidate]], int]:
+        parsed: list[tuple[Row, TorrentCandidate]] = []
+        invalid = 0
+        for row in rows:
+            try:
+                candidate = to_candidate(row)
+            except ValueError:
+                invalid += 1
+                continue
+            if candidate is not None:
+                parsed.append((row, candidate))
+        return parsed, invalid
+
+    # 逐行 pydantic 校验是纯 CPU：站点同步了几个月的索引有几万行，放在事件循环
+    # 里跑会把同一时刻的所有 HTTP 请求一起卡住。行已经读进内存、列都已加载，
+    # 线程里只做只读属性访问，不碰会话
+    candidates, invalid_attrs = await asyncio.to_thread(_parse)
     if invalid_attrs:
         logger.warning(
             "生成资源发布时间预测时跳过 %s 条属性格式异常的种子索引，请检查富化数据",
@@ -190,7 +230,7 @@ def _observations_for_item(
     *,
     item: MediaItem,
     episodes: list[MediaEpisode],
-    candidates: list[tuple[SiteTorrent, TorrentCandidate]],
+    candidates: list[tuple[Row, TorrentCandidate]],
     season_titles: tuple[str, ...] = (),
 ) -> list[_ObservedRelease]:
     """从 site_torrent 提取本条目的明确单集观测；整季包与多集包不参与训练。"""
@@ -436,7 +476,9 @@ async def refresh_release_forecasts(
             .scalars()
             .all()
         )
-        observations = _observations_for_item(
+        # 身份匹配同样是纯 CPU（每个候选跑一遍 match_identity），与解析同理进线程
+        observations = await asyncio.to_thread(
+            _observations_for_item,
             item=item,
             episodes=episodes,
             candidates=candidates,
@@ -463,6 +505,79 @@ async def refresh_release_forecasts(
         await session.commit()
         logger.info("已更新 %s 个订阅单集的资源发布时间预测", changed)
     return changed
+
+
+# fire-and-forget 任务的强引用集合：asyncio 只持弱引用，不留强引用的话
+# 任务可能在执行前被垃圾回收（与 wanted_search._kick_tasks 同一套路）。
+_refresh_tasks: set[asyncio.Task] = set()
+# 排队中（还没开始执行）的条目：同一条目连续触发（创建→调整→恢复）只跑一次。
+# 开始执行后就从这里移除——执行中再触发要重新排一次，本次可能读不到之后的变化
+_queued_ids: set[int] = set()
+# 正在执行的条目。与 _queued_ids 一起回答「这个条目的预测是不是还在路上」，
+# 详情页据此决定要不要稍后再取一次（见 forecast_refresh_pending）
+_running_ids: set[int] = set()
+# 串行执行：每次刷新都要把整个索引解析一遍，两份并行只会让事件循环更挤，不会更快
+_refresh_lock = asyncio.Lock()
+
+
+def forecast_refresh_pending(media_item_id: int) -> bool:
+    """该条目是否有排队中或执行中的后台预测刷新。
+
+    订阅创建/调整/恢复后预测要晚几秒才落库，这期间详情页读到的是旧快照或空快照。
+    返回 True 时前端应稍后重取，而不是把「待播出」当成最终结论展示。
+    """
+    return media_item_id in _queued_ids or media_item_id in _running_ids
+
+
+async def _refresh_once(media_item_ids: set[int]) -> None:
+    """后台刷新的执行体：自开会话，失败只记日志（定时任务会兜底全量重算）。"""
+    async with _refresh_lock:
+        _queued_ids.difference_update(media_item_ids)
+        _running_ids.update(media_item_ids)
+        try:
+            try:
+                async with get_database().session() as session:
+                    await refresh_release_forecasts(session, media_item_ids=media_item_ids)
+            except StaleDataError:
+                # 装载工单到提交之间有订阅被删（典型场景：订阅后立刻取消），UPDATE
+                # 对不上行，整批回滚——同批其他条目的预测也跟着丢了。这不是故障，
+                # 换新会话按最新数据重算一次：已删的自然查不到，其余照常写入
+                logger.info(
+                    "刷新条目 %s 的预测期间有订阅被删除，按最新数据重算一次",
+                    sorted(media_item_ids),
+                )
+                async with get_database().session() as session:
+                    await refresh_release_forecasts(session, media_item_ids=media_item_ids)
+        except Exception:  # noqa: BLE001 -- 环境未就绪（如关停中）时静默降级
+            logger.warning(
+                "后台刷新条目 %s 的资源发布时间预测失败，等待定时任务兜底",
+                sorted(media_item_ids),
+                exc_info=True,
+            )
+        finally:
+            _running_ids.difference_update(media_item_ids)
+
+
+def refresh_release_forecasts_soon(media_item_ids: set[int]) -> None:
+    """把预测刷新挪出请求路径（订阅创建/调整/恢复共用的唯一触发点）。
+
+    预测快照是可重算的派生值，晚几秒落库对功能没有影响：首页预告在快照缺席时
+    按播出日期兜底，站点探测计划也只在到点时才读取它。而同步刷新要把近 90 天的
+    全部种子索引读出来逐行解析、匹配，索引一大就是秒级——用户点一下「订阅」
+    没有理由等这个。请求会话在响应后即关闭，所以这里必须自开会话。
+    没有运行中的事件循环时（如同步脚本）静默跳过，交给定时任务兜底。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    new_ids = set(media_item_ids) - _queued_ids
+    if not new_ids:
+        return  # 同条目的刷新已在排队，合并进那一次
+    _queued_ids.update(new_ids)
+    task = loop.create_task(_refresh_once(new_ids))
+    _refresh_tasks.add(task)
+    task.add_done_callback(_refresh_tasks.discard)
 
 
 def _forecast_site_probes(
