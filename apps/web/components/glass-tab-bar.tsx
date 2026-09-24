@@ -13,6 +13,7 @@ import {
 } from "react";
 
 import { ActivityIcon, BookmarkIcon, CompassIcon, LibraryIcon } from "@/components/icons";
+import { mediaLiveCount, useMediaActivity } from "@/components/media-activity-section";
 import { SearchCommand } from "@/components/search-command";
 import {
   liquidKeyframes,
@@ -124,6 +125,14 @@ export function GlassTabBar() {
   ];
   // 活动页签的任务圆点（iOS 页签红点惯例）：告警红 / 否则提示蓝；数据来自全站 Provider
   const activityBadge = taskActivityBadge(useTaskActivity());
+  // 观看圆点：此刻有人在播就亮绿色。只有管理员有活动页签，也只有管理员能读
+  // 媒体活动接口，按同一个权限门控轮询，成员不会打出 403
+  const liveCount = mediaLiveCount(useMediaActivity(isAdmin).snapshot);
+  const showTaskDot = activityBadge.count > 0;
+  const showLiveDot = liveCount > 0;
+  const activityHint = [showLiveDot ? "有人正在观看" : "", showTaskDot ? activityBadge.hint : ""]
+    .filter(Boolean)
+    .join("，");
   const count = tabs.length;
   const activeIndex = tabs.findIndex((tab) => tab.id === activeTabId(pathname));
   const ActiveIcon = activeIndex >= 0 ? tabs[activeIndex].Icon : null;
@@ -410,14 +419,16 @@ export function GlassTabBar() {
                 <Icon />
                 <span>{label}</span>
                 {/* 小圆点而不是数字：iOS 标签栏的「有新动态」惯例，数字角标在 26px
-                    图标旁太重（用户看过实机截图直接否掉）；具体数量进活动页看 */}
-                {id === "activity" && activityBadge.count > 0 && (
-                  <span
-                    className="glass-tabbar__badge"
-                    data-alert={activityBadge.alert}
-                    title={activityBadge.hint}
-                    aria-label={activityBadge.hint}
-                  />
+                    图标旁太重（用户看过实机截图直接否掉）；具体数量进活动页看。
+                    任务点与观看点可同时出现、并排显示（为何不合成一颗见 globals.css
+                    .glass-tabbar__badges） */}
+                {id === "activity" && (showTaskDot || showLiveDot) && (
+                  <span className="glass-tabbar__badges" title={activityHint} aria-label={activityHint}>
+                    {showTaskDot && (
+                      <span className="glass-tabbar__badge" data-alert={activityBadge.alert} />
+                    )}
+                    {showLiveDot && <span className="glass-tabbar__badge" data-live="true" />}
+                  </span>
                 )}
               </Link>
             ))}

@@ -1942,13 +1942,23 @@ body.cmdk-open .app-shell {
   letter-spacing: 0.01em;
 }
 
-/* 页签圆点（活动页签「有任务在跑/待处理」）：贴在图标右上角，iOS 标签栏红点的
-   规格——6px 实心点、一圈与胶囊同色的描边把它从图标线条里托出来；告警态红、
-   否则提示蓝。不带数字：26px 图标旁的数字角标太重 */
-.glass-tabbar__badge {
+/* 页签圆点（活动页签）：贴在图标右上角，iOS 标签栏红点的规格——7px 实心点、
+   一圈与胶囊同色的描边把它从图标线条里托出来。不带数字：26px 图标旁的数字
+   角标太重。
+   活动页签最多同时挂两颗点，语义与活动页一级切换器逐一对应：
+     - 任务点：告警红（需要处理）/ 否则提示蓝（进行中），贴图标、排在前；
+     - 观看点：绿色呼吸点（此刻有人在播），跟在任务点后面、略微叠压。
+   两颗并排而不是按优先级合成一颗：合成的话要么绿点盖住红色告警，要么蓝色
+   进行中盖住「有人在看」，总有一类信息被吞掉；叠压的描边让两颗点读作一组。 */
+.glass-tabbar__badges {
   position: absolute;
   top: 9px;
   left: calc(50% + 8px);
+  display: flex;
+}
+
+.glass-tabbar__badge {
+  position: relative;
   width: 7px;
   height: 7px;
   border-radius: 999px;
@@ -1956,8 +1966,42 @@ body.cmdk-open .app-shell {
   box-shadow: 0 0 0 2px rgba(22, 25, 34, 0.75);
 }
 
+.glass-tabbar__badge + .glass-tabbar__badge {
+  margin-left: -1px;
+}
+
 .glass-tabbar__badge[data-alert="true"] {
   background: var(--danger-solid);
+}
+
+.glass-tabbar__badge[data-live="true"] {
+  background: var(--ok);
+}
+
+/* 观看点的呼吸扩散环，对应活动页切换器上 animate-ping 的那一圈 */
+.glass-tabbar__badge[data-live="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--ok);
+  opacity: 0.6;
+  animation: glass-tabbar-live-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes glass-tabbar-live-ping {
+  75%,
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass-tabbar__badge[data-live="true"]::after {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 /* 收起态圆钮：钉在胶囊左端、与胶囊收拢后同宽，胶囊变窄时图标原地不动

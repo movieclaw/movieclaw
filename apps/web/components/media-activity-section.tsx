@@ -62,8 +62,23 @@ export interface MediaActivityState {
 }
 
 /**
- * 媒体库活动快照的轮询装载。活动页是唯一消费方，单挂载点即可，
- * 不需要 Provider；页面隐藏时暂停，恢复可见立即校准。
+ * 「此刻有人在播」的计数口径：范围外折叠的会话也算，圆点只表达有无、不出片名。
+ * 活动页切换器上的观看点与底栏活动页签的观看点共用这一口径。
+ */
+export function mediaLiveCount(snapshot: MediaActivitySnapshot): number {
+  return (
+    snapshot.sessions.length +
+    snapshot.downloads.length +
+    snapshot.hidden_session_count +
+    snapshot.hidden_download_count
+  );
+}
+
+/**
+ * 媒体库活动快照的轮询装载；页面隐藏时暂停，恢复可见立即校准。
+ * 消费方是活动页与移动端底栏（活动页签的观看点），各自挂载、各自轮询——
+ * 底栏只在手机银玻璃形态且为管理员时启用，两处同时在场只有停在活动页那一刻，
+ * 多一路 8 秒一次的轻量请求，不值得为它再抽一层 Provider。
  */
 export function useMediaActivity(enabled: boolean): MediaActivityState {
   const [snapshot, setSnapshot] = useState<MediaActivitySnapshot>(EMPTY_SNAPSHOT);
