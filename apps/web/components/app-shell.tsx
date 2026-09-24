@@ -15,7 +15,7 @@ import { usePendingUpdate } from "@/components/app-update-entry";
 import { AvatarBadge } from "@/components/avatar-badge";
 import { MobileSheet } from "@/components/compose-sheet";
 import { MorePage } from "@/components/more-page";
-import { ChevronLeftIcon, PencilIcon } from "@/components/icons";
+import { ChevronLeftIcon, PencilIcon, PlusIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS } from "@/components/page-nav";
 import { SearchCommand, type SearchSubmitOptions } from "@/components/search-command";
 import { Sidebar } from "@/components/sidebar";
@@ -428,7 +428,7 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
           <MobileTopBar
             onSearch={handleSearch}
             showSearch={!showGlassTabBar}
-            onCompose={isAdmin && isNetflix ? openCompose : undefined}
+            onCompose={isAdmin ? openCompose : undefined}
             actions={topBarActions}
             title={topBarTitle?.text}
             backHref={topBarTitle?.backHref}
@@ -597,11 +597,34 @@ function MobileTopBar({
                 在 390px 视口里会占掉近三分之一顶栏，M 标 24px 方正得下。 */}
             <MovieclawMark className="size-6" />
           </button>
+        ) : onAvatar ? (
+          /* 银玻璃手机（2026-09-24 用户拍板）：左上角放头像圆钮替掉字标——「左头像、
+             右新建」是 X / Reddit / Slack 首页一类的成熟布局；头像点开「更多」面板
+             （账号、设置、会话）。字标原本的「回发现」职责由底栏首个页签接管，品牌
+             只在启动页与设置里出现。右上角腾出来给撰写键（见右侧簇）。 */
+          <button
+            type="button"
+            onClick={onAvatar}
+            aria-label="更多"
+            className={`${PAGE_NAV_BUTTON_CLASS} relative shrink-0`}
+          >
+            <AvatarBadge
+              nickname={session.nickname}
+              avatarUrl={session.avatar_url}
+              className="size-[26px] text-caption"
+            />
+            {pendingUpdate && (
+              <span
+                aria-hidden="true"
+                className="absolute right-0.5 top-0.5 size-[7px] rounded-full bg-[var(--info)] shadow-[0_0_0_2px_rgba(22,25,34,0.75)]"
+              />
+            )}
+          </button>
         ) : (
           /* 字标可点区拉到 44px 高（与图标键同标准）——图片本身保持 h-7 的视觉
              大小，命中区靠按钮撑起，否则 28px 高的字标在触屏上很难点中。
              银玻璃移动端的首页就是底栏首个页签「发现」（/ 在手机上 replace 到
-             /discover/movie，新任务收进「更多」页），字标直达它，省一次重定向 */
+             /discover/movie），字标直达它，省一次重定向 */
           <button
             type="button"
             onClick={() => router.push("/discover/movie" as Route)}
@@ -632,30 +655,9 @@ function MobileTopBar({
               <SearchCommand onSearch={onSearch} triggerClassName={PAGE_NAV_BUTTON_CLASS} />
             </div>
           )}
-          {/* 头像圆钮（银玻璃顶层页）：账号、设置、会话等非内容入口都从这里弹「更多」
-              面板——Apple 自家 App 的右上角头像惯例；标题页（会话页）不放 */}
-          {onAvatar && !title && (
-            <button
-              type="button"
-              onClick={onAvatar}
-              aria-label="更多"
-              className={`${PAGE_NAV_BUTTON_CLASS} relative shrink-0`}
-            >
-              <AvatarBadge
-                nickname={session.nickname}
-                avatarUrl={session.avatar_url}
-                className="size-[26px] text-caption"
-              />
-              {pendingUpdate && (
-                <span
-                  aria-hidden="true"
-                  className="absolute right-0.5 top-0.5 size-[7px] rounded-full bg-[var(--info)] shadow-[0_0_0_2px_rgba(22,25,34,0.75)]"
-                />
-              )}
-            </button>
-          )}
-          {/* 新会话撰写键（Netflix 主题）：iOS 信息 / 邮件的 compose 惯例，点开进 /new；
-              与 PageNav 同一副圆形玻璃键 */}
+          {/* 新会话撰写键：iOS 信息 / 邮件的 compose 惯例，点开进 /new，四个顶层页与
+              会话页（聊完直接开下一个）都有；与 PageNav 同一副圆形玻璃键。银玻璃用
+              「+」（用户拍板，比撰写图标好看），Netflix 维持原来的光笔 */}
           {onCompose && (
             <button
               type="button"
@@ -663,7 +665,11 @@ function MobileTopBar({
               aria-label="新会话"
               className={`${PAGE_NAV_BUTTON_CLASS} shrink-0`}
             >
-              <PencilIcon className="size-[20px]" />
+              {isNetflix ? (
+                <PencilIcon className="size-[20px]" />
+              ) : (
+                <PlusIcon className="size-[22px]" />
+              )}
             </button>
           )}
         </div>

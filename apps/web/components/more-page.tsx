@@ -15,14 +15,12 @@ import {
   ChevronRightIcon,
   GearIcon,
   LogoutIcon,
-  PencilIcon,
   UserIcon,
 } from "@/components/icons";
 import { NoticeCenter } from "@/components/notice-center";
 import { logout } from "@/lib/api/auth";
 import { useAgentConversations } from "@/lib/agent-conversations";
 import { clearBackdropCache } from "@/lib/backdrop-cache";
-import { usePageChrome } from "@/lib/page-chrome";
 import { accessiblePathFor, roleLabel, usePermissions } from "@/lib/permissions";
 import { useSession } from "@/lib/session";
 import type { TaskActivityBadge } from "@/lib/task-activity";
@@ -35,8 +33,8 @@ import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
  * 抽屉侧栏在移动端退役后，它承载的低频入口与账号操作都收在这里，版式对齐
  * iOS「更多 / 设置」的分组列表（inset grouped）：
  *   - 用户头：头像 + 昵称 + 角色；
- *   - 常用：新会话（进 /new 整页，手机上的唯一入口）/ 待处理事项 / 设置 /
- *     应用更新（活动已提到底栏页签，这里不再重复放）；
+ *   - 常用：个人信息 / 待处理事项 / 设置 / 应用更新（新会话走顶栏右上角的「+」
+ *     撰写键，活动已提到底栏页签，这里都不重复放）；
  *   - 账号：切换账号 / 退出登录——紧跟设置之后，不被下面会长的会话列表推到页底；
  *   - 最近会话：AI 会话列表，点击直达会话页。默认只列最近几条，其余收在
  *     「显示全部」一行里就地展开（iOS 设置列表的惯例；卡片内滚动条试过，用户
@@ -48,7 +46,6 @@ import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
  */
 export function MorePage() {
   const router = useRouter();
-  const chrome = usePageChrome();
   const { session } = useSession();
   const { isAdmin } = usePermissions();
   const { conversations, rename, remove, fork } = useAgentConversations();
@@ -138,9 +135,13 @@ export function MorePage() {
         </header>
 
         <MoreGroup label="常用">
-          {isAdmin && chrome && (
-            <MoreRow Icon={PencilIcon} label="新会话" onClick={chrome.openCompose} />
-          )}
+          {/* 新会话已有顶栏右上角的「+」撰写键（app-shell），这里改放个人信息入口：
+              账号头就在上面，点进去改头像 / 昵称 / 密码是最顺的一步 */}
+          <MoreRow
+            Icon={UserIcon}
+            label="个人信息"
+            onClick={() => router.push("/settings/profile" as Route)}
+          />
           {/* 待处理事项与应用更新：组件自轮询，无事时整行不渲染 */}
           <NoticeCenter collapsed={false} />
           <MoreRow Icon={GearIcon} label="设置" onClick={() => router.push("/settings" as Route)} />
