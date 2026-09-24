@@ -1944,30 +1944,18 @@ body.cmdk-open .app-shell {
 
 /* 页签圆点（活动页签）：贴在图标右上角，iOS 标签栏红点的规格——7px 实心点、
    一圈与胶囊同色的描边把它从图标线条里托出来。不带数字：26px 图标旁的数字
-   角标太重。
-   活动页签最多同时挂两颗点，语义与活动页一级切换器逐一对应：
-     - 任务点：告警红（需要处理）/ 否则提示蓝（进行中），贴图标、排在前；
-     - 观看点：绿色呼吸点（此刻有人在播），跟在任务点后面、略微叠压。
-   两颗并排而不是按优先级合成一颗：合成的话要么绿点盖住红色告警，要么蓝色
-   进行中盖住「有人在看」，总有一类信息被吞掉；叠压的描边让两颗点读作一组。 */
-.glass-tabbar__badges {
+   角标太重。永远只有一颗，颜色按优先级取最该被看见的那件事（见
+   glass-tab-bar.tsx 的 activityDot）：告警红 > 观看绿 > 进行中蓝。
+   2026-09-24 试过红/蓝与绿两颗并排，实机上挤成一团像渲染错误，用户否掉 */
+.glass-tabbar__badge {
   position: absolute;
   top: 9px;
   left: calc(50% + 8px);
-  display: flex;
-}
-
-.glass-tabbar__badge {
-  position: relative;
   width: 7px;
   height: 7px;
   border-radius: 999px;
   background: var(--info);
   box-shadow: 0 0 0 2px rgba(22, 25, 34, 0.75);
-}
-
-.glass-tabbar__badge + .glass-tabbar__badge {
-  margin-left: -1px;
 }
 
 .glass-tabbar__badge[data-alert="true"] {

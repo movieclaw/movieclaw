@@ -24,7 +24,7 @@ import {
 } from "@/lib/liquid-spring";
 import { usePageChrome } from "@/lib/page-chrome";
 import { usePermissions } from "@/lib/permissions";
-import { taskActivityBadge, useTaskActivity } from "@/lib/task-activity";
+import { taskActivityBadge, useTaskActivity, type TaskActivityBadge } from "@/lib/task-activity";
 
 /**
  * 移动端底部标签栏的基础实现：iOS 26 液态玻璃悬浮胶囊
@@ -86,6 +86,22 @@ function activeTabId(pathname: string): string {
   return "";
 }
 
+/**
+ * 活动页签圆点的取舍：任务（需要处理 / 进行中）与观看（有人在播）可能同时
+ * 成立，但页签上只放一颗点，按「最需要提醒」取一个：
+ *   告警红（有任务要处理，需要动手）> 观看绿（此刻有人在播）> 进行中蓝（例行进度）。
+ * 颜色与活动页一级切换器上的提示逐一对应；被压下去的状态进活动页都看得到。
+ */
+function pickActivityDot(
+  task: TaskActivityBadge,
+  liveCount: number,
+): { tone: "alert" | "live" | "active"; hint: string } | null {
+  if (task.alert && task.count > 0) return { tone: "alert", hint: task.hint };
+  if (liveCount > 0) return { tone: "live", hint: "有人正在观看" };
+  if (task.count > 0) return { tone: "active", hint: task.hint };
+  return null;
+}
+
 /** 下滑多少才收缩：iOS 26 的 onScrollDown 是向下滑一小段就收（相册实测），
  *  但离顶太近时收起会让首屏显得局促，留一点余量 */
 const MINIMIZE_MIN_SCROLL = 24;
@@ -125,14 +141,10 @@ export function GlassTabBar() {
   ];
   // 活动页签的任务圆点（iOS 页签红点惯例）：告警红 / 否则提示蓝；数据来自全站 Provider
   const activityBadge = taskActivityBadge(useTaskActivity());
-  // 观看圆点：此刻有人在播就亮绿色。只有管理员有活动页签，也只有管理员能读
-  // 媒体活动接口，按同一个权限门控轮询，成员不会打出 403
+  // 观看状态：此刻有人在播。只有管理员有活动页签，也只有管理员能读媒体活动
+  // 接口，按同一个权限门控轮询，成员不会打出 403
   const liveCount = mediaLiveCount(useMediaActivity(isAdmin).snapshot);
-  const showTaskDot = activityBadge.count > 0;
-  const showLiveDot = liveCount > 0;
-  const activityHint = [showLiveDot ? "有人正在观看" : "", showTaskDot ? activityBadge.hint : ""]
-    .filter(Boolean)
-    .join("，");
+  const activityDot = pickActivityDot(activityBadge, liveCount);
   const count = tabs.length;
   const activeIndex = tabs.findIndex((tab) => tab.id === activeTabId(pathname));
   const ActiveIcon = activeIndex >= 0 ? tabs[activeIndex].Icon : null;
@@ -419,16 +431,15 @@ export function GlassTabBar() {
                 <Icon />
                 <span>{label}</span>
                 {/* 小圆点而不是数字：iOS 标签栏的「有新动态」惯例，数字角标在 26px
-                    图标旁太重（用户看过实机截图直接否掉）；具体数量进活动页看。
-                    任务点与观看点可同时出现、并排显示（为何不合成一颗见 globals.css
-                    .glass-tabbar__badges） */}
-                {id === "activity" && (showTaskDot || showLiveDot) && (
-                  <span className="glass-tabbar__badges" title={activityHint} aria-label={activityHint}>
-                    {showTaskDot && (
-                      <span className="glass-tabbar__badge" data-alert={activityBadge.alert} />
-                    )}
-                    {showLiveDot && <span className="glass-tabbar__badge" data-live="true" />}
-                  </span>
+                    图标旁太重（用户看过实机截图直接否掉）；具体数量进活动页看 */}
+                {id === "activity" && activityDot && (
+                  <span
+                    className="glass-tabbar__badge"
+                    data-alert={activityDot.tone === "alert"}
+                    data-live={activityDot.tone === "live"}
+                    title={activityDot.hint}
+                    aria-label={activityDot.hint}
+                  />
                 )}
               </Link>
             ))}
