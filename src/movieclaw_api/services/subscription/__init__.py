@@ -44,6 +44,7 @@ from movieclaw_api.services.subscription.release_forecast import (
     FORECAST_VERSION,
     effective_forecast_probe_at,
     forecast_probe_times_by_site,
+    forecast_refresh_pending,
     next_forecast_probe_times_by_wanted,
     refresh_release_forecasts,
 )
@@ -85,6 +86,7 @@ __all__ = [
     "expected_units",
     "fail_trial",
     "forecast_probe_times_by_site",
+    "forecast_refresh_pending",
     "kick_search_soon",
     "load_match_context",
     "movie_schedule",

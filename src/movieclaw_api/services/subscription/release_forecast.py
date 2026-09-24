@@ -22,6 +22,7 @@ from typing import Any
 
 from sqlalchemy import Row
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import StaleDataError
 from sqlmodel import select
 
 from movieclaw_api.services.subscription.matching import (
@@ -512,23 +513,49 @@ _refresh_tasks: set[asyncio.Task] = set()
 # 排队中（还没开始执行）的条目：同一条目连续触发（创建→调整→恢复）只跑一次。
 # 开始执行后就从这里移除——执行中再触发要重新排一次，本次可能读不到之后的变化
 _queued_ids: set[int] = set()
+# 正在执行的条目。与 _queued_ids 一起回答「这个条目的预测是不是还在路上」，
+# 详情页据此决定要不要稍后再取一次（见 forecast_refresh_pending）
+_running_ids: set[int] = set()
 # 串行执行：每次刷新都要把整个索引解析一遍，两份并行只会让事件循环更挤，不会更快
 _refresh_lock = asyncio.Lock()
+
+
+def forecast_refresh_pending(media_item_id: int) -> bool:
+    """该条目是否有排队中或执行中的后台预测刷新。
+
+    订阅创建/调整/恢复后预测要晚几秒才落库，这期间详情页读到的是旧快照或空快照。
+    返回 True 时前端应稍后重取，而不是把「待播出」当成最终结论展示。
+    """
+    return media_item_id in _queued_ids or media_item_id in _running_ids
 
 
 async def _refresh_once(media_item_ids: set[int]) -> None:
     """后台刷新的执行体：自开会话，失败只记日志（定时任务会兜底全量重算）。"""
     async with _refresh_lock:
         _queued_ids.difference_update(media_item_ids)
+        _running_ids.update(media_item_ids)
         try:
-            async with get_database().session() as session:
-                await refresh_release_forecasts(session, media_item_ids=media_item_ids)
+            try:
+                async with get_database().session() as session:
+                    await refresh_release_forecasts(session, media_item_ids=media_item_ids)
+            except StaleDataError:
+                # 装载工单到提交之间有订阅被删（典型场景：订阅后立刻取消），UPDATE
+                # 对不上行，整批回滚——同批其他条目的预测也跟着丢了。这不是故障，
+                # 换新会话按最新数据重算一次：已删的自然查不到，其余照常写入
+                logger.info(
+                    "刷新条目 %s 的预测期间有订阅被删除，按最新数据重算一次",
+                    sorted(media_item_ids),
+                )
+                async with get_database().session() as session:
+                    await refresh_release_forecasts(session, media_item_ids=media_item_ids)
         except Exception:  # noqa: BLE001 -- 环境未就绪（如关停中）时静默降级
             logger.warning(
                 "后台刷新条目 %s 的资源发布时间预测失败，等待定时任务兜底",
                 sorted(media_item_ids),
                 exc_info=True,
             )
+        finally:
+            _running_ids.difference_update(media_item_ids)
 
 
 def refresh_release_forecasts_soon(media_item_ids: set[int]) -> None:

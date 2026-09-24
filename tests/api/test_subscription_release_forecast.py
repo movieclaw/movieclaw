@@ -312,3 +312,100 @@ async def test_prediction_probe_advances_existing_site_sync(db) -> None:
         await session.commit()
     due, _wait = await _plan_sync([site])  # type: ignore[list-item]
     assert due == []
+
+
+# ---------------------------------------------------------------------------
+# 后台刷新（refresh_release_forecasts_soon）
+# ---------------------------------------------------------------------------
+# conftest 为免悬空任务把它全局打桩成空函数；这里在收集阶段就拿到真实实现，
+# 专门验证它自开会话、合并排队与删除竞态下的行为。
+from movieclaw_api.services.subscription import release_forecast  # noqa: E402
+
+_real_refresh_soon = release_forecast.refresh_release_forecasts_soon
+
+
+@pytest.fixture
+def fresh_refresh_state(monkeypatch):
+    """每个用例用独立的排队状态与锁，避免跨用例（跨事件循环）串味。"""
+    import asyncio
+
+    monkeypatch.setattr(release_forecast, "_queued_ids", set())
+    monkeypatch.setattr(release_forecast, "_running_ids", set())
+    monkeypatch.setattr(release_forecast, "_refresh_lock", asyncio.Lock())
+
+
+async def _drain_background_refreshes() -> None:
+    import asyncio
+
+    while release_forecast._refresh_tasks:
+        await asyncio.gather(*list(release_forecast._refresh_tasks))
+
+
+async def test_background_refresh_coalesces_and_reports_pending(
+    db, monkeypatch, fresh_refresh_state
+) -> None:
+    """同一条目排队中重复触发只跑一次；排队到跑完之间对外报告「刷新中」。"""
+    async with db.session() as session:
+        wanted, _ = await _seed_target(session, cadence_days=7)
+    media_item_id = wanted.media_item_id
+
+    calls: list[set[int]] = []
+    real_refresh = release_forecast.refresh_release_forecasts
+
+    async def spy(session, *, media_item_ids=None):
+        calls.append(set(media_item_ids or ()))
+        return await real_refresh(session, media_item_ids=media_item_ids)
+
+    monkeypatch.setattr(release_forecast, "refresh_release_forecasts", spy)
+
+    assert not release_forecast.forecast_refresh_pending(media_item_id)
+    _real_refresh_soon({media_item_id})
+    _real_refresh_soon({media_item_id})
+    assert release_forecast.forecast_refresh_pending(media_item_id)
+
+    await _drain_background_refreshes()
+
+    assert calls == [{media_item_id}]
+    assert not release_forecast.forecast_refresh_pending(media_item_id)
+    async with db.session() as session:
+        stored = await session.get(WantedItem, wanted.id)
+        assert stored is not None and stored.release_forecast is not None
+
+
+async def test_background_refresh_survives_subscription_deleted_mid_refresh(
+    db, monkeypatch, fresh_refresh_state, caplog
+) -> None:
+    """刷新途中有订阅被删（订阅后立刻取消）：不报警告，同批其他条目照常出预测。"""
+    import sqlite3
+
+    async with db.session() as session:
+        doomed, _ = await _seed_target(session, cadence_days=1)
+        kept, _ = await _seed_target(session, cadence_days=7)
+    db_path = get_settings().database_url.removeprefix("sqlite+aiosqlite:///")
+
+    real_observations = release_forecast._observations_for_item
+    deleted: list[int] = []
+
+    def delete_then_observe(**kwargs):
+        # 在工单已装载、尚未提交的窗口里用另一条连接删订阅，模拟用户秒退
+        if not deleted:
+            conn = sqlite3.connect(db_path, timeout=5)
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("DELETE FROM subscription WHERE id = ?", (doomed.subscription_id,))
+            conn.commit()
+            conn.close()
+            deleted.append(doomed.subscription_id)
+        return real_observations(**kwargs)
+
+    monkeypatch.setattr(release_forecast, "_observations_for_item", delete_then_observe)
+
+    with caplog.at_level("INFO", logger="movieclaw_api.subscription.release_forecast"):
+        _real_refresh_soon({doomed.media_item_id, kept.media_item_id})
+        await _drain_background_refreshes()
+
+    assert deleted, "竞态注入没有生效"
+    assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+    async with db.session() as session:
+        assert await session.get(WantedItem, doomed.id) is None
+        survivor = await session.get(WantedItem, kept.id)
+        assert survivor is not None and survivor.release_forecast is not None

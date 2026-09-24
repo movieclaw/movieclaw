@@ -57,6 +57,10 @@ import { formatDateTime, formatRelativeTime } from "@/lib/time";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { usePermissions } from "@/lib/permissions";
 
+/** 预测后台刷新期间补取详情的间隔与次数上限（约 1 分钟，覆盖大索引的慢机器）。 */
+const FORECAST_POLL_INTERVAL_MS = 1500;
+const FORECAST_POLL_LIMIT = 40;
+
 /**
  * 订阅详情分析页（/subscriptions/[id]）：订阅透明化的落点。
  *
@@ -120,6 +124,34 @@ export function SubscriptionInspectorView({
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // 预测刷新在后台跑（订阅创建/调整/恢复后要几秒才落库），刚取到的详情可能还是
+  // 旧预测。后端标了 forecast_pending 就隔一会儿只重取详情，直到预测落库；
+  // 设上限兜底，后台卡住时不至于无休止轮询
+  const forecastPolls = useRef(0);
+  const forecastPending = detail?.forecast_pending ?? false;
+  useEffect(() => {
+    if (!forecastPending) {
+      forecastPolls.current = 0;
+      return;
+    }
+    if (forecastPolls.current >= FORECAST_POLL_LIMIT) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      forecastPolls.current += 1;
+      getSubscription(id)
+        .then((d) => {
+          if (!cancelled) setDetail(d);
+        })
+        .catch(() => {
+          /* 补取失败不打扰用户：页面已有完整详情，只是预测晚一点 */
+        });
+    }, FORECAST_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [forecastPending, detail, id]);
 
   // 消费掉 ?upgrade-run=1：弹层已按初始态打开，把参数从地址栏摘掉，
   // 避免关闭弹层后刷新页面又弹一次

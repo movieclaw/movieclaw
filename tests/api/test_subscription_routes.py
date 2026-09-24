@@ -157,6 +157,32 @@ def test_create_from_title_ref_and_set_tracking_state(client: TestClient) -> Non
     assert resumed.json()["data"]["status"] in {"active", "completed"}
 
 
+def test_detail_reports_background_forecast_refresh(client: TestClient, monkeypatch) -> None:
+    """预测刷新挪到后台后，详情接口要如实告诉前端「预测还在路上」。"""
+    from movieclaw_api.services.subscription import release_forecast
+
+    created = client.post("/api/v1/subscriptions", json={"title_ref": "tmdb:movie:100"})
+    assert created.status_code == 200, created.text
+    subscription = created.json()["data"]["subscription"]
+    media_item_id = subscription["media"]["media_item_id"]
+
+    detail = client.get(f"/api/v1/subscriptions/{subscription['id']}")
+    assert detail.json()["data"]["forecast_pending"] is False
+
+    # 排队中与执行中都算「在路上」
+    monkeypatch.setattr(release_forecast, "_queued_ids", {media_item_id})
+    detail = client.get(f"/api/v1/subscriptions/{subscription['id']}")
+    assert detail.json()["data"]["forecast_pending"] is True
+
+    monkeypatch.setattr(release_forecast, "_queued_ids", set())
+    monkeypatch.setattr(release_forecast, "_running_ids", {media_item_id})
+    paused = client.patch(
+        f"/api/v1/subscriptions/{subscription['id']}/tracking-state",
+        json={"state": "paused"},
+    )
+    assert paused.json()["data"]["forecast_pending"] is True
+
+
 def test_create_rejects_guessed_or_legacy_identity_fields(client: TestClient) -> None:
     invalid_ref = client.post(
         "/api/v1/subscriptions",
