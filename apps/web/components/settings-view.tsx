@@ -51,6 +51,7 @@ import { useSession } from "@/lib/session";
 import { applyNavOrder, mergeNavOrder, sameNavOrder } from "@/lib/sidebar-nav";
 import { settingsSectionGroupsFor, settingsSections } from "@/lib/mock-data";
 import { useTheme, useUiPrefs } from "@/lib/ui-prefs";
+import { useIsMobile } from "@/lib/use-media-query";
 import { useResolvedTheme } from "@/themes/registry";
 import { useTabParam } from "@/lib/use-tab-param";
 
@@ -749,25 +750,36 @@ function DisabledGlassGroup({ label, children }: { label: string; children: Reac
 /**
  * —— 主题：整档切换卡（多主题框架的设置入口，docs/design/web-themes.md §3.6）——
  *
- * 两张可选卡（缩略预览 = 预览色块 + 主题名），点击即保存：savePrefs 乐观更新
+ * 可选卡（缩略预览 = 预览色块 + 主题名），点击即保存：savePrefs 乐观更新
  * 让全站（token 层 + 外壳结构层）立即按新主题渲染，「保存中/失败回滚」复用
  * 偏好通道的既有语义；主题跟随账号存储，全设备同步。
+ *
+ * **按当前设备语境设置**（2026-09-24 用户拍板：UI 不分「桌面端 / 移动端」两组）：
+ * 在桌面端打开设置，改的就是桌面端主题（theme_desktop）；在移动端改的就是
+ * 移动端主题（theme_mobile）。解析规则见 lib/ui-prefs.tsx 的 resolveThemeId；
+ * 组内高亮的是当前端实际生效的主题——没单独设置过时跟随通用 theme 字段
+ * （升级前老账号的唯一数据），点了卡才落当前端的覆盖字段。
  *
  * 预览不再单独走 setPreview 草稿：主题切换是原子操作（没有连续微调的滑杆），
  * 点击即所见即所得，无需「拖动预览 → 保存落库」的两段式。
  */
 function ThemeGroup() {
   const { savedPrefs, savePrefs, loading } = useUiPrefs();
+  const isMobile = useIsMobile();
+  // 在哪个版式上设置，就落哪个端的覆盖字段
+  const field = isMobile ? ("theme_mobile" as const) : ("theme_desktop" as const);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const current = normalizeThemeId(savedPrefs.theme);
+  const current = normalizeThemeId(savedPrefs[field] ?? savedPrefs.theme);
 
+  /** 选定当前端的主题。已是该值时跳过（比较覆盖字段本身而非生效值——生效值
+   *  可能来自通用字段的回落，点了卡才真正落覆盖）。 */
   const pick = async (id: string) => {
-    if (id === current || busyId) return;
+    if (savedPrefs[field] === id || busyId) return;
     setBusyId(id);
     setError(null);
     try {
-      await savePrefs({ ...savedPrefs, theme: id });
+      await savePrefs({ ...savedPrefs, [field]: id });
     } catch (err) {
       setError(err instanceof HttpError ? err.message : "保存失败，请稍后重试");
     } finally {
@@ -777,49 +789,72 @@ function ThemeGroup() {
 
   return (
     <SettingsGroup label="主题">
-      <div className="grid grid-cols-2 gap-3 max-[420px]:grid-cols-1">
-        {THEMES.map((theme) => {
-          const active = theme.id === current;
-          const busy = busyId === theme.id;
-          return (
-            <button
-              key={theme.id}
-              type="button"
-              onClick={() => void pick(theme.id)}
-              disabled={loading || busyId != null}
-              aria-pressed={active}
-              className={`group relative overflow-hidden rounded-xl border p-4 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] ${
-                active
-                  ? "border-transparent ring-2 ring-[var(--accent)]"
-                  : "border-white/[0.12] hover:border-white/[0.35]"
-              } ${busyId && !busy ? "opacity-50" : ""}`}
-            >
-              {/* 预览缩略：底色块 + 一条强调色，两个主色即可拼出主题观感 */}
-              <span
-                className="mb-3 flex h-14 items-end rounded-lg p-2"
-                style={{ background: theme.preview.bg }}
-              >
-                <span
-                  className="h-1.5 w-10 rounded-full"
-                  style={{ background: theme.preview.accent }}
-                />
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="text-body font-semibold text-[var(--text)]">{theme.label}</span>
-                {active && <CheckIcon className="size-4 text-[var(--accent)]" />}
-              </span>
-              <span className="mt-0.5 block text-caption leading-4 text-[var(--text-muted)]">
-                {theme.description}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      <ThemeCards
+        current={current}
+        loading={loading}
+        busyId={busyId}
+        onPick={(id) => void pick(id)}
+      />
       {error && <p className="mt-2 text-sub text-[var(--danger)]">{error}</p>}
       <p className="mt-2.5 px-1 text-caption text-[var(--text-faint)]">
-        主题跟随账号保存，所有设备同步；切换立即生效。
+        主题跟随账号保存，所有设备同步；切换立即生效。当前设置的是
+        {isMobile ? "移动端" : "桌面端"}的主题，两端可分别设置。
       </p>
     </SettingsGroup>
+  );
+}
+
+/** 主题选择卡网格（桌面端 / 移动端两组共用同一副卡片规格）。 */
+function ThemeCards({
+  current,
+  loading,
+  busyId,
+  onPick,
+}: {
+  current: string;
+  loading: boolean;
+  busyId: string | null;
+  onPick: (id: string) => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-3 max-[420px]:grid-cols-1">
+      {THEMES.map((theme) => {
+        const active = theme.id === current;
+        const busy = busyId === theme.id;
+        return (
+          <button
+            key={theme.id}
+            type="button"
+            onClick={() => onPick(theme.id)}
+            disabled={loading || busyId != null}
+            aria-pressed={active}
+            className={`group relative overflow-hidden rounded-xl border p-4 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] ${
+              active
+                ? "border-transparent ring-2 ring-[var(--accent)]"
+                : "border-white/[0.12] hover:border-white/[0.35]"
+            } ${busyId && !busy ? "opacity-50" : ""}`}
+          >
+            {/* 预览缩略：底色块 + 一条强调色，两个主色即可拼出主题观感 */}
+            <span
+              className="mb-3 flex h-14 items-end rounded-lg p-2"
+              style={{ background: theme.preview.bg }}
+            >
+              <span
+                className="h-1.5 w-10 rounded-full"
+                style={{ background: theme.preview.accent }}
+              />
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-body font-semibold text-[var(--text)]">{theme.label}</span>
+              {active && <CheckIcon className="size-4 text-[var(--accent)]" />}
+            </span>
+            <span className="mt-0.5 block text-caption leading-4 text-[var(--text-muted)]">
+              {theme.description}
+            </span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

@@ -648,21 +648,10 @@ html[data-theme="netflix"] .nf-nav-offset {
   padding-top: var(--nf-nav-h);
 }
 
-/* 移动端底部标签栏（§5.2）：栏高 49px + 底部安全区，主区让位收口在这一条。
-   实底不透明（同 NetflixTopNav 的取舍：Netflix 的栏是实底不是毛玻璃）——
-   0.95 不透明度下的模糊几乎不可见，却让滚动每帧多一层采样合成的开销，
-   索性提到全不透明并去掉 backdrop-filter。 */
-@media (max-width: 767px) {
-  html[data-theme="netflix"] .app-shell > main {
-    padding-bottom: calc(49px + var(--safe-bottom));
-  }
-  /* 不透明 tab 栏下，main 已整层让位 49px+safe-bottom，各页滚动容器里的
-     .scroll-safe（为「内容从指示条下方穿过」的半透明设计）再垫一次
-     safe-bottom 就是双倍空白——Netflix 主题作用域下关掉内层占位。 */
-  html[data-theme="netflix"] .app-shell > main .scroll-safe::after {
-    height: 0;
-  }
-}
+/* 移动端底部标签栏的主区让位不再写在这里：底栏几何走「让位契约」
+   （ThemeMeta.chrome 声明 → <html> 的 --mobile-tabbar-h 与
+   data-tabbar-mode="docked"，globals.css 统一消费），主题不再自带
+   全局布局规则（2026-09-24 让位契约数据化）。 */
 
 
 
