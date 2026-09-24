@@ -53,9 +53,12 @@ const BASE_PAGES: ThemePages = {
   settingsIndex: SettingsIndex,
 };
 
-/** 基础详情页返回导航：整条 PageNav 工具条（消费 title/fallback，忽略浮动键语义） */
-function PageNavAdapter({ title, fallback }: DetailNavProps) {
-  return <PageNav title={title} fallback={fallback} />;
+/** 基础详情页返回导航：整条 PageNav 工具条（消费 title/fallback/actions/className，
+ *  忽略 onBack/onPhoto 浮动键语义——PageNav 自己按 fallback 算返回）。
+ *  actions 必须转发：媒体库条目页的「⋯」操作菜单就挂在这里，#437 漏转过一次，
+ *  银玻璃两端的条目页右上角因此空了（2026-09-24 用户发现）。 */
+function PageNavAdapter({ title, fallback, actions, className }: DetailNavProps) {
+  return <PageNav title={title} fallback={fallback} actions={actions} className={className} />;
 }
 
 /**

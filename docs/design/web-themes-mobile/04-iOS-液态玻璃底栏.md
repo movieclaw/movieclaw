@@ -102,7 +102,7 @@
 ```
 
 行为：向下滚且离顶 > 40px → 收缩；向上滚 10px 或回顶部或点页签 → 展开；搜索圆钮
-点开 → 底栏折叠、搜索框占满；右上角撰写键 → 新会话面板从底部升起、压暗底层。
+点开 → 底栏折叠、搜索框占满；右上角头像 → 「更多」面板从底部升起、压暗底层。
 
 ## 3. 接入本站的方案
 
@@ -158,15 +158,16 @@ iOS 上算上搜索圆钮最多放 5 个元素，390pt 视口里 4 页签 + 搜�
 |---|---|
 | `components/glass-tab-bar.tsx` | 底栏本体（`mobileTabBar` 坑位基础实现）：四页签 + 搜索圆钮、滑动选中胶囊、捕获阶段监听各页滚动容器实现下滑收缩 |
 | `components/more-page.tsx` | 「更多」页（`pages.my` 基础实现），iOS inset grouped 列表 |
-| `components/compose-sheet.tsx` | 新会话撰写面板，内嵌 `NewTask`；首次打开后保持挂载以保留草稿 |
+| `components/compose-sheet.tsx` | 移动端底部 sheet 容器 `MobileSheet`（首版是新会话撰写面板，见 §3.6）；现只承载右上角头像弹出的「更多」面板，首次打开后保持挂载 |
 | `components/mobile-settings-nav.tsx`、`components/settings-index.tsx` | 由 Netflix 主题目录**上移为基础实现**：抽屉退役后银玻璃也需要设置列表页与返回条，两主题共用 |
-| `components/app-shell.tsx` | 银玻璃移动端挂底栏与面板（`.app-shell` 的兄弟节点，避开命令面板打开时的外壳缩放）；顶栏去 ☰、加撰写键、搜索让给底栏；Agent 会话页（`/sessions/*`）不显示底栏，免得压住会话输入行 |
+| `components/app-shell.tsx` | 银玻璃移动端挂底栏与面板（`.app-shell` 的兄弟节点，避开命令面板打开时的外壳缩放）；顶栏去 ☰、搜索让给底栏；Agent 会话页（`/sessions/*`）与手机上的 `/new` 不显示底栏，免得压住会话输入行 |
 | `app/(app)/page.tsx` | 银玻璃移动端 `/` replace 到 `/discover/movie` |
 | `app/globals.css` | `.glass-tabbar` / `.glass-capsule` / `.compose-sheet` 组与 `--tabbar-bottom`；`.mobile-drawer` 一组退役 |
 
 与 §3.2 的差异：「更多」复用既有 `/my` 路由（坑位现成，Netflix 覆盖为「我的」），
-没有新开 `/more`；底栏距底按 `--vp-overshoot` 折算到屏幕物理底边（iOS 独立 App
-形态下视口比屏幕矮一个 safe-top）；首版搜索圆钮沿用 SearchCommand 面板，未做
+没有新开 `/more`；底栏距底只按视口的 safe-bottom 算、不减 `--vp-overshoot`
+（首版减了，iOS 26 PWA 真机上视口底边即屏幕物理底边，整条底栏被推出屏幕；
+overshoot 只给 `.glass-tabbar-edge` 铺底层用）；首版搜索圆钮沿用 SearchCommand 面板，未做
 「搜索框取代整条底栏」的原生展开动画。
 
 ### 3.4 验收
@@ -223,3 +224,22 @@ vendor 组件真正值得借鉴的是**选中指示器的运动模型**（弹簧
 - WebKit Bug 245510（backdrop-filter url() 不支持）；W3C svgwg#1142
 - 社区量测：MetaMask PR 36658、learnui.design iOS 26 模板、MacStories iOS 26 评测、
   kennethnym.com（渐进模糊）、1ar.io（Safari 26 theme-color 变更）
+
+### 3.6 新会话改为整页（2026-09-24）
+
+用户看过底部撰写面板的成品后拍板：**点「新会话」不再弹面板，直接进一页**。
+理由是面板形态下从「更多」面板点新会话要先收一张 sheet 再开一张，路径比进一页
+再返回更绕；而且面板里的输入台是「居中一条输入框」，与发出第一条消息后落到的
+会话页长得不一样，中间有一次跳变。
+
+现行做法：`openCompose` 在所有形态下都 `push("/new")`。银玻璃手机上 `/new`
+（`components/new-task.tsx`）渲染成一张**还没有消息的会话页**：顶栏标题「新会话」
++ 返回键（落点 `/my`，与会话页一致）、正文空白、输入条钉在底部；外壳把它并入
+沉浸路由（纯色底、不显示底栏）。发出第一条消息后 `replace` 到 `/sessions/[id]`，
+浏览器后退不会再回到这张空页。`ComposeSheet` 退役，`compose-sheet.tsx` 只剩通用
+的 `MobileSheet` 给「更多」面板用；CSS 名 `.compose-sheet` / `data-compose-open`
+沿用不改。
+
+代价：面板形态「下滑暂存草稿」的行为没有了（离开 `/new` 即丢弃未发送的文字）；
+强刷 `/new` 时首帧会先画出背景大图再切纯色（`layout.tsx` 的内联脚本只认
+`/sessions/` 前缀，它在首帧前判不出主题与视口），手机上极少直接强刷这一页，暂不处理。

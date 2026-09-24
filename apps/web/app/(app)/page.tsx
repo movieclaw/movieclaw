@@ -14,8 +14,8 @@ import { useResolvedTheme } from "@/themes/registry";
  *     Billboard 移入 /library 页顶，见 themes/netflix/components/library-hero.tsx），
  *     / 仅剩老书签与历史链接会到达，replace 到 /library；
  *   - 银玻璃移动端：replace 到底栏首个页签 /discover/movie（2026-09-23，
- *     docs/design/web-themes-mobile/04）——手机上新会话不是高频操作，收进顶栏
- *     撰写键与「更多」，PWA 冷启动（start_url = /）直接落在发现。
+ *     docs/design/web-themes-mobile/04）——手机上新会话不是高频操作，收进
+ *     「更多」面板（进 /new 整页），PWA 冷启动（start_url = /）直接落在发现。
  * 主题只存在于登录后的偏好 Context 里（服务端无值），因此这里是客户端组件。
  */
 export default function HomePage() {

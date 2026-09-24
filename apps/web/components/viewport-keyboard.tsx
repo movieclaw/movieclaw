@@ -17,17 +17,28 @@ import { softKeyboardPossible } from "@/lib/soft-keyboard";
  *
  *     键盘占高 = 布局视口高 - 可视视口高
  *
- * 结果写进 :root 的 --keyboard-inset，外壳高度按它收缩（见 app-shell.tsx 的
- * h-[calc(100dvh-var(--keyboard-inset))]），输入行就自然停在键盘上沿。
- * 键盘上方的候选栏 / 第三方输入法工具条已计入 visualViewport.height，无需另算。
+ * 结果写进 :root 的 --keyboard-inset（弹窗容器抬底、撰写面板让位仍用它）。
  *
- * 这个式子在「键盘改的是布局视口」的浏览器上（部分 Android 形态）自动退化为
- * 0——innerHeight 跟着一起变矮，差值恒为 0，布局本就由 dvh 收好了，不重复让位。
+ * **外壳高度不再靠这个差值倒推**（2026-09-24 修订：会话页输入框在 iOS 上偶发被
+ * 键盘盖住）：差值成立的前提是「键盘只改可视视口、不改布局视口」，WebKit 各版本
+ * 并不都守这一条——布局视口一旦也跟着变矮，差值就算成 0，而 100dvh 的更新又滞后，
+ * 外壳仍按满屏撑着，输入框正好落在键盘底下。可视视口的像素高本身就是「键盘之上
+ * 还看得见的区域」的真值，不依赖任何假设，于是键盘立着时把它直接写成
+ * --app-height，外壳高度取它（globals.css 的 .viewport-app-height）；没有键盘时
+ * 撤掉，回到 dvh 跟随地址栏收放。同时在 <html> 上打 data-soft-keyboard，让贴底
+ * 输入行在键盘立着时不再为 Home 指示条留安全区（那 34px 此刻在键盘底下，留了白留）。
+ *
+ * 键盘上方的候选栏 / 第三方输入法工具条已计入 visualViewport.height，无需另算。
+ * 差值在「键盘改的是布局视口」的浏览器上退化为 0，但 --app-height 照样正确。
  *
  * 差值只在**焦点确实落在可输入元素上**时才当作键盘（见 lib/soft-keyboard.ts）：
  * iOS 上焦点元素随组件卸载消失时，可视视口经常停在变矮的状态不恢复，光凭差值
  * 会把外壳永久缩着。除视口 resize 外，focusout 与 pointerdown 也重算一次，
  * 保证键盘一收起（哪怕 WebKit 没补发 resize）高度立刻还原。
+ *
+ * iOS 的 visualViewport resize 在键盘动画期间只发一次，且有时发在终值落定之前
+ * （候选栏随后才展开）——没有第二次机会重算就是「偶发盖住」的另一来源。因此
+ * 输入元素 focusin 之后的一秒内按帧轮询重算（只读几个数字，开销可忽略）。
  *
  * —— 二、窗口滚动归位 ——
  *
@@ -54,14 +65,40 @@ export function ViewportKeyboard() {
     const zoomed = () => (vv ? vv.scale > 1.01 : false);
 
     let applied = 0;
+    let appliedHeight = 0;
     const applyInset = () => {
       if (!vv) return;
-      const gap = zoomed() || !softKeyboardPossible() ? 0 : Math.round(window.innerHeight - vv.height);
+      const keyboardable = !zoomed() && softKeyboardPossible();
+      const gap = keyboardable ? Math.round(window.innerHeight - vv.height) : 0;
       // 24px 以下按取整误差 / 浏览器自身工具条的收放处理，不当键盘
       const next = gap > 24 ? gap : 0;
-      if (next === applied) return;
+      // 焦点在输入元素上时外壳高度直接取可视视口像素高（真值）。不按差值门控：
+      // 布局视口也跟着键盘变矮的形态下差值恰好是 0，此时更需要它顶替滞后的 dvh；
+      // 没有键盘时它等于 dvh，写了也无害。焦点离开就撤掉，回到 dvh 跟随地址栏。
+      const height = keyboardable ? Math.round(vv.height) : 0;
+      if (next === applied && height === appliedHeight) return;
       applied = next;
+      appliedHeight = height;
       root.style.setProperty("--keyboard-inset", `${next}px`);
+      if (height > 0) root.style.setProperty("--app-height", `${height}px`);
+      else root.style.removeProperty("--app-height");
+      // 贴底输入行收掉安全区留白的开关：只在确认键盘立着（差值过阈值）时打
+      if (next > 0) root.setAttribute("data-soft-keyboard", "");
+      else root.removeAttribute("data-soft-keyboard");
+    };
+
+    // 聚焦输入元素后的一秒内逐帧重算：兜住 iOS 只发一次、且可能发早的 resize
+    let pollUntil = 0;
+    let pollFrame = 0;
+    const poll = () => {
+      applyInset();
+      if (performance.now() < pollUntil) pollFrame = requestAnimationFrame(poll);
+      else pollFrame = 0;
+    };
+    const onFocusIn = () => {
+      if (!softKeyboardPossible()) return;
+      pollUntil = performance.now() + 1000;
+      if (!pollFrame) pollFrame = requestAnimationFrame(poll);
     };
 
     const resetScroll = () => {
@@ -86,6 +123,7 @@ export function ViewportKeyboard() {
       }, 0);
 
     window.addEventListener("scroll", resetScroll, { passive: true });
+    window.addEventListener("focusin", onFocusIn);
     window.addEventListener("focusout", onFocusOut);
     // 兜底：焦点元素被卸载时 focusout 可能整个不发，界面会一直缩着；
     // 用户下一次触屏就把它纠正回来（无键盘时这里恒等于把占位清零）
@@ -93,10 +131,14 @@ export function ViewportKeyboard() {
     vv?.addEventListener("resize", onResize);
     return () => {
       window.removeEventListener("scroll", resetScroll);
+      window.removeEventListener("focusin", onFocusIn);
       window.removeEventListener("focusout", onFocusOut);
       window.removeEventListener("pointerdown", applyInset);
       vv?.removeEventListener("resize", onResize);
+      if (pollFrame) cancelAnimationFrame(pollFrame);
       root.style.removeProperty("--keyboard-inset");
+      root.style.removeProperty("--app-height");
+      root.removeAttribute("data-soft-keyboard");
     };
   }, []);
   return null;

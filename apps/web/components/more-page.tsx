@@ -7,8 +7,11 @@ import { useState, type ReactNode } from "react";
 import { AccountSwitcherDialog } from "@/components/account-switcher-dialog";
 import { AppUpdateEntry } from "@/components/app-update-entry";
 import { AvatarBadge } from "@/components/avatar-badge";
+import { ConversationMenu } from "@/components/conversation-menu";
+import { copyText } from "@/components/copy-button";
+import { useConfirm, usePrompt, useToast } from "@/components/feedback";
 import {
-  ActivityIcon,
+  ChevronDownIcon,
   ChevronRightIcon,
   GearIcon,
   LogoutIcon,
@@ -22,7 +25,7 @@ import { clearBackdropCache } from "@/lib/backdrop-cache";
 import { usePageChrome } from "@/lib/page-chrome";
 import { accessiblePathFor, roleLabel, usePermissions } from "@/lib/permissions";
 import { useSession } from "@/lib/session";
-import { taskActivityBadge, useTaskActivity, type TaskActivityBadge } from "@/lib/task-activity";
+import type { TaskActivityBadge } from "@/lib/task-activity";
 import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
 
 /**
@@ -32,10 +35,12 @@ import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
  * 抽屉侧栏在移动端退役后，它承载的低频入口与账号操作都收在这里，版式对齐
  * iOS「更多 / 设置」的分组列表（inset grouped）：
  *   - 用户头：头像 + 昵称 + 角色；
- *   - 常用：新会话（打开外壳的撰写面板）/ 待处理事项 / 活动（任务角标）/ 设置 /
- *     应用更新；
- *   - 最近会话：AI 会话列表，点击直达会话页；
- *   - 账号：切换账号 / 退出登录。
+ *   - 常用：新会话（进 /new 整页，手机上的唯一入口）/ 待处理事项 / 设置 /
+ *     应用更新（活动已提到底栏页签，这里不再重复放）；
+ *   - 账号：切换账号 / 退出登录——紧跟设置之后，不被下面会长的会话列表推到页底；
+ *   - 最近会话：AI 会话列表，点击直达会话页。默认只列最近几条，其余收在
+ *     「显示全部」一行里就地展开（iOS 设置列表的惯例；卡片内滚动条试过，用户
+ *     嫌难看，且没有会话列表页可跳，所以是展开而不是「查看全部」）。
  * 新会话与活动、AI 会话是 Agent 能力，管理员专属——与侧栏的 memberNavItems 同口径
  * （安全边界在后端 require_admin，这里是界面裁剪）。
  *
@@ -46,8 +51,17 @@ export function MorePage() {
   const chrome = usePageChrome();
   const { session } = useSession();
   const { isAdmin } = usePermissions();
-  const { conversations } = useAgentConversations();
+  const { conversations, rename, remove, fork } = useAgentConversations();
+  const prompt = usePrompt();
+  const confirm = useConfirm();
+  const toast = useToast();
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [showAllSessions, setShowAllSessions] = useState(false);
+  const hiddenSessions = Math.max(0, conversations.length - RECENT_SESSIONS_LIMIT);
+  const visibleSessions =
+    showAllSessions || hiddenSessions === 0
+      ? conversations
+      : conversations.slice(0, RECENT_SESSIONS_LIMIT);
 
   /**
    * 退出登录：只退当前账号，本浏览器还有别的账号时后端自动切过去，
@@ -63,6 +77,45 @@ export function MorePage() {
     clearBackdropCache();
     clearUiPrefsCache();
     window.location.href = next ? accessiblePathFor(next, "/") : "/login";
+  };
+
+  // 会话行「⋯」菜单的四个动作：与侧栏会话行同一套语义（sidebar.tsx）
+  const handleRename = async (id: string, currentTitle: string) => {
+    const input = await prompt({ title: "重命名会话", initialValue: currentTitle, maxLength: 80 });
+    if (input == null) return;
+    const title = input.trim().slice(0, 80);
+    if (!title || title === currentTitle) return;
+    void rename(id, title).catch((error) => {
+      toast.error(`重命名失败：${(error as Error).message}`);
+    });
+  };
+  const handleDelete = async (id: string, title: string) => {
+    const ok = await confirm({
+      title: `彻底删除会话「${title}」？`,
+      description: "服务器上的完整对话记录将一并删除，此操作不可恢复。",
+      confirmLabel: "彻底删除",
+      tone: "danger",
+    });
+    if (!ok) return;
+    void remove(id).catch((error) => {
+      toast.error(`删除失败：${(error as Error).message}`);
+    });
+  };
+  const handleFork = async (id: string) => {
+    try {
+      const targetId = await fork(id);
+      router.push(`/sessions/${targetId}` as Route);
+    } catch (error) {
+      toast.error(`创建续接会话失败：${(error as Error).message}`);
+    }
+  };
+  const handleCopyId = async (id: string) => {
+    try {
+      await copyText(id);
+      toast.success("会话 ID 已复制");
+    } catch (error) {
+      toast.error(`复制失败：${(error as Error).message}`);
+    }
   };
 
   return (
@@ -90,40 +143,68 @@ export function MorePage() {
           )}
           {/* 待处理事项与应用更新：组件自轮询，无事时整行不渲染 */}
           <NoticeCenter collapsed={false} />
-          {isAdmin && <ActivityRow />}
           <MoreRow Icon={GearIcon} label="设置" onClick={() => router.push("/settings" as Route)} />
           <AppUpdateEntry collapsed={false} onOpen={() => router.push("/settings/app" as Route)} />
+        </MoreGroup>
+
+        <MoreGroup label="账号">
+          <MoreRow Icon={UserIcon} label="切换账号" onClick={() => setSwitcherOpen(true)} />
+          <MoreRow Icon={LogoutIcon} label="退出登录" danger onClick={() => void handleLogout()} />
         </MoreGroup>
 
         {isAdmin && (
           <MoreGroup label="最近会话">
             {conversations.length === 0 ? (
               <p className="px-4 py-3 text-caption leading-5 text-[var(--text-faint)]">
-                还没有会话，点右上角的撰写键开始。
+                还没有会话，点上方的「新会话」开始。
               </p>
             ) : (
-              conversations.map((c) => (
+              visibleSessions.map((c) => (
                 <MoreRow
                   key={c.id}
                   label={c.title}
                   running={c.running}
                   onClick={() => router.push(`/sessions/${c.id}` as Route)}
+                  trailing={
+                    <ConversationMenu
+                      onFork={() => void handleFork(c.id)}
+                      onCopyId={() => void handleCopyId(c.id)}
+                      onRename={() => void handleRename(c.id, c.title)}
+                      onDelete={() => void handleDelete(c.id, c.title)}
+                      triggerClassName="!size-8 text-[var(--text-muted)]"
+                    />
+                  }
                 />
               ))
             )}
+            {hiddenSessions > 0 && (
+              // 展开/收起行：与列表行同一皮肤，但文字居中、弱化，用向下/向上箭头表达
+              // 「还有内容折在这里」（列表行的右缘箭头表达「点进去」，两者不混用）
+              <button
+                type="button"
+                onClick={() => setShowAllSessions((v) => !v)}
+                aria-expanded={showAllSessions}
+                className="glass-row w-full justify-center px-4 py-2.5 text-ui font-medium !text-[var(--text-muted)]"
+              >
+                <span>{showAllSessions ? "收起" : `显示全部 ${conversations.length} 个会话`}</span>
+                <ChevronDownIcon
+                  className={`size-4 shrink-0 transition-transform duration-200 ${
+                    showAllSessions ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+            )}
           </MoreGroup>
         )}
-
-        <MoreGroup label="账号">
-          <MoreRow Icon={UserIcon} label="切换账号" onClick={() => setSwitcherOpen(true)} />
-          <MoreRow Icon={LogoutIcon} label="退出登录" danger onClick={() => void handleLogout()} />
-        </MoreGroup>
       </div>
 
       <AccountSwitcherDialog open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
     </div>
   );
 }
+
+/** 「最近会话」默认露出的条数；再多的折进「显示全部」行里。 */
+const RECENT_SESSIONS_LIMIT = 5;
 
 /** 分组卡片：小节标题 + 圆角卡片，行间细分隔线（iOS inset grouped 列表） */
 function MoreGroup({ label, children }: { label: string; children: ReactNode }) {
@@ -137,21 +218,12 @@ function MoreGroup({ label, children }: { label: string; children: ReactNode }) 
   );
 }
 
-/** 活动入口行：拆成独立组件，任务快照变化时只重渲染这一行；数据来自全站 Provider。 */
-function ActivityRow() {
-  const router = useRouter();
-  const badge = taskActivityBadge(useTaskActivity());
-  return (
-    <MoreRow
-      Icon={ActivityIcon}
-      label="活动"
-      badge={badge.count > 0 ? badge : undefined}
-      onClick={() => router.push(badge.href as Route)}
-    />
-  );
-}
-
-/** 列表行：glass-row 皮肤 + 右缘 chevron 表达「点进去」的可点性。 */
+/**
+ * 列表行：glass-row 皮肤 + 右缘 chevron 表达「点进去」的可点性。
+ * ``trailing``：行尾叠一个独立控件（会话行的「⋯」菜单）——它不能嵌在主体
+ * 按钮里（button 不能套 button），所以绝对定位盖在行尾、主体按钮右侧留出位置，
+ * 有它时不再画 chevron（一行只表达一种可点性）。
+ */
 function MoreRow({
   Icon,
   label,
@@ -159,6 +231,7 @@ function MoreRow({
   danger = false,
   running = false,
   badge,
+  trailing,
 }: {
   Icon?: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   label: string;
@@ -167,15 +240,16 @@ function MoreRow({
   running?: boolean;
   /** 右缘状态角标（活动行的任务计数：alert 红 / 否则提示蓝） */
   badge?: TaskActivityBadge;
+  trailing?: ReactNode;
 }) {
-  return (
+  const row = (
     <button
       type="button"
       onClick={onClick}
       title={badge?.hint}
       className={`glass-row w-full px-4 py-3 text-body font-medium ${
         danger ? "!text-[var(--danger)]" : "!text-[var(--text)]"
-      }`}
+      } ${trailing ? "pr-14" : ""}`}
     >
       {running && (
         <span aria-hidden="true" className="size-1.5 shrink-0 animate-pulse rounded-full bg-[var(--info)]" />
@@ -193,7 +267,14 @@ function MoreRow({
           {badge.count}
         </span>
       )}
-      <ChevronRightIcon className="size-4 shrink-0 text-[var(--text-faint)]" />
+      {!trailing && <ChevronRightIcon className="size-4 shrink-0 text-[var(--text-faint)]" />}
     </button>
+  );
+  if (!trailing) return row;
+  return (
+    <div className="relative">
+      {row}
+      <div className="absolute right-3 top-1/2 -translate-y-1/2">{trailing}</div>
+    </div>
   );
 }
