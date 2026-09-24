@@ -6,7 +6,10 @@ UserDto/Policy/Configuration 里列出的键都是"真 Jellyfin 必然输出"的
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+from fastapi import Request
 
 from movieclaw_api.services import auth as auth_service
 from movieclaw_api.settings.schemas import JellyfinCompatSetting, get_jellyfin_compat
@@ -17,10 +20,57 @@ from movieclaw_jellyfin.ids import (
     user_guid,
     user_guid_for,
 )
+from movieclaw_jellyfin.security import read_authorization
 
-# 对外报的 Jellyfin 版本：真实存在的 10.10 系版本号，命中客户端兼容分支
-REPORTED_VERSION = "10.10.7"
+logger = logging.getLogger("movieclaw_jellyfin.identity")
+
 PRODUCT_NAME = "Jellyfin Server"
+
+# ---------------------------------------------------------------------------
+# 对外自报的 Jellyfin 版本号（issue #445）
+#
+# 上游 10.11 之后直接跳到了 12.0，客户端的"最低服务器版本"门槛随之抬高：
+# Flow 要求 >= 12.0、官方 Android TV（Kotlin SDK 1.8.12）要求 >= 10.11，
+# Kotlin/Swift SDK 主干已是 12.0——一律报 10.10.7 会被它们直接拒连。
+# 调研过的客户端都只设下限、不设上限，且我们实现的接口在 10.10.7→12.1 之间
+# 协议无破坏性差异，因此默认报 12.1.0。
+#
+# 但 Infuse / VidHub 这类闭源播放器是否按版本号走不同分支无从查证，它们在
+# 10.10.7 下已长期验证可用，所以按来访客户端区分：识别出它们就维持 10.10.7，
+# 行为与改动前完全一致；其余一律 12.1.0。无需用户配置。
+#
+# 版本号必须是三段式：Kotlin/Swift SDK 解析 "12.1" 这种两段式会失败，
+# 反而把 Android 系客户端全部拒掉（真 Jellyfin 也是 ToString(3) 输出三段）。
+# ---------------------------------------------------------------------------
+
+#: 默认版本：与上游最新发布版一致
+REPORTED_VERSION = "12.1.0"
+#: 老牌播放器沿用的版本：兼容层最初就是对照 10.10.7 源码实现并实测的
+LEGACY_REPORTED_VERSION = "10.10.7"
+#: 维持旧版本号的客户端标识（小写子串）。Infuse 官方文档公开了 UA
+#: ``Infuse-Direct/<ver>`` 与 ``Client="Infuse-Direct"``（另有 Infuse-Library、
+#: Infuse-Download 两种连接类型）；VidHub 按名称匹配。
+_LEGACY_CLIENT_MARKERS = ("infuse", "vidhub")
+
+
+def reported_version(request: Request) -> str:
+    """按来访客户端决定自报的 Jellyfin 版本号。
+
+    同时看 User-Agent 与 Authorization / X-Emby-Authorization 里的 ``Client=``：
+    匿名探测阶段不同客户端带的头不一样，任一处命中即视为老牌播放器。
+    同一客户端每次请求带的标识不变，所以 /System/Info/Public 与 /System/Info
+    拿到的版本号始终一致。
+    """
+    user_agent = request.headers.get("User-Agent", "")
+    client = read_authorization(request).client
+    fingerprint = f"{user_agent} {client}".lower()
+    legacy = any(marker in fingerprint for marker in _LEGACY_CLIENT_MARKERS)
+    version = LEGACY_REPORTED_VERSION if legacy else REPORTED_VERSION
+    # debug 级别：探测请求很频繁；排查"某播放器连不上"时打开即可看到它的标识
+    logger.debug(
+        "Jellyfin 兼容层自报版本 %s（User-Agent=%r, Client=%r）", version, user_agent, client
+    )
+    return version
 
 
 def _now_iso() -> str:
