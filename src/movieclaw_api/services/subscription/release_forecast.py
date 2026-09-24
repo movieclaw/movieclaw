@@ -20,6 +20,7 @@ from datetime import UTC, date, datetime, timedelta
 from statistics import median
 from typing import Any
 
+from sqlalchemy import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -49,6 +50,8 @@ logger = logging.getLogger("movieclaw_api.subscription.release_forecast")
 FORECAST_VERSION = 1
 FORECAST_MIN_INTERVAL = timedelta(minutes=15)
 _OBSERVATION_LOOKBACK = timedelta(days=90)
+# 种子索引分批取回的批大小（见 _load_recent_candidates）
+_LOAD_CHUNK = 500
 _MAX_HISTORY_EPISODES = 4
 _MAX_WINDOW = timedelta(hours=12)
 _EARLY_RELEASE_TOLERANCE = timedelta(days=2)
@@ -160,20 +163,45 @@ def _same_forecast(left: dict[str, Any], right: dict[str, Any]) -> bool:
     )
 
 
+# 观测只用得上这几列（to_candidate 的输入 + 观测的 id/站点/发布时间）：按列取 Core 行
+# 而不是装配整行 ORM 对象——同样 4 万行，装配 3 秒缩到 1 秒，垃圾回收要扫的对象也少一大截
+_CANDIDATE_COLUMNS = (
+    SiteTorrent.id,
+    SiteTorrent.site_id,
+    SiteTorrent.torrent_id,
+    SiteTorrent.title,
+    SiteTorrent.subtitle,
+    SiteTorrent.category,
+    SiteTorrent.attrs,
+    SiteTorrent.imdb_id,
+    SiteTorrent.douban_id,
+    SiteTorrent.size_bytes,
+    SiteTorrent.seeders,
+    SiteTorrent.is_free,
+    SiteTorrent.hit_and_run,
+    SiteTorrent.download_url,
+    SiteTorrent.publish_time,
+)
+
+
 async def _load_recent_candidates(
     session: AsyncSession, *, now: datetime
-) -> list[tuple[SiteTorrent, TorrentCandidate]]:
+) -> list[tuple[Row, TorrentCandidate]]:
     """一次读取并解析近期种子，供本轮全部活跃剧集复用。"""
-    result = await session.execute(
-        select(SiteTorrent).where(
-            SiteTorrent.publish_time.is_not(None),  # type: ignore[union-attr]
-            SiteTorrent.publish_time >= now - _OBSERVATION_LOOKBACK,
-        )
+    statement = select(*_CANDIDATE_COLUMNS).where(
+        SiteTorrent.publish_time.is_not(None),  # type: ignore[union-attr]
+        SiteTorrent.publish_time >= now - _OBSERVATION_LOOKBACK,
     )
-    rows = list(result.scalars().all())
+    # 分批取回而不是一次 .all()：几万行的装配只能在事件循环线程上做（会话不能跨
+    # 线程），一口气取回会把整个循环卡住好几秒；分批之后每批之间都把控制权还给
+    # 事件循环，其他请求最多只等一批的工夫（实测一次性取回卡 2 秒多，分批后不到 0.2 秒）
+    rows: list[Row] = []
+    result = await session.stream(statement.execution_options(yield_per=_LOAD_CHUNK))
+    async for partition in result.partitions(_LOAD_CHUNK):
+        rows.extend(partition)
 
-    def _parse() -> tuple[list[tuple[SiteTorrent, TorrentCandidate]], int]:
-        parsed: list[tuple[SiteTorrent, TorrentCandidate]] = []
+    def _parse() -> tuple[list[tuple[Row, TorrentCandidate]], int]:
+        parsed: list[tuple[Row, TorrentCandidate]] = []
         invalid = 0
         for row in rows:
             try:
@@ -201,7 +229,7 @@ def _observations_for_item(
     *,
     item: MediaItem,
     episodes: list[MediaEpisode],
-    candidates: list[tuple[SiteTorrent, TorrentCandidate]],
+    candidates: list[tuple[Row, TorrentCandidate]],
     season_titles: tuple[str, ...] = (),
 ) -> list[_ObservedRelease]:
     """从 site_torrent 提取本条目的明确单集观测；整季包与多集包不参与训练。"""
@@ -481,19 +509,26 @@ async def refresh_release_forecasts(
 # fire-and-forget 任务的强引用集合：asyncio 只持弱引用，不留强引用的话
 # 任务可能在执行前被垃圾回收（与 wanted_search._kick_tasks 同一套路）。
 _refresh_tasks: set[asyncio.Task] = set()
+# 排队中（还没开始执行）的条目：同一条目连续触发（创建→调整→恢复）只跑一次。
+# 开始执行后就从这里移除——执行中再触发要重新排一次，本次可能读不到之后的变化
+_queued_ids: set[int] = set()
+# 串行执行：每次刷新都要把整个索引解析一遍，两份并行只会让事件循环更挤，不会更快
+_refresh_lock = asyncio.Lock()
 
 
 async def _refresh_once(media_item_ids: set[int]) -> None:
     """后台刷新的执行体：自开会话，失败只记日志（定时任务会兜底全量重算）。"""
-    try:
-        async with get_database().session() as session:
-            await refresh_release_forecasts(session, media_item_ids=media_item_ids)
-    except Exception:  # noqa: BLE001 -- 环境未就绪（如关停中）时静默降级
-        logger.warning(
-            "后台刷新条目 %s 的资源发布时间预测失败，等待定时任务兜底",
-            sorted(media_item_ids),
-            exc_info=True,
-        )
+    async with _refresh_lock:
+        _queued_ids.difference_update(media_item_ids)
+        try:
+            async with get_database().session() as session:
+                await refresh_release_forecasts(session, media_item_ids=media_item_ids)
+        except Exception:  # noqa: BLE001 -- 环境未就绪（如关停中）时静默降级
+            logger.warning(
+                "后台刷新条目 %s 的资源发布时间预测失败，等待定时任务兜底",
+                sorted(media_item_ids),
+                exc_info=True,
+            )
 
 
 def refresh_release_forecasts_soon(media_item_ids: set[int]) -> None:
@@ -509,7 +544,11 @@ def refresh_release_forecasts_soon(media_item_ids: set[int]) -> None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    task = loop.create_task(_refresh_once(set(media_item_ids)))
+    new_ids = set(media_item_ids) - _queued_ids
+    if not new_ids:
+        return  # 同条目的刷新已在排队，合并进那一次
+    _queued_ids.update(new_ids)
+    task = loop.create_task(_refresh_once(new_ids))
     _refresh_tasks.add(task)
     task.add_done_callback(_refresh_tasks.discard)
 

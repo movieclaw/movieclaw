@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -463,8 +464,11 @@ async def load_match_context(session: AsyncSession) -> dict[int, MediaContext]:
 _NON_VIDEO_CATEGORIES = frozenset({"music", "game", "av"})
 
 
-def to_candidate(row: SiteTorrent) -> TorrentCandidate | None:
-    """SiteTorrent 行 → 内核候选。粗筛：未扩充属性 / 明确非影视分类的行不可匹配。"""
+def to_candidate(row: SiteTorrent | Row) -> TorrentCandidate | None:
+    """SiteTorrent 行 → 内核候选。粗筛：未扩充属性 / 明确非影视分类的行不可匹配。
+
+    也接受只选了同名列的 Core 行（发布预测按列批量取回几万行，不装配 ORM 对象）。
+    """
     if not row.attrs:
         return None
     if row.category in _NON_VIDEO_CATEGORIES:
