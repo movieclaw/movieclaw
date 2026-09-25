@@ -49,7 +49,11 @@ enum PlayerCapability {
         let video = ["h264", "hevc", "av1", "vp9", "vp8", "mpeg2video", "mpeg4", "vc1"].map {
             API.VideoSupportIn(codec: $0, maxHeight: 2160, smooth: true, powerEfficient: $0 == "h264" || $0 == "hevc")
         }
-        let audio = ["aac", "ac3", "eac3", "truehd", "dts", "flac", "alac", "opus", "vorbis", "mp3", "mp2", "pcm_s16le", "pcm_s24le"].map {
+        // 音频只报「能原样装进 fMP4 分片」的编码（对应后端 FMP4_COPY_AUDIO_CODECS）。
+        // MPV 直出时拉的是原文件，本机照样解 TrueHD / LPCM；这里的申报只影响服务端给出的计划——
+        // 若报了 TrueHD，服务端会计划「换壳成 HLS fMP4 并原样拷贝 TrueHD」，而 ffmpeg 的 MP4 封装
+        // 不支持 TrueHD，转码进程启动即失败（503），连取流凭据都拿不到（NAS《蜘蛛侠：英雄归来》实测）。
+        let audio = ["aac", "ac3", "eac3", "dts", "flac", "alac", "opus", "mp3"].map {
             API.AudioSupportIn(codec: $0, maxChannels: 8)
         }
         return API.ClientCapabilityIn(
