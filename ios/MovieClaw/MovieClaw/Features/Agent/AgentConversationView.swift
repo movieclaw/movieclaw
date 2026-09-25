@@ -1,10 +1,313 @@
 import SwiftUI
 
-// 占位：由对应模块实现（见 docs/design/ios-app.md「模块分工」）。
+/// AI 会话页（`/sessions/{id}`，对应 Web `components/agent-conversation-view.tsx`）。
+///
+/// ChatGPT / Claude 式对话：顶栏会话标题 + 返回，可滚动消息列（用户右侧气泡 / Agent 整栏正文），
+/// 底部贴底输入框随键盘上移。沉浸式：进入时隐藏标签栏（Web 手机端 `/sessions/*` 同样隐藏底栏）。
+///
+/// 交互要点：
+/// - 进入时拉轨迹回放；会话仍在运行则自动接上事件流（离开再回来不重拉，继续跟随）；
+/// - 生成中可继续打字，发送键变停止键；
+/// - 自动滚动只在用户本就贴近底部时跟随新内容（上滚查看历史时不打断），离开底部给「回到最新消息」按钮；
+/// - 「改写这条提问」只进入本地编辑态，发送时二次确认「替换并重新提问」才调用 retry；
+/// - 模型 / 思维链选择器三态：没动过（发送时不传，服务端沿用上一条）/ 显式默认 / 显式值，
+///   展示值回落到会话最近一轮的轨迹信封值。
 struct AgentConversationView: View {
     let sessionId: String
 
+    @Environment(\.api) private var api
+    @Environment(Router.self) private var router
+    @Environment(Feedback.self) private var feedback
+
+    @State private var conversation: AgentConversation
+    @State private var draft = AgentDraft()
+    /// 外层 nil = 没动过选择器；.some(nil) = 显式「默认」
+    @State private var thinkingChoice: String??
+    @State private var modelChoice: String??
+    @State private var modelOptions: [API.LlmModelOptionView] = []
+    @State private var knownSkills: Set<String>?
+    /// false = 明确未接入模型（锁定追问并引导去设置）
+    @State private var llmConfigured: Bool?
+    /// 正在改写的提问（message_id）
+    @State private var retryTarget: String?
+    @State private var retrying = false
+    @State private var position = ScrollPosition(edge: .bottom)
+    @State private var nearBottom = true
+
+    init(sessionId: String) {
+        self.sessionId = sessionId
+        _conversation = State(initialValue: AgentConversationRegistry.conversation(sessionId))
+    }
+
     var body: some View {
-        PlaceholderPage(title: "会话")
+        content
+            .background(Theme.background.ignoresSafeArea())
+            .navigationTitle(conversation.loaded ? conversation.title : "AI 会话")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarVisibility(.hidden, for: .tabBar)
+            .toolbar { AgentTopBarActions() }
+            .environment(\.openURL, OpenURLAction { url in
+                // 站内链接（相对路径或指向当前服务器）走原生路由；外链交给系统浏览器（同 Web 新窗口打开）
+                if url.scheme == nil || url.host() == api.server.apiBase.host(), router.open(webPath: url.path() + (url.query().map { "?\($0)" } ?? "")) {
+                    return .handled
+                }
+                return .systemAction
+            })
+            .tracksSubscriptionIndex()
+            .task(id: sessionId) {
+                await conversation.open(api: api)
+            }
+            .task {
+                async let configured = AgentCatalog.llmConfigured(api: api)
+                async let options = AgentCatalog.modelOptions(api: api)
+                async let skills = AgentCatalog.knownSkills(api: api)
+                llmConfigured = await configured
+                modelOptions = await options
+                knownSkills = await skills
+            }
+            .onDisappear { conversation.detachIfIdle() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if !conversation.loaded, let error = conversation.loadError {
+            VStack(spacing: 8) {
+                Text("无法打开会话").font(.system(size: 17, weight: .medium)).foregroundStyle(Theme.text)
+                Text(error).font(.system(size: 14)).foregroundStyle(Theme.textMuted).multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("agent-load-error")
+        } else if !conversation.loaded {
+            Text("正在加载会话…")
+                .font(.system(size: 16))
+                .foregroundStyle(Theme.textMuted)
+                .modifier(AgentPulse(active: true))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityIdentifier("agent-loading")
+        } else {
+            transcript
+                .safeAreaInset(edge: .bottom, spacing: 0) { composerArea }
+        }
+    }
+
+    // MARK: 消息列
+
+    private var transcript: some View {
+        let running = conversation.running
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 32) {
+                if let handoff = conversation.handoff {
+                    AgentHandoffCard(sourceId: handoff.sourceId, sourceTitle: handoff.sourceTitle)
+                }
+                ForEach(conversation.turns) { turn in
+                    // 运行中不给改写入口：服务端会拒绝替换正在写轨迹的会话
+                    AgentTurnView(
+                        turn: turn,
+                        sessionId: sessionId,
+                        knownSkills: knownSkills,
+                        onEdit: running || retrying ? nil : { messageId, input in
+                            retryTarget = messageId
+                            draft.load(input)
+                        }
+                    )
+                    .equatable()
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 16)
+        }
+        .scrollPosition($position)
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .scrollDismissesKeyboard(.interactively)
+        .scrollEdgeEffectStyle(.hard, for: .bottom)
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.contentSize.height - geometry.visibleRect.maxY < 120
+        } action: { _, near in
+            nearBottom = near
+        }
+        .onChange(of: conversation.turns) {
+            if nearBottom { position.scrollTo(edge: .bottom) }
+        }
+        .overlay(alignment: .bottom) {
+            if !nearBottom {
+                Button {
+                    withAnimation { position.scrollTo(edge: .bottom) }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.textMuted)
+                        .frame(width: 36, height: 36)
+                        .background(Color(red: 0x23 / 255, green: 0x23 / 255, blue: 0x25 / 255), in: .circle)
+                        .overlay(Circle().strokeBorder(Color.white.opacity(0.1)))
+                        .shadow(color: .black.opacity(0.4), radius: 8, y: 3)
+                }
+                .buttonStyle(.plain)
+                .padding(.bottom, 10)
+                .accessibilityLabel("回到最新消息")
+                .accessibilityIdentifier("agent-scroll-latest")
+            }
+        }
+    }
+
+    // MARK: 底部输入
+
+    private var composerArea: some View {
+        let turns = conversation.turns
+        // 会话当前生效的档位 / 模型 = 最近一轮有值的轨迹信封值
+        let sessionThinking = turns.last(where: { $0.thinkingLevel != nil })?.thinkingLevel ?? nil
+        let sessionModel = turns.last(where: { $0.modelRef != nil })?.modelRef ?? nil
+        let displayedThinking = thinkingChoice ?? sessionThinking
+        let displayedModel = modelChoice ?? sessionModel
+        let locked = llmConfigured == false
+
+        return VStack(alignment: .leading, spacing: 8) {
+            if retryTarget != nil {
+                HStack {
+                    Text("正在改写较早的提问，发送后将替换其后的对话")
+                    Spacer()
+                    Button("取消改写") {
+                        retryTarget = nil
+                        draft.clear()
+                    }
+                    .foregroundStyle(Theme.textFaint)
+                    .accessibilityIdentifier("agent-cancel-retry")
+                }
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.textMuted)
+                .padding(.horizontal, 8)
+            }
+            AgentComposer(
+                draft: $draft,
+                placeholder: locked ? "请先接入 AI 模型，再继续对话"
+                    : retryTarget != nil ? "修改问题后发送，将从这里重新生成回答" : nil,
+                busy: conversation.running,
+                disabled: locked || (retrying && retryTarget != nil),
+                // 改写模式不开图片入口：retry 沿用原消息的图，新加的图无处安放，藏起入口比静默丢弃诚实
+                imageUpload: retryTarget == nil,
+                modelOptions: modelOptions,
+                modelValue: displayedModel,
+                onModelChange: { ref in
+                    modelChoice = .some(ref)
+                    // 换模型后旧档位可能不在新菜单里，显式清回默认
+                    thinkingChoice = .some(nil)
+                    AgentComposerPrefs(model: ref, thinking: nil).save()
+                },
+                thinkingValue: displayedThinking,
+                onThinkingChange: { level in
+                    thinkingChoice = .some(level)
+                    AgentComposerPrefs(model: displayedModel, thinking: level).save()
+                },
+                onSubmit: submit,
+                onStop: stop
+            )
+            if locked { AgentLLMSetupNotice() }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .background {
+            // 沉浸页纯色底：输入区不透出下方消息（同 Web 贴底输入行）
+            Theme.background.ignoresSafeArea(edges: .bottom)
+        }
+    }
+
+    /// 线上值：没动过不传（服务端沿用）；显式默认传 "default"
+    private func wire(_ choice: String??) -> String? {
+        switch choice {
+        case .none: nil
+        case .some(.none): "default"
+        case let .some(.some(value)): value
+        }
+    }
+
+    private func submit() {
+        let message = draft.message
+        let images = draft.images.map { AgentTurnImage(attachmentId: $0.attachmentId, name: $0.name) }
+        guard let target = retryTarget else {
+            draft.clear()
+            nearBottom = true
+            conversation.send(api: api, input: message, images: images, thinking: wire(thinkingChoice), model: wire(modelChoice))
+            position.scrollTo(edge: .bottom)
+            return
+        }
+        Task {
+            let agreed = await feedback.confirm(
+                "重新提交这条提问？",
+                message: "这条提问及其之后的对话会被新问题替换，原记录无法恢复。",
+                confirmTitle: "替换并重新提问",
+                destructive: true
+            )
+            guard agreed else { return }
+            retrying = true
+            defer { retrying = false }
+            do {
+                // 改写模式下选择器照常可用：没动过就沿用被重试消息的值
+                try await conversation.retry(api: api, messageId: target, content: message, thinking: wire(thinkingChoice), model: wire(modelChoice))
+                draft.clear()
+                retryTarget = nil
+                nearBottom = true
+                position.scrollTo(edge: .bottom)
+            } catch {
+                feedback.error(error)
+            }
+        }
+    }
+
+    private func stop() {
+        Task {
+            do {
+                try await conversation.stop(api: api)
+            } catch {
+                // 停止失败时 Agent 可能仍在执行，不在客户端伪造终态；真实终态仍会经事件流落到界面
+                feedback.error("停止失败，请稍后重试：\(error.localizedDescription)")
+            }
+        }
+    }
+}
+
+/// 会话页顶栏右侧：搜索 + 新会话（Web 手机顶栏在会话页同样保留这两个按钮）
+struct AgentTopBarActions: ToolbarContent {
+    @Environment(Router.self) private var router
+    @Environment(\.permissions) private var permissions
+
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            if permissions.canSearch {
+                Button {
+                    router.selectedTab = .search
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .accessibilityLabel("搜索")
+            }
+            Button {
+                router.push(.newSession)
+            } label: {
+                Image(systemName: "plus")
+            }
+            .accessibilityLabel("新会话")
+            .accessibilityIdentifier("agent-new-session")
+        }
+    }
+}
+
+/// 未接入模型时的公共引导（对应 Web `LlmSetupNotice`）：说明能解锁什么，并给唯一的设置入口
+struct AgentLLMSetupNotice: View {
+    @Environment(Router.self) private var router
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text("接入 AI 模型后即可解锁AI 对话能力。")
+                .foregroundStyle(Theme.textMuted)
+            Button("去接入") { router.push(.settingsSection(.llm)) }
+                .foregroundStyle(Theme.accent)
+                .accessibilityIdentifier("agent-llm-setup")
+        }
+        .font(.system(size: 14))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Theme.surfaceRaised, in: .rect(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.line))
     }
 }
