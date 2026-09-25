@@ -13,3 +13,8 @@ extension API.LibraryItemView: Identifiable {
 extension API.FavoriteItemView: Identifiable {
     var id: Int { mediaItemId }
 }
+
+// 活动模块：删除确认弹层按种子任务弹出、列表按 Job id 区分
+extension API.DownloadTaskView: Identifiable {}
+
+extension API.JobView: Identifiable {}

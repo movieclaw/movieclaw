@@ -186,30 +186,48 @@ extension Theme {
 }
 
 /// 外壳上的角标状态（管理员）：待处理更新（头像蓝点，10 分钟轮询）、
-/// 活动标签红/绿/蓝点（需处理任务 > 有人在看 > 任务进行中）。
+/// 活动标签提示（需处理任务 > 有人在看 > 任务进行中，同 Web glass-tab-bar `pickActivityDot`）。
+///
+/// 任务与观看两份数据源（`tasks` / `media`）也挂在这里、由外壳常驻运行：活动页直接读同一个实例，
+/// 全 App 只有一条 `/jobs/stream` SSE、一路下载器轮询、一路播放活动轮询（Web 同样是全站 Provider）。
+///
+/// 与 Web 的差异：iOS 标签角标只能是系统红底的数字/文字，不能按状态换色。于是用文字区分三档：
+/// 需要处理显示数量（红底数字，语义与 Web 红点一致）、有人在看显示「在看」、只有进行中显示「进行中」。
 @Observable
 final class ShellBadges {
     var updatePending = false
-    /// 活动标签：需要处理的任务数（红）。有人在看/任务进行中由活动模块写入 activityHint
-    var needsAction = 0
-    var watching = 0
-    var running = 0
+    /// 任务活动（Job SSE + 下载器快照），活动页任务视角共用
+    let tasks = TaskActivityStore()
+    /// 媒体库实时活动（8 秒轮询），活动页观看视角共用
+    let media = MediaActivityStore()
 
-    var activityBadge: Int { needsAction > 0 ? needsAction : 0 }
+    /// 需要处理的任务数（红）
+    var needsAction: Int { tasks.activity.attentionTotal }
+    /// 此刻在播 / 在下载的设备数（绿）
+    var watching: Int { media.liveCount }
+    /// 进行中的任务数（蓝）
+    var running: Int { tasks.activity.activeTotal }
+
+    /// 活动标签角标：按优先级只表达当前最该被看见的那一件事
+    var activityBadge: Text? {
+        if needsAction > 0 { return Text("\(needsAction)") }
+        if watching > 0 { return Text("在看") }
+        if running > 0 { return Text("进行中") }
+        return nil
+    }
 
     func run(api: APIClient) async {
-        var lastUpdateCheck = Date.distantPast
-        while !Task.isCancelled {
-            if Date.now.timeIntervalSince(lastUpdateCheck) > 600 {
-                lastUpdateCheck = .now
-                if let pending = try? await api.appUpdatePending() {
-                    updatePending = pending.appVersion != nil || pending.modelTag != nil
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.tasks.run(api: api) }
+            group.addTask { await self.media.run(api: api) }
+            group.addTask {
+                while !Task.isCancelled {
+                    if let pending = try? await api.appUpdatePending() {
+                        await MainActor.run { self.updatePending = pending.appVersion != nil || pending.modelTag != nil }
+                    }
+                    try? await Task.sleep(for: .seconds(600))
                 }
             }
-            if let activity = try? await api.playbackActivity(scope: "visible") {
-                watching = activity.sessions.count
-            }
-            try? await Task.sleep(for: .seconds(8))
         }
     }
 }
