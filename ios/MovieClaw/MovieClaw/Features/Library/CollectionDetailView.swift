@@ -116,13 +116,13 @@ struct CollectionDetailView: View {
                     seasonSummary: "\(collection.itemCount) 部\(collection.ruleDriven ? " · 会自动收录新片" : "")",
                     initialShare: request.initial
                 )
-                .librarySheetFeedback()
+                .sheetFeedback()
             }
         }
         .sheet(isPresented: Binding(get: { ordering != nil }, set: { if !$0 { ordering = nil } })) {
             if let ordering {
                 CollectionOrderSheet(collectionId: collectionId, items: ordering) { membersChanged() }
-                    .librarySheetFeedback()
+                    .sheetFeedback()
             }
         }
     }

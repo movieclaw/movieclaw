@@ -292,10 +292,4 @@ struct LibraryInventoryCell: View {
     }
 }
 
-extension API.LibraryItemView: Identifiable {
-    var id: Int { mediaItemId }
-}
 
-extension API.FavoriteItemView: Identifiable {
-    var id: Int { mediaItemId }
-}

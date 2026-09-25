@@ -139,18 +139,18 @@ struct LibraryDetailView: View {
         .polling(every: pollInterval) { await reload() }
         .sheet(item: $issueTab) { sheet in
             IssueDrawerView(libraryId: libraryId, initialTab: sheet.tab) { Task { await reload() } }
-                .librarySheetFeedback()
+                .sheetFeedback()
         }
         .sheet(isPresented: $organizing) {
             LibraryOrganizeSheet(libraryId: libraryId) { Task { await reload() } }
-                .librarySheetFeedback()
+                .sheetFeedback()
         }
         .sheet(isPresented: $editing, onDismiss: { Task { await reload() } }) {
-            LibraryFormSheet(libraryId: libraryId).librarySheetFeedback()
+            LibraryFormSheet(libraryId: libraryId).sheetFeedback()
         }
         .sheet(isPresented: $savingCollection) {
             SaveAsCollectionSheet(libraryId: libraryId, filter: filter) { _ in Task { await reloadCollections() } }
-                .librarySheetFeedback()
+                .sheetFeedback()
         }
         .alert("为「\(library?.name ?? "")」生成章节？", isPresented: $askingChapters) {
             Button("开始生成") { startChapters(force: false) }

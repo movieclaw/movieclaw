@@ -50,6 +50,9 @@ ios/MovieClaw/
 - 空态 `EmptyState`，失败 `ErrorState`（后端中文原因原样显示）。
 - 轮询：`.polling(every: 秒) { await reload() }`，自动随页面可见性与前后台启停；间隔同 Web（清单第 13 节）。
 - SSE：`for try await event in api.events("/jobs/stream") { … }` 放在 `.task` 里，离开页面自动断开。
+- **弹层**：所有 `.sheet` / `.fullScreenCover` 的内容必须调用 `.sheetFeedback()`——根部的确认框/输入框被 sheet 盖住时弹不出，
+  它给弹层配独立的反馈中心，关窗时未消失的 Toast 转交回根部（全局弹层已自动挂上）。
+- **模型一致性**：给 `API.*` 模型加 `Identifiable` 等协议一律写在 `Core/API/ModelConformances.swift`（先 grep，别在模块里重复声明）。
 - 反馈：`@Environment(Feedback.self)`：`feedback.success/error`、`await feedback.confirm(…)`、`await feedback.prompt(…)`，
   文案照搬 Web。
 - 导航：`@Environment(Router.self)`：`router.push(.libraryItem(…))`、`router.open(webPath:)`、

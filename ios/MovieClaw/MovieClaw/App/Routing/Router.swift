@@ -108,8 +108,14 @@ final class Router {
             return
         }
         showsMore = false
+        // 切到路由归属的标签（该标签对当前账号不可见时——例如成员没有订阅页——留在当前标签）
+        let target = route.tab
+        if availableTabs.contains(target) { selectedTab = target }
         paths[selectedTab, default: []].append(route)
     }
+
+    /// 当前账号可见的标签（由 MainTabView 按权限写入）
+    var availableTabs: Set<MainTab> = Set(MainTab.allCases)
 
     /// 打开 Web 站内链接；解析失败返回 false
     @discardableResult

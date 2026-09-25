@@ -100,13 +100,13 @@ struct LibraryItemDetailView: View {
             if let next = try? await api.libraryItemsGet(libraryId: libraryId, mediaItemId: itemId) { self.detail = next }
         }
         .sheet(item: $sheet) { sheet in
-            sheetContent(sheet).librarySheetFeedback()
+            sheetContent(sheet).sheetFeedback()
         }
         .sheet(item: $deleteFile) { file in
             DeleteFileSheet(libraryId: libraryId, mediaItemId: itemId, file: file,
                             onDeleted: { Task { await reload() } },
                             onItemDeleted: { router.pop() })
-                .librarySheetFeedback()
+                .sheetFeedback()
         }
     }
 
@@ -768,7 +768,6 @@ struct LibraryItemDetailView: View {
     }
 }
 
-extension API.LibraryFileView: Identifiable {}
 
 // MARK: - 简介
 

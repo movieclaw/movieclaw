@@ -45,13 +45,14 @@ struct MainTabView: View {
         }
         .tabBarMinimizeBehavior(.onScrollDown)
         .sheet(item: $router.sheet) { sheet in
-            sheet.content
+            sheet.content.sheetFeedback()
         }
         .sheet(isPresented: $router.showsMore) {
             NavigationStack {
                 MorePage()
                     .navigationDestination(for: AppRoute.self) { $0.destination }
             }
+            .sheetFeedback()
         }
         .fullScreenCover(item: $router.player) { request in
             PlayerScreen(request: request)
@@ -68,6 +69,13 @@ struct MainTabView: View {
             }
         }
         #endif
+        .onChange(of: permissions, initial: true) { _, value in
+            var tabs: Set<MainTab> = [.discover, .library]
+            if value.canSubscribe { tabs.insert(.subscriptions) }
+            if value.isAdmin { tabs.insert(.activity) }
+            if value.canSearch { tabs.insert(.search) }
+            router.availableTabs = tabs
+        }
         .task(id: permissions.isAdmin) {
             guard permissions.isAdmin else { return }
             await badges.run(api: api)
