@@ -119,6 +119,7 @@ struct JobCard: View {
             DismissJobSheet(job: job) { mute in await dismiss(muteSource: mute) }
                 .sheetFeedback()
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("job-card-\(job.id)")
     }
 

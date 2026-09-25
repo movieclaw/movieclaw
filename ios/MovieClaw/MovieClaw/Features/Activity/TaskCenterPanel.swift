@@ -173,6 +173,7 @@ struct TaskCenterPanel: View {
             .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Theme.danger.opacity(0.2)))
         }
         .padding(.top, 20)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("attention-section")
     }
 
@@ -202,6 +203,7 @@ struct TaskCenterPanel: View {
             }
         }
         .padding(.top, 24)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("active-section")
     }
 
@@ -483,6 +485,7 @@ struct TaskHistorySection: View {
             }
         }
         .padding(.top, separated ? 0 : 8)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("history-section")
     }
 
@@ -537,6 +540,7 @@ struct HistoricalJobFeedItem: View {
             }
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("history-item-\(job.id)")
     }
 }

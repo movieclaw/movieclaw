@@ -135,6 +135,7 @@ struct PlaybackHistoryList: View {
                     .accessibilityIdentifier("history-end")
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("history-list")
     }
 

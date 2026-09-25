@@ -152,6 +152,7 @@ private struct NoticeCard: View {
         .padding(14)
         .background(Color.white.opacity(0.03), in: .rect(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.07)))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("notice-\(notice.id)")
     }
 }

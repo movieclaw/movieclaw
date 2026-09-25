@@ -353,6 +353,7 @@ struct DownloadTaskCard: View {
         .background(grouped ? Color.black.opacity(0.15) : Color(red: 14 / 255, green: 16 / 255, blue: 22 / 255).opacity(0.5),
                     in: .rect(cornerRadius: grouped ? 12 : 16))
         .overlay(RoundedRectangle(cornerRadius: grouped ? 12 : 16).strokeBorder(Color.white.opacity(grouped ? 0.06 : 0.08)))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("download-card-\(task.infoHash)")
     }
 
@@ -557,6 +558,7 @@ struct DownloadTaskFeedItem: View {
                     .disabled(replacing)
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("download-feed-\(task.infoHash)")
     }
 }

@@ -86,6 +86,7 @@ struct WatchStatsPanel: View {
                     HourHeatmap(matrix: stats.byHour)
                 }
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("watch-stats")
         }
     }
@@ -414,12 +415,15 @@ private struct TrendChart: View {
     private func chart(_ points: [Point], showPrevious: Bool) -> some View {
         let maxValue = points.reduce(0.0) { max($0, $1.current, $1.previous ?? 0) }
         let yMax = Self.niceMax(maxValue)
+        let slot = max(0, width - 48) / CGFloat(max(points.count, 1))
+        let barWidth = max(1, slot - min(6, max(1, slot * 0.3)))
         let tickEvery = max(1, Int((Double(points.count) / Double(max(2, min(5, Int(width / 70))))).rounded()))
         return Chart {
             ForEach(points) { point in
-                BarMark(x: .value("日期", point.index), y: .value(metric.label, point.current), width: .ratio(0.7))
+                // x 是数值轴（桶序号），柱宽按槽位宽度算定值（.ratio 在数值轴上会退化成 0 宽）
+                BarMark(x: .value("日期", point.index), y: .value(metric.label, point.current), width: .fixed(barWidth))
                     .foregroundStyle(Theme.info.opacity(selected == nil || selected == point.index ? 0.95 : 0.55))
-                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 3, topTrailingRadius: 3))
+                    .cornerRadius(min(3, barWidth / 2))
             }
             if showPrevious {
                 ForEach(points) { point in
@@ -695,6 +699,7 @@ private struct FavoritePodium: View {
             }
             .clipShape(.rect(cornerRadius: 16))
             .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.08)))
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("favorite-podium")
         }
     }

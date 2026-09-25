@@ -389,6 +389,7 @@ struct PlaybackSessionCard: View {
                 clockLine
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("session-card")
     }
 
