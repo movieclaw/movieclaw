@@ -140,7 +140,7 @@ struct ProfileSettingsView: View {
                             .disabled(nicknameBusy)
                             .accessibilityIdentifier("profile-nickname-cancel")
                         Button(nicknameBusy ? "保存中…" : "保存") { Task { await saveNickname() } }
-                            .buttonStyle(.glassProminent)
+                            .settingsProminentButton()
                             .disabled(nicknameBusy)
                             .accessibilityIdentifier("profile-nickname-save")
                     }
@@ -182,7 +182,7 @@ struct ProfileSettingsView: View {
             HStack {
                 Spacer()
                 Button(passwordBusy ? "提交中…" : "修改密码") { Task { await changePassword() } }
-                    .buttonStyle(.glassProminent)
+                    .settingsProminentButton()
                     .disabled(passwordBusy || oldPassword.isEmpty || newPassword.isEmpty || confirmPassword.isEmpty)
                     .accessibilityIdentifier("profile-change-password")
             }

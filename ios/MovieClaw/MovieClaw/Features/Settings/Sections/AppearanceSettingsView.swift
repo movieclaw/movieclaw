@@ -372,7 +372,7 @@ struct AppearanceSettingsView: View {
                     .disabled(textureBusy || isDefault)
                     .accessibilityIdentifier("texture-reset")
                 Button(textureBusy ? "保存中…" : "保存") { Task { await saveTexture(texture, saved) } }
-                    .buttonStyle(.glassProminent)
+                    .settingsProminentButton()
                     .disabled(textureBusy || !dirty)
                     .accessibilityIdentifier("texture-save")
             }
@@ -465,7 +465,7 @@ struct AppearanceSettingsView: View {
                 Button(navBusy ? "保存中…" : "保存") {
                     Task { await saveNav(SettingsNavOrder.merge(navDraft, saved.nav.order), saved) }
                 }
-                .buttonStyle(.glassProminent)
+                .settingsProminentButton()
                 .disabled(navBusy || !dirty)
                 .accessibilityIdentifier("nav-save")
             }

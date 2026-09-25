@@ -286,3 +286,15 @@ enum SettingsPlaybackEngine: String, CaseIterable, Identifiable {
         }
     }
 }
+
+// MARK: - 主按钮
+
+extension View {
+    /// 设置页的主操作按钮：液态玻璃强调样式 + 深色字。
+    /// 全局 tint 是冷银（近白），直接用 `.glassProminent` 会白底白字看不清。
+    func settingsProminentButton() -> some View {
+        buttonStyle(.glassProminent)
+            .tint(Theme.accentStrong)
+            .foregroundStyle(Color.black.opacity(0.85))
+    }
+}

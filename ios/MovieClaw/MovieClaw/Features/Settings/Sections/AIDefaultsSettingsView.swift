@@ -65,7 +65,7 @@ struct AIDefaultsSettingsView: View {
                 Text("先在「模型接入」接入至少一家供应商。接入后这里会自动把智能体和字幕处理的默认模型设为该供应商目录里的第一个模型，你可以随时改成别的。")
                     .font(.subheadline).foregroundStyle(Theme.textMuted).multilineTextAlignment(.center)
                 Button("去接入模型供应商") { router.push(.settingsSection(.llm)) }
-                    .buttonStyle(.glassProminent)
+                    .settingsProminentButton()
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16)

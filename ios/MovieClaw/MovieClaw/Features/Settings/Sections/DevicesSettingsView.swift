@@ -193,7 +193,7 @@ struct DevicesSettingsView: View {
                 grantNote(DeviceText.manualGrant)
                 HStack(spacing: 10) {
                     Button(creating ? "创建中…" : "创建令牌") { Task { await createToken() } }
-                        .buttonStyle(.glassProminent)
+                        .settingsProminentButton()
                         .disabled(creating)
                         .accessibilityIdentifier("token-create-submit")
                     Button("取消") {
@@ -287,7 +287,7 @@ struct DevicesSettingsView: View {
                 .buttonStyle(.glass)
             Spacer()
             Button("我已保存，关闭") { Task { await dismissCreated() } }
-                .buttonStyle(.glassProminent)
+                .settingsProminentButton()
                 .accessibilityIdentifier("token-created-dismiss")
         }
     }
@@ -372,7 +372,7 @@ private struct ApprovalCard: View {
                 .font(.caption).foregroundStyle(Theme.textFaint)
             HStack(spacing: 10) {
                 Button("批准接入", systemImage: "checkmark", action: onApprove)
-                    .buttonStyle(.glassProminent)
+                    .settingsProminentButton()
                     .accessibilityIdentifier("device-approve-\(request.userCode)")
                 Button("拒绝", systemImage: "xmark", action: onDeny)
                     .buttonStyle(.glass)

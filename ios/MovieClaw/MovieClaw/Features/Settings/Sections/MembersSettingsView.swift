@@ -25,7 +25,7 @@ struct MembersSettingsView: View {
                         SettingsRowText(title: "成员账号", detail: "管理登录状态、功能权限和可见媒体库")
                         Spacer(minLength: 8)
                         Button { creating = true } label: { Label("添加成员", systemImage: "plus") }
-                            .buttonStyle(.glassProminent)
+                            .settingsProminentButton()
                             .accessibilityIdentifier("member-add")
                     }
                 }

@@ -278,7 +278,7 @@ struct PlaybackSettingsView: View {
                 }
                 Spacer()
                 Button(saving ? "保存中…" : "保存设置") { Task { await saveConfig() } }
-                    .buttonStyle(.glassProminent)
+                    .settingsProminentButton()
                     .disabled(saving)
                     .accessibilityIdentifier("remote-transcode-save")
             }
