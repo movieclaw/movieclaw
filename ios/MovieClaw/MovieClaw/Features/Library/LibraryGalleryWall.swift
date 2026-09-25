@@ -233,11 +233,18 @@ extension GalleryDensity {
 /// **本视图是滚动内容，不自带 ScrollView**：调用方把它放进自己页面的 ScrollView
 /// （页头、筛选条在它上面），数据加载由本视图通过 `fetch` 闭包自己完成，
 /// 三个来源（单库 / 合集 / 收藏）因此都能复用。`reloadKey` 变化（换筛选 / 排序）即从头重载。
+///
+/// 「回到上次位置」（同 Web jumpGalleryTo）：宿主改 `startOffset` 就把窗口换成从那部作品开始的一页；
+/// 滚动时经 `onFirstVisible` 回报视口里第一部作品在整份排序里的位置（按作品计，与海报墙同一口径），
+/// 宿主据此写同一条位置记录。
 struct LibraryGalleryWall: View {
     let reloadKey: AnyHashable
+    var startOffset: Int = 0
     let fetch: (_ offset: Int, _ limit: Int) async throws -> [API.LibraryGalleryGroupView]
     /// 点作品段标题（调用方一般 push 到条目详情）
     var onOpenItem: (API.LibraryGalleryGroupView) -> Void = { _ in }
+    /// 视口里第一部作品的位置（整份排序里的 offset）
+    var onFirstVisible: (Int) -> Void = { _ in }
 
     /// 一页的作品数：一部作品十来张图，24 部约一屏半（同 Web GALLERY_PAGE_SIZE）
     static let pageSize = 24
@@ -249,13 +256,23 @@ struct LibraryGalleryWall: View {
     @State private var lightbox: LightboxSession?
     /// 灯箱关闭后要执行的跳转（播放 / 进详情）：必须等全屏层收起，否则播放器弹不出来
     @State private var afterDismiss: (() -> Void)?
+    /// 视口里的行（行下标 → 该行第一张图所属作品的分组下标）
+    @State private var visibleRows: [Int: Int] = [:]
     private var prefs: GalleryPrefs { GalleryPrefs.shared }
+
+    private struct LoadKey: Hashable {
+        var reload: AnyHashable
+        var start: Int
+    }
 
     var body: some View {
         content
             .frame(maxWidth: .infinity)
             .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
-            .task(id: reloadKey) { await feed.reload(fetch: fetch) }
+            .task(id: LoadKey(reload: reloadKey, start: startOffset)) {
+                visibleRows = [:]
+                await feed.reload(fetch: fetch, from: startOffset)
+            }
             .fullScreenCover(item: $lightbox, onDismiss: {
                 afterDismiss?()
                 afterDismiss = nil
@@ -277,7 +294,7 @@ struct LibraryGalleryWall: View {
                 .controlSize(.large)
                 .frame(maxWidth: .infinity, minHeight: 240)
         case let .failed(message):
-            ErrorState(message: message, retry: { await feed.reload(fetch: fetch) })
+            ErrorState(message: message, retry: { await feed.reload(fetch: fetch, from: startOffset) })
                 .frame(minHeight: 280)
         case .loaded:
             if feed.entries.isEmpty {
@@ -298,6 +315,9 @@ struct LibraryGalleryWall: View {
                         // 离底部还有几行就要下一页：图大、下载慢，等滑到底再要就是一屏空瓦片
                         if position >= rows.count - 4 { Task { await feed.loadMore(fetch: fetch) } }
                     }
+                    .onScrollVisibilityChange(threshold: 0.2) { visible in
+                        trackVisible(position: position, group: feed.firstGroup(of: row), visible: visible)
+                    }
             }
             if feed.hasMore {
                 ProgressView()
@@ -306,6 +326,13 @@ struct LibraryGalleryWall: View {
                     .onAppear { Task { await feed.loadMore(fetch: fetch) } }
             }
         }
+    }
+
+    /// 回报视口里第一部作品的位置（整份排序里的 offset = 窗口起点 + 分组下标）
+    private func trackVisible(position: Int, group: Int?, visible: Bool) {
+        if visible, let group { visibleRows[position] = group } else { visibleRows[position] = nil }
+        guard let first = visibleRows.min(by: { $0.key < $1.key })?.value else { return }
+        onFirstVisible(feed.start + first)
     }
 
     @ViewBuilder
@@ -406,6 +433,8 @@ private final class GalleryFeed {
     private(set) var groups: [API.LibraryGalleryGroupView] = []
     private(set) var entries: [Entry] = []
     private(set) var hasMore = false
+    /// 窗口在整份排序里的起点（「回到上次位置」跳过来后不为 0）
+    @ObservationIgnored private(set) var start = 0
 
     /// 服务端口径的已取条数（含被去重掉的空组）：下一页的 offset
     @ObservationIgnored private var loaded = 0
@@ -416,16 +445,19 @@ private final class GalleryFeed {
     @ObservationIgnored private var rowsCache: (key: String, rows: [GalleryRow])?
     @ObservationIgnored private var version = 0
 
-    func reload(fetch: (Int, Int) async throws -> [API.LibraryGalleryGroupView]) async {
+    func reload(fetch: (Int, Int) async throws -> [API.LibraryGalleryGroupView], from offset: Int = 0) async {
         generation += 1
         let current = generation
         if case .failed = phase { phase = .loading }
+        // 换窗口起点：旧窗口作废，先显示转圈
+        if offset != start { phase = .loading; replace(with: []) }
         loading = true
         defer { if current == generation { loading = false } }
         do {
-            let page = try await fetch(0, LibraryGalleryWall.pageSize)
+            let page = try await fetch(offset, LibraryGalleryWall.pageSize)
             guard current == generation else { return }
-            loaded = page.count
+            start = offset
+            loaded = offset + page.count
             hasMore = page.count >= LibraryGalleryWall.pageSize
             replace(with: Self.dedupe(page))
             phase = .loaded
@@ -493,6 +525,17 @@ private final class GalleryFeed {
             guard !group.images.isEmpty, !seen.contains(group.mediaItemId) else { return false }
             seen.insert(group.mediaItemId)
             return true
+        }
+    }
+
+    /// 一行里第一张图所属作品的分组下标（段标题就是那部作品）
+    func firstGroup(of row: GalleryRow) -> Int? {
+        switch row.kind {
+        case let .header(group):
+            return groups.firstIndex { $0.mediaItemId == group.mediaItemId }
+        case let .band(band, base):
+            guard let first = band.tiles.min(by: { $0.id < $1.id }), entries.indices.contains(base + first.id) else { return nil }
+            return entries[base + first.id].group
         }
     }
 

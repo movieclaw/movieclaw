@@ -10,10 +10,23 @@ import SwiftUI
 /// - 照片库：`PhotoWallView`（按月分组、月份跳转、灯箱）。
 ///
 /// 管理员 ⋯ 菜单：待处理（抽屉）/ 扫描与停止 / 整理文件名 / 刷新元数据与停止 / 生成章节 / 编辑库。
-/// 轮询：扫描或整理中 3 秒（结束后再快轮询 12 秒），入库中或刷新元数据中 10 秒，其余 30 秒。
+/// 轮询：扫描或整理中 3 秒（结束后再快轮询 12 秒），入库中或刷新元数据中 10 秒，其余 30 秒；
+/// 每轮连照片墙一起整窗对账。元数据刷新状态单独读 progress 接口（同 Web：进页探一次、刷新中每 2 秒）。
+/// 「回到上次位置」三种形态共用一条记录（都按作品计）；挂后台 30 分钟以上再回来算重新进入，重新询问。
 /// 排序偏好全站共用一个键（在哪个库选了「按评分」，换个库还是按评分），同 Web。
 struct LibraryDetailView: View {
     let libraryId: Int
+    /// 进来时落在哪个视图（Web `?view=collections`）
+    var initialView: WallView = .items
+    /// 数据到齐后自动打开待处理抽屉（Web `?pending=1`）
+    var openPending = false
+
+    init(libraryId: Int, initialView: WallView = .items, openPending: Bool = false) {
+        self.libraryId = libraryId
+        self.initialView = initialView
+        self.openPending = openPending
+        _view = State(initialValue: initialView)
+    }
 
     @Environment(\.api) private var api
     @Environment(\.permissions) private var permissions
@@ -46,6 +59,16 @@ struct LibraryDetailView: View {
     @State private var recallOffset: Int?
     @State private var recallChecked = false
     @State private var firstVisible = 0
+    /// 元数据刷新的实时状态（progress 接口；仅管理员）
+    @State private var metaRefresh: API.MetadataRefreshView?
+    /// 每轮轮询 / 下拉刷新递增：照片墙据此整窗重拉
+    @State private var wallEpoch = 0
+    /// 图廊窗口起点 / 照片墙跳转（「回到上次位置」在这两种形态下跳这里）
+    @State private var galleryStart = 0
+    @State private var photoJump: PhotoWallJump?
+    @State private var pendingOpened = false
+    @State private var backgroundedAt: Date?
+    @Environment(\.scenePhase) private var scenePhase
 
     enum WallView: String { case items, collections }
 
@@ -61,7 +84,8 @@ struct LibraryDetailView: View {
 
     private var library: API.LibraryView? { libraries?.first { $0.id == libraryId } }
     private var busy: Bool { library.map { $0.scanning || $0.organizing } ?? false }
-    private var refreshingMeta: Bool { library?.metadataRefresh?.refreshing == true }
+    /// 元数据刷新中：读 progress 接口的状态（同 Web）——库列表里的状态只看进程内，排队中的持久化作业看不到
+    private var refreshingMeta: Bool { metaRefresh?.refreshing == true }
     private var importing: Int { busy ? 0 : (library?.lastScan?.deferred ?? 0) }
     private var timeline: Bool { library.map { !$0.capabilities.scraped } ?? false }
     private var photoWall: Bool { library.map { !$0.capabilities.playable } ?? false }
@@ -132,13 +156,18 @@ struct LibraryDetailView: View {
         .navigationTitle(library?.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbar }
-        .task { await reload() }
+        .task {
+            await reload()
+            await probeMetaRefresh()
+        }
+        .task(id: refreshingMeta) { await pollMetaRefresh() }
+        .onChange(of: scenePhase) { _, phase in handleScenePhase(phase) }
         .task(id: wallKey) { await reloadWall() }
         .onChange(of: sort) { sort.save(Self.sortStorageKey) }
         .task(id: showHiddenCollections) { await reloadCollections() }
         .polling(every: pollInterval) { await reload() }
         .sheet(item: $issueTab) { sheet in
-            IssueDrawerView(libraryId: libraryId, initialTab: sheet.tab) { Task { await reload() } }
+            IssueDrawerView(libraryId: libraryId, initialTab: sheet.tab, pollInterval: pollInterval) { Task { await reload() } }
                 .sheetFeedback()
         }
         .sheet(isPresented: $organizing) {
@@ -171,6 +200,11 @@ struct LibraryDetailView: View {
         return 30
     }
 
+    /// ⋯ 菜单里有没有东西（同 Web hasMenuItems）：普通成员在合集视图下什么都没有，整个按钮不画
+    private var hasMenuItems: Bool {
+        permissions.canManageLibraries || photoWall || galleryOn || (library?.capabilities.playable == true && view == .items)
+    }
+
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         if let library, !photoWall, !collections.isEmpty {
@@ -185,7 +219,7 @@ struct LibraryDetailView: View {
                 .id(library.id)
             }
         }
-        if library != nil {
+        if library != nil, hasMenuItems {
             ToolbarItem(placement: .topBarTrailing) { actionsMenu }
         }
     }
@@ -210,7 +244,7 @@ struct LibraryDetailView: View {
             .onScrollTargetVisibilityChange(idType: Int.self, threshold: 0.2) { trackVisible($0) }
             .overlay(alignment: .trailing) {
                 if effectiveSort == "title", !galleryOn, view == .items, !index.isEmpty, !photoWall {
-                    WallIndexBar(index: index, reversed: order != nil) { offset in
+                    WallIndexBar(index: index, reversed: order != nil, active: activeInitial) { offset in
                         Task {
                             await pager.jump(to: offset)
                             if let first = pager.items?.first { proxy.scrollTo(first.id, anchor: .top) }
@@ -222,9 +256,16 @@ struct LibraryDetailView: View {
                 if let recallOffset {
                     WallRecallPill {
                         self.recallOffset = nil
-                        Task {
-                            await pager.jump(to: recallOffset)
-                            if let first = pager.items?.first { proxy.scrollTo(first.id, anchor: .top) }
+                        // 按当前形态分派：图廊换窗口、照片墙跳到那张、海报墙换分页窗口
+                        if galleryOn {
+                            galleryStart = recallOffset
+                        } else if photoWall {
+                            photoJump = PhotoWallJump(offset: recallOffset)
+                        } else {
+                            Task {
+                                await pager.jump(to: recallOffset)
+                                if let first = pager.items?.first { proxy.scrollTo(first.id, anchor: .top) }
+                            }
                         }
                     } onDismiss: { self.recallOffset = nil }
                 }
@@ -232,6 +273,11 @@ struct LibraryDetailView: View {
             .animation(.snappy, value: recallOffset)
             .refreshable { await reload() }
         }
+    }
+
+    /// 视口第一格所在的首字母档（A–Z 条高亮当前档，同 Web activeWallInitial）
+    private var activeInitial: String? {
+        index.filter { $0.offset <= firstVisible }.max { $0.offset < $1.offset }?.initial
     }
 
     // MARK: 库头
@@ -270,8 +316,8 @@ struct LibraryDetailView: View {
             if permissions.canManageLibraries {
                 healthChips(library)
             }
-            if permissions.canManageLibraries, refreshingMeta {
-                MetadataRefreshPanel(libraryId: libraryId) { Task { await reload() } }
+            if permissions.canManageLibraries, refreshingMeta, let metaRefresh {
+                MetadataRefreshPanel(state: metaRefresh) { stopMetaRefresh() }
             }
             if loadFailed {
                 banner("与后端通信失败，正在自动重试；下方显示的是最近一次成功加载的数据", color: Theme.warning)
@@ -403,15 +449,16 @@ struct LibraryDetailView: View {
             if !photoWall { filterControls }
             VStack(alignment: .leading, spacing: 0) {
                 if galleryOn {
-                    LibraryGalleryWall(reloadKey: AnyHashable(wallKey)) { [api, libraryId, filter, effectiveSort, order] offset, limit in
+                    LibraryGalleryWall(reloadKey: AnyHashable(wallKey), startOffset: galleryStart, fetch: { [api, libraryId, filter, effectiveSort, order] offset, limit in
                         try await api.libraryGalleryFiltered(libraryId: libraryId, filter: filter, sort: effectiveSort, order: order, limit: limit, offset: offset)
-                    } onOpenItem: { group in
+                    }, onOpenItem: { group in
                         router.push(.libraryItem(libraryId: group.libraryId, itemId: group.mediaItemId))
-                    }
+                    }, onFirstVisible: { recordOffset($0, windowStart: galleryStart) })
                 } else if photoWall {
                     PhotoWallView(libraryId: libraryId, reloadKey: AnyHashable(wallKey), fetch: { [api, libraryId, filter, effectiveSort, order] offset, limit in
                         try await api.libraryItemsFiltered(libraryId: libraryId, filter: filter, sort: effectiveSort, order: order, limit: limit, offset: offset)
-                    }, grouped: !recentFirst)
+                    }, grouped: !recentFirst, refreshToken: wallEpoch, jumpRequest: photoJump, working: workingLabel,
+                    onFirstVisible: { recordOffset($0, windowStart: photoJump?.offset ?? 0) })
                 } else if pager.items == nil {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
                 } else {
@@ -517,7 +564,7 @@ struct LibraryDetailView: View {
 
     /// 这一格正被后台处理的文案：整库刷新阶段 > 后台任务 > 扫描补探
     private func workingLabel(_ item: API.LibraryItemView) -> String? {
-        if let phase = library?.metadataRefresh?.active.first(where: { $0.mediaItemId == item.mediaItemId })?.phase { return phase }
+        if let phase = metaRefresh?.active.first(where: { $0.mediaItemId == item.mediaItemId })?.phase { return phase }
         if let job = activeJobs.first(where: { $0.resources.contains { $0.resourceType == "media_item" && $0.resourceId == String(item.mediaItemId) } }) {
             return "\(job.status == "blocked" ? "需要处理" : "后台任务") · \(job.progress.message)"
         }
@@ -553,7 +600,8 @@ struct LibraryDetailView: View {
             if library?.capabilities.playable == true, view == .items || galleryOn {
                 Button(galleryOn ? "回到海报墙" : "图床浏览") { gallery.galleryMode.toggle() }
             }
-            if view == .collections {
+            if view == .collections, permissions.canManageLibraries {
+                // 隐藏合集是管理员的事：普通成员在合集视图下没有这一项（同 Web）
                 Button(showHiddenCollections ? "不显示已隐藏的合集" : "显示已隐藏的合集") { showHiddenCollections.toggle() }
             }
             if galleryOn || photoWall {
@@ -581,7 +629,7 @@ struct LibraryDetailView: View {
     }
 
     private func metaLabel(_ library: API.LibraryView) -> String {
-        if refreshingMeta, let meta = library.metadataRefresh {
+        if refreshingMeta, let meta = metaRefresh {
             return "停止刷新\(meta.total > 0 ? " \(meta.processed)/\(meta.total)" : "")"
         }
         return library.capabilities.scraped ? "刷新元数据" : library.capabilities.playable ? "重新读取 NFO 与封面" : "重新生成封面"
@@ -590,7 +638,8 @@ struct LibraryDetailView: View {
     private func chapterJobLabel(_ job: API.ChapterJobView?) -> String {
         guard let job else { return "生成章节" }
         if job.stopping { return "正在停止生成章节" }
-        if job.status != "running" { return "生成章节排队中" }
+        // cancelling 也算运行中（同 Web chapterJobRunning）
+        if !["running", "cancelling"].contains(job.status) { return "生成章节排队中" }
         guard job.total > 0 else { return "正在生成章节" }
         return "正在生成章节 \(min(100, Int((Double(job.processed) / Double(job.total) * 100).rounded())))%"
     }
@@ -629,6 +678,7 @@ struct LibraryDetailView: View {
             do {
                 if refreshingMeta {
                     _ = try await api.libraryMetadataStopRefresh(libraryId: libraryId)
+                    await probeMetaRefresh()
                 } else {
                     let caps = library.capabilities
                     let ok: Bool
@@ -650,6 +700,8 @@ struct LibraryDetailView: View {
                     }
                     guard ok else { return }
                     _ = try await api.libraryMetadataRefreshLibrary(libraryId: libraryId)
+                    // 开始后立刻探一次：作业可能还在排队，库列表里看不到，面板和菜单要马上切过去
+                    await probeMetaRefresh()
                 }
                 await reload()
             } catch {
@@ -698,6 +750,12 @@ struct LibraryDetailView: View {
             if let j { activeJobs = j }
             loadFailed = partialFailure
             if busy { busyUntil = .now.addingTimeInterval(12) }
+            wallEpoch += 1
+            if openPending, !pendingOpened, manage {
+                // `?pending=1`：数据到齐后自动打开待处理抽屉
+                pendingOpened = true
+                issueTab = IssueSheet(tab: pendingTab)
+            }
             await pager.refresh()
             if effectiveSort == "title" || effectiveSort == "release_date" {
                 index = (try? await api.libraryIndexFiltered(libraryId: id, filter: filter, sort: effectiveSort, order: order)) ?? index
@@ -741,17 +799,77 @@ struct LibraryDetailView: View {
     }
 
     private func trackVisible(_ ids: [Int]) {
-        guard let items = pager.items, !probing else { return }
+        guard let items = pager.items, !probing, !galleryOn, !photoWall else { return }
         let offsets = ids.compactMap { id in items.firstIndex { $0.mediaItemId == id } }
         guard let first = offsets.min() else { return }
-        let offset = pager.start + first
+        recordOffset(pager.start + first, windowStart: pager.start)
+    }
+
+    /// 三种形态写同一条位置记录；往下滑够一屏，「回到上次位置」胶囊自己让位
+    private func recordOffset(_ offset: Int, windowStart: Int) {
+        guard !probing else { return }
         if recallOffset != nil {
-            if first >= 12 { recallOffset = nil }
+            if offset - windowStart >= 12 { recallOffset = nil }
             return
         }
         if offset != firstVisible {
             firstVisible = offset
             LibraryWallRecall.write(scope: recallScope, view: recallView, offset: offset)
+        }
+    }
+
+    /// 挂后台 30 分钟以上再回来算「重新进入」（同 Web library-wall-recall）：墙复位到墙首，重新问一次要不要回去
+    private func handleScenePhase(_ phase: ScenePhase) {
+        switch phase {
+        case .background:
+            backgroundedAt = .now
+        case .active:
+            guard let since = backgroundedAt else { return }
+            backgroundedAt = nil
+            guard Date.now.timeIntervalSince(since) >= LibraryWallRecall.reentryGap else { return }
+            let offset = LibraryWallRecall.read(scope: recallScope, view: recallView)
+            galleryStart = 0
+            photoJump = PhotoWallJump(offset: 0)
+            Task { await pager.jump(to: 0) }
+            if let offset, offset < (library?.stats.itemCount ?? 0) { recallOffset = offset }
+        default:
+            break
+        }
+    }
+
+    // MARK: 元数据刷新状态
+
+    /// 探一次 progress（进页、开始/停止之后）；只有管理员看得到
+    private func probeMetaRefresh() async {
+        guard permissions.canManageLibraries else { return }
+        if let next = try? await api.libraryMetadataGetRefreshStatus(libraryId: libraryId), next != metaRefresh { metaRefresh = next }
+    }
+
+    /// 刷新中每 2 秒轮询；结束时重拉一次（海报 / 档案已更新）。瞬时失败保留旧状态、下一轮继续
+    private func pollMetaRefresh() async {
+        guard permissions.canManageLibraries, refreshingMeta else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(2))
+            if Task.isCancelled { return }
+            guard let next = try? await api.libraryMetadataGetRefreshStatus(libraryId: libraryId) else { continue }
+            if next != metaRefresh { metaRefresh = next }
+            if !next.refreshing {
+                await reload()
+                return
+            }
+        }
+    }
+
+    /// 面板「停止」：失败放进页面 notice 横幅（同 Web）
+    private func stopMetaRefresh() {
+        notice = nil
+        Task {
+            do {
+                _ = try await api.libraryMetadataStopRefresh(libraryId: libraryId)
+                await probeMetaRefresh()
+            } catch {
+                notice = error.localizedDescription
+            }
         }
     }
 }
@@ -761,6 +879,8 @@ struct LibraryDetailView: View {
 private struct WallIndexBar: View {
     let index: [API.LibraryIndexEntryView]
     let reversed: Bool
+    /// 视口第一格所在的档（高亮）
+    var active: String?
     var onJump: (Int) -> Void
     @State private var preview: String?
 
@@ -775,9 +895,14 @@ private struct WallIndexBar: View {
                 ForEach(slots, id: \.self) { letter in
                     Text(letter)
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(preview == letter ? .black : byInitial[letter] == nil ? Theme.textFaint.opacity(0.5) : Theme.textMuted)
+                        .foregroundStyle(byInitial[letter] == nil ? Theme.textFaint.opacity(0.5) : preview == letter ? .black : letter == active ? .white : Theme.textMuted)
                         .frame(width: 16, height: height / CGFloat(slots.count))
-                        .background(preview == letter ? Theme.accentStrong : .clear, in: .rect(cornerRadius: 4))
+                        .background(
+                            byInitial[letter] == nil ? .clear
+                                : preview == letter ? Theme.accentStrong
+                                : letter == active ? Theme.accentStrong.opacity(0.35) : .clear,
+                            in: .rect(cornerRadius: 4)
+                        )
                 }
             }
             .frame(width: 18, height: height)
@@ -792,7 +917,8 @@ private struct WallIndexBar: View {
                         }
                     }
                     .onEnded { _ in
-                        if let preview, let entry = nearest(preview, slots: Array(slots), byInitial: byInitial) {
+                        // 空字母不跳（同 Web）：气泡已写明「无作品」
+                        if let preview, let entry = byInitial[preview] {
                             onJump(entry.offset)
                         }
                         preview = nil
@@ -800,11 +926,20 @@ private struct WallIndexBar: View {
             )
             .overlay(alignment: .leading) {
                 if let preview {
-                    Text(preview)
-                        .font(.title.weight(.bold))
-                        .frame(width: 56, height: 56)
-                        .glassEffect(.regular, in: .circle)
-                        .offset(x: -70)
+                    // 滑选气泡：大字预览 + 该档作品数（指尖压着的字母被手指挡住，没有它等于盲选）
+                    HStack(spacing: 8) {
+                        Text(preview).font(.title.weight(.bold))
+                        Text(byInitial[preview].map { "\($0.count) 部" } ?? "无作品")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textMuted)
+                            .fixedSize()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 12))
+                    .fixedSize()
+                    .frame(width: 0, alignment: .trailing)
+                    .offset(x: -12)
                 }
             }
             .frame(maxHeight: .infinity)
@@ -814,13 +949,5 @@ private struct WallIndexBar: View {
             .accessibilityIdentifier("wall-index-bar")
         }
         .frame(width: 22)
-    }
-
-    /// 没有这个字母的档时落到它之后最近的有货档
-    private func nearest(_ letter: String, slots: [String], byInitial: [String: API.LibraryIndexEntryView]) -> API.LibraryIndexEntryView? {
-        guard let start = slots.firstIndex(of: letter) else { return nil }
-        for slot in slots[start...] { if let entry = byInitial[slot] { return entry } }
-        for slot in slots[..<start].reversed() { if let entry = byInitial[slot] { return entry } }
-        return nil
     }
 }

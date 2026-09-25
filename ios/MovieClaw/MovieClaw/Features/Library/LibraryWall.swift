@@ -138,6 +138,8 @@ enum LibraryWallRecall {
     private static let key = "movieclaw.library.wall-recall"
     static let minOffset = 24
     static let maxAge: TimeInterval = 14 * 86400
+    /// 挂后台超过这么久再回来算「重新进入」：复位到墙首并重新询问（同 Web library-wall-recall）
+    static let reentryGap: TimeInterval = 30 * 60
 
     static func read(scope: String, view: String) -> Int? {
         guard let all = UserDefaults.standard.dictionary(forKey: key),

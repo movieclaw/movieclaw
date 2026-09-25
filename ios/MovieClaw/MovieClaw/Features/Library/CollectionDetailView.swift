@@ -103,6 +103,8 @@ struct CollectionDetailView: View {
             }
         }
         .task { await load() }
+        // 缺片格的「追踪中 / 管理订阅」要读全站订阅索引（同 Web subscriptionOf）
+        .tracksSubscriptionIndex()
         .task(id: "\(sortKey)|\(sortLoaded)") {
             guard sortLoaded else { return }
             sort.save(sortStorageKey)
@@ -269,7 +271,8 @@ struct CollectionDetailView: View {
                 ForEach(cells(missing: pager.hasMore ? [] : missing)) { cell in
                     switch cell {
                     case let .item(item):
-                        LibraryInventoryCell(item: item, libraryId: libraryId ?? item.libraryId ?? 0, frameAspect: Theme.posterAspect)
+                        // 不钉框比例：每格按主图比例取 2:3 或 16:9（同 Web PosterWall 不传 frameAspect）
+                        LibraryInventoryCell(item: item, libraryId: libraryId ?? item.libraryId ?? 0)
                     case let .part(part):
                         MissingPartCell(part: part)
                     }
@@ -420,6 +423,8 @@ struct CollectionDetailView: View {
     private func toggleOnHome(_ collection: API.CollectionView) async {
         let wasOnHome = onHome
         do {
+            // 首页偏好还没读到（或上次读取失败）时先强制重拉：以空清单为底整份保存会覆盖用户自定义的行
+            if homePrefs.rows == nil { homePrefs.rows = try await api.uiPrefsShow().home.rows }
             let rows: [API.HomeRowPrefInput]
             if homeRow != nil {
                 let saved = homePrefs.rows ?? []
@@ -483,30 +488,46 @@ struct CollectionDetailView: View {
     }
 }
 
-/// 系列里库中还没有的一部（Web `MissingPartCell`）：点开去发现页详情，长按可订阅
+/// 系列里库中还没有的一部（Web `MissingPartCell`）：点开去发现页详情，长按订阅 / 管理订阅。
+///
+/// 「追踪中」= 接口标了已订阅，**或**全站订阅索引里已有这部 TMDB 电影（刚在别处订上、合集数据还没刷新）；
+/// 已追踪时长按给「管理订阅」而不是再订一遍。只压暗海报图、不压暗片名（同 Web）。
 private struct MissingPartCell: View {
     let part: API.SeriesPartView
     @Environment(\.api) private var api
     @Environment(\.permissions) private var permissions
     @Environment(Router.self) private var router
 
+    private var subscription: API.SubscriptionView? {
+        SubscriptionIndex.shared.subscription(source: "tmdb", externalId: String(part.tmdbId), mediaType: "movie")
+    }
+
     var body: some View {
+        let tracked = part.subscribed || subscription != nil
         NavigationLink(value: AppRoute.mediaDetail(titleRef: "tmdb:movie:\(part.tmdbId)")) {
             LibraryPosterCell(
                 title: part.title,
                 year: part.releaseDate.flatMap { Int($0.prefix(4)) },
-                extent: part.subscribed ? "追踪中" : "未入库",
-                url: api.image(part.posterUrl, .posterCard)
+                extent: tracked ? "追踪中" : "未入库",
+                url: api.image(part.posterUrl, .posterCard),
+                artworkOpacity: 0.4
             )
-            .opacity(0.55)
         }
         .buttonStyle(.plain)
         .contextMenu {
-            if permissions.canSubscribe, !part.subscribed {
-                Button {
-                    router.present(.subscribe(SubscribeRequest(titleRef: "tmdb:movie:\(part.tmdbId)", title: part.title)))
-                } label: {
-                    Label("订阅影片", systemImage: "plus")
+            if permissions.canSubscribe {
+                if let subscription {
+                    Button {
+                        router.push(.subscription(id: subscription.id))
+                    } label: {
+                        Label("管理订阅", systemImage: "checkmark.circle")
+                    }
+                } else if !part.subscribed {
+                    Button {
+                        router.present(.subscribe(SubscribeRequest(titleRef: "tmdb:movie:\(part.tmdbId)", title: part.title)))
+                    } label: {
+                        Label("订阅影片", systemImage: "plus")
+                    }
                 }
             }
         }

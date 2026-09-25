@@ -1,6 +1,5 @@
-import CoreTransferable
 import SwiftUI
-import UniformTypeIdentifiers
+import UIKit
 
 extension PhotoWallView {
     /// 图片库的全屏灯箱（对应 Web `components/photo-lightbox.tsx`）。
@@ -11,9 +10,9 @@ extension PhotoWallView {
     ///   惰性派生并缓存）→ 只有放大后才拉几 MB 的原图；
     /// - **拍摄信息**面板：文件名、拍摄日期、尺寸、大小、格式、路径，按需从条目详情接口
     ///   （`GET /libraries/{lib}/items/{id}`）拉，同一张只拉一次；
-    /// - **下载原图**：Web 在 iOS 桌面应用里走系统分享面板（附件响应会把独立 App 导航走），
-    ///   原生这里同样用系统分享面板（ShareLink）——用户在面板里「存储图像」到相册或存到文件，
-    ///   不需要申请相册写入权限。原图在用户选定去向时才下载（`?download=1`）。
+    /// - **下载原图**：Web 在 iOS 桌面应用里先下载、再弹系统分享面板，失败在灯箱顶部提示原因；
+    ///   原生同样先下（顶部「正在准备下载…」），成功后弹系统分享面板——用户「存储图像」到相册或存到文件，
+    ///   不需要申请相册写入权限；失败写明原因（同 Web downloadOriginal）。
     struct Lightbox: View {
         let libraryId: Int
         let feed: Feed
@@ -23,31 +22,25 @@ extension PhotoWallView {
         @Environment(\.api) private var api
         @State private var infoOpen = false
         @State private var details: [Int: API.LibraryItemDetailView] = [:]
+        /// 下载原图的进度 / 失败提示（画面顶部）
+        @State private var downloadNote: String?
+        /// 下好的原图：弹系统分享面板
+        @State private var shareFile: SharedOriginal?
 
         var body: some View {
             LibraryZoomableImage.Lightbox(
                 slides: slides,
                 index: $index,
                 hasMore: feed.hasMore,
-                onReachEnd: { Task { await feed.loadMore(fetch: fetch) } }
+                onReachEnd: { Task { await feed.loadMore(fetch: fetch) } },
+                note: downloadNote
             ) {
                 if let item = current {
                     if let fileId = item.primaryFileId {
-                        ShareLink(
-                            item: OriginalPhoto(
-                                url: api.url("/libraries/files/\(fileId)/original", query: [URLQueryItem(name: "download", value: "1")]),
-                                fallbackName: fileName(of: item),
-                                session: api.session
-                            ),
-                            preview: SharePreview(item.title)
-                        ) {
-                            Image(systemName: "square.and.arrow.down")
-                                .font(.system(size: 19, weight: .medium))
-                                .frame(width: 44, height: 44)
-                                .contentShape(.circle)
+                        LibraryZoomableImage.ActionButton(systemImage: "square.and.arrow.down", label: "下载原图") {
+                            Task { await download(fileId: fileId, item: item) }
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("下载原图")
+                        .disabled(downloadNote == Self.preparing)
                     }
                     LibraryZoomableImage.ActionButton(
                         systemImage: infoOpen ? "info.circle.fill" : "info.circle",
@@ -63,6 +56,34 @@ extension PhotoWallView {
                 }
             }
             .task(id: InfoRequest(open: infoOpen, itemId: current?.mediaItemId)) { await loadDetail() }
+            .sheet(item: $shareFile) { file in
+                OriginalShareSheet(url: file.url)
+                    .presentationDetents([.medium, .large])
+                    .ignoresSafeArea()
+            }
+        }
+
+        private static let preparing = "正在准备下载…"
+
+        /// 先把原图下到临时目录，成功再弹分享面板；失败在灯箱顶部写明原因，4 秒后收起
+        private func download(fileId: Int, item: API.LibraryItemView) async {
+            downloadNote = Self.preparing
+            do {
+                let url = try await OriginalPhoto.fetch(
+                    url: api.url("/libraries/files/\(fileId)/original", query: [URLQueryItem(name: "download", value: "1")]),
+                    fallbackName: fileName(of: item),
+                    session: api.session
+                )
+                downloadNote = nil
+                shareFile = SharedOriginal(url: url)
+            } catch is CancellationError {
+                downloadNote = nil
+            } catch {
+                let reason = error.localizedDescription
+                downloadNote = "下载原图失败：\(reason.isEmpty ? "请检查网络后重试" : reason)"
+                try? await Task.sleep(for: .seconds(4))
+                if downloadNote?.hasPrefix("下载原图失败") == true { downloadNote = nil }
+            }
         }
 
         private var current: API.LibraryItemView? {
@@ -167,26 +188,37 @@ private struct InfoRequest: Equatable {
     var itemId: Int?
 }
 
-/// 分享面板里的原图：用户选了去向（存储图像 / 存到文件 / 隔空投送）才真正下载。
-/// 用 App 的会话（带登录 Cookie）取 `?download=1`，文件名取响应头里的原文件名。
-private nonisolated struct OriginalPhoto: Transferable {
-    let url: URL
-    let fallbackName: String
-    let session: URLSession
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(exportedContentType: .image) { photo in
-            let (data, response) = try await photo.session.data(from: photo.url)
-            guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
-                throw URLError(.badServerResponse)
-            }
-            let name = response.suggestedFilename ?? photo.fallbackName
-            let folder = FileManager.default.temporaryDirectory.appending(path: "movieclaw-originals", directoryHint: .isDirectory)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let file = folder.appending(path: name)
-            try? FileManager.default.removeItem(at: file)
-            try data.write(to: file)
-            return SentTransferredFile(file)
+/// 原图下载：用 App 的会话（带登录 Cookie）取 `?download=1`，文件名取响应头里的原文件名，
+/// 落到临时目录交给分享面板。
+private enum OriginalPhoto {
+    static func fetch(url: URL, fallbackName: String, session: URLSession) async throws -> URL {
+        let (data, response) = try await session.data(from: url)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200 ..< 300).contains(http.statusCode) else {
+            throw NSError(domain: "MovieClaw", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "服务器返回 HTTP \(http.statusCode)"])
         }
+        let name = response.suggestedFilename ?? fallbackName
+        let folder = FileManager.default.temporaryDirectory.appending(path: "movieclaw-originals", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appending(path: name)
+        try? FileManager.default.removeItem(at: file)
+        try data.write(to: file)
+        return file
     }
+}
+
+private struct SharedOriginal: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+/// 系统分享面板（存储图像 / 存到文件 / 隔空投送）
+private struct OriginalShareSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

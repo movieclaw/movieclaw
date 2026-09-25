@@ -49,11 +49,15 @@ struct LibraryCustomizeView: View {
                 }
             } header: {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(libraries == nil ? "正在读取…" : "\(rows.filter { !$0.hidden }.count) 行显示 · \(rows.filter(\.hidden).count) 行隐藏")
-                        .accessibilityIdentifier("customize-summary")
+                    if !loadFailed || libraries != nil {
+                        Text(libraries == nil ? "正在读取…" : "\(rows.filter { !$0.hidden }.count) 行显示 · \(rows.filter(\.hidden).count) 行隐藏")
+                            .accessibilityIdentifier("customize-summary")
+                    }
                     if loadFailed {
-                        Text("读取媒体库与合集失败，行清单可能不完整；返回重进重试。")
+                        // 同 Web：读取失败时整张清单不画——残缺清单上点一下眼睛就会整份保存，把认不出的库行/合集行永久丢掉
+                        Text("读取媒体库与合集失败，行清单可能不完整；下拉刷新重试。")
                             .foregroundStyle(Theme.warning)
+                            .accessibilityIdentifier("customize-load-failed")
                     }
                     if let saveError {
                         Text(saveError).foregroundStyle(Theme.danger)
@@ -89,6 +93,7 @@ struct LibraryCustomizeView: View {
             }
         }
         .task { await load() }
+        .refreshable { await load() }
         .onDisappear { flushSave() }
     }
 
@@ -107,8 +112,8 @@ struct LibraryCustomizeView: View {
             loadFailed = false
         } catch is CancellationError {
         } catch {
+            // 保持 libraries 为 nil（首次读取失败时不渲染可编辑清单），只挂提示
             loadFailed = true
-            libraries = libraries ?? []
         }
     }
 
@@ -341,6 +346,22 @@ private struct RowItem: View {
         }
     }
 
+    /// 名字输入框失焦时去掉首尾空白（同 Web onBlur trim）；输入途中不 trim，免得吃掉词间的空格
+    @FocusState private var nameFocused: Bool
+
+    private func trimName() {
+        onChange { r in
+            switch r.kind {
+            case let .library(library, sort, reversed, unwatched, name, builtin):
+                r.kind = .library(library: library, sort: sort, reversed: reversed, unwatched: unwatched,
+                                  name: name.trimmingCharacters(in: .whitespacesAndNewlines), builtin: builtin)
+            case let .collection(collection, sort, reversed, name):
+                r.kind = .collection(collection: collection, sort: sort, reversed: reversed, name: name.trimmingCharacters(in: .whitespacesAndNewlines))
+            default: break
+            }
+        }
+    }
+
     private func nameRow(hint: String) -> some View {
         GridRow {
             Text("名字").font(.footnote).foregroundStyle(Theme.textMuted)
@@ -361,6 +382,10 @@ private struct RowItem: View {
             ))
             .textFieldStyle(.roundedBorder)
             .submitLabel(.done)
+            .focused($nameFocused)
+            .onChange(of: nameFocused) { _, focused in
+                if !focused, row.customName != row.customName.trimmingCharacters(in: .whitespacesAndNewlines) { trimName() }
+            }
             .accessibilityIdentifier("row-name")
         }
     }

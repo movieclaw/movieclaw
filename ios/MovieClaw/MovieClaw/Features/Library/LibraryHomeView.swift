@@ -1,3 +1,4 @@
+import NukeUI
 import SwiftUI
 
 /// 首页行清单偏好的进程内共享副本。
@@ -313,9 +314,10 @@ struct LibraryHomeView: View {
 
     private func reload() async {
         do {
-            // 偏好：首次进入拉一次（之后由自定义页写回共享副本）
+            // 偏好：拉到为止（之后由自定义页写回共享副本）。失败保持 nil、下一轮轮询再拉——
+            // 写成 [] 会让合集页「显示在首页」以空清单为底整份保存，把用户自定义的行覆盖掉
             if prefs.rows == nil {
-                prefs.rows = (try? await api.uiPrefsShow())?.home.rows ?? []
+                prefs.rows = (try? await api.uiPrefsShow())?.home.rows
             }
             async let libsTask = api.libraryList(scope: "all")
             async let colsTask = try? api.collectionList()
@@ -599,11 +601,36 @@ private struct UpNextCard: View {
         .frame(width: 200)
     }
 
+    /// 剧照加载失败时的兜底（与「没有剧照」同一套画法）
+    @ViewBuilder
+    private var artworkFallback: some View {
+        if isEpisode {
+            LibraryArtwork(url: nil, frameAspect: 16 / 9, fallbackText: code)
+        } else {
+            LibraryArtwork(url: api.image(item.posterUrl, ImageVariant.card(aspect: item.posterAspect)), imageAspect: item.posterAspect,
+                           frameAspect: 16 / 9, fallbackText: item.posterUrl == nil ? item.title : nil)
+        }
+    }
+
     private var artwork: some View {
         let url = isEpisode ? item.episodeStillUrl : item.backdropUrl
         return ZStack(alignment: .bottom) {
             if let url {
-                LibraryArtwork(url: api.image(url, .landscapeCard), frameAspect: 16 / 9, fallbackText: code)
+                // 剧照地址在、但图加载失败：剧集印集号、电影退回海报模糊铺底（同 Web up-next-row 的 fallback）
+                Color.clear
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                    .overlay {
+                        LazyImage(url: api.image(url, .landscapeCard)) { state in
+                            if let image = state.image {
+                                image.resizable().aspectRatio(contentMode: .fill)
+                            } else if state.error != nil {
+                                artworkFallback
+                            } else {
+                                Theme.surfaceRaised
+                            }
+                        }
+                    }
+                    .clipped()
             } else if isEpisode {
                 LibraryArtwork(url: nil, frameAspect: 16 / 9, fallbackText: code)
             } else {

@@ -72,6 +72,8 @@ struct LibraryPosterCell: View {
     /// 海报左上角的角标（例如收藏层级、季集摘要）
     var cornerLabel: String?
     var placeholderSymbol = "film"
+    /// 只压暗海报图、不压暗片名（合集里库中还没有的那几部）
+    var artworkOpacity: Double = 1
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -79,7 +81,7 @@ struct LibraryPosterCell: View {
                 .clipShape(.rect(cornerRadius: Theme.posterRadius))
                 .overlay(RoundedRectangle(cornerRadius: Theme.posterRadius).strokeBorder(Theme.line))
                 .saturation(dead ? 0 : 1)
-                .opacity(dead ? 0.5 : 1)
+                .opacity(dead ? 0.5 : artworkOpacity)
                 .overlay(alignment: .topTrailing) {
                     HStack(spacing: 4) {
                         if played {

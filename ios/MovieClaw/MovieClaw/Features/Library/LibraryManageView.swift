@@ -15,6 +15,9 @@ import SwiftUI
 struct LibraryManageView: View {
     var openCreate: Bool = false
     var initialTab: String?
+    /// 条目详情「处理重复」带来的条目（Web `?item=`）：重复文件页签只看这一个条目。
+    /// 路由参数由外壳接入（AppRoute.libraryManage 加 item），这里先备好入口
+    var initialItemId: Int?
 
     enum Tab: String, CaseIterable {
         case libraries, recycle, duplicates, shares
@@ -136,7 +139,7 @@ struct LibraryManageView: View {
                     ManageRecycleBinTab { recycleCount = $0 }
                         .padding(.top, 12)
                 case .duplicates:
-                    ManageDuplicateFilesTab(libraries: libraries) { duplicateCount = $0 }
+                    ManageDuplicateFilesTab(libraries: libraries, initialItemId: initialItemId) { duplicateCount = $0 }
                         .padding(.top, 12)
                 case .shares:
                     ManageSharesTab { shareCount = $0 }

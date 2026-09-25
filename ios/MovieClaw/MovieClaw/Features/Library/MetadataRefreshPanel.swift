@@ -6,57 +6,15 @@ import SwiftUI
 /// 等于让用户干等：这里把**到哪几部了、每部在做什么**都摊开，外加失败计数和停止入口。
 /// 后端并发 3 路，所以「正在处理」是个列表。
 ///
-/// 与网页的分工差异：网页由页面持有状态、面板只负责画；这里面板**自带轮询**
-/// （`GET /libraries/{id}/metadata/refresh/progress`，每 2 秒——"阶段文字跟得上"与
-/// "别把接口打太密"的折中），宿主只需在刷新进行中（库详情的 `metadata_refresh.refreshing`）
-/// 且当前用户能管理媒体库时挂上它。刷新结束（响应 refreshing=false）时面板自行隐藏并回调
-/// `onFinished` 一次，宿主据此重拉墙（海报/档案已更新）。
-///
-/// 瞬时失败保留旧状态、下一轮继续：一旦清空，后台还在跑的刷新就会从界面上失踪（网页曾是线上实况）。
+/// 分工同网页：状态由宿主（单库页）持有——进页先探一次 `GET /libraries/{id}/metadata/refresh/progress`，
+/// 刷新中每 2 秒轮询，⋯ 菜单的「停止刷新 x/y」、墙上各格的刷新阶段、墙的轮询档位都读同一份；
+/// 面板只负责画。「停止」失败由宿主放进页面的 notice 横幅（同 Web）。
 struct MetadataRefreshPanel: View {
-    let libraryId: Int
-    var onFinished: () -> Void = {}
-
-    @Environment(\.api) private var api
-    @Environment(Feedback.self) private var feedback
-    @State private var state: API.MetadataRefreshView?
-    @State private var finishedReported = false
+    let state: API.MetadataRefreshView
+    let stop: () -> Void
 
     var body: some View {
-        // 常驻一个零高占位：没在刷新时面板收起，但轮询任务得有个宿主视图挂着
-        ZStack {
-            Color.clear.frame(height: 0)
-            if let state, state.refreshing {
-                panel(state)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .polling(every: 2, immediately: true) { await reload() }
-    }
-
-    private func reload() async {
-        do {
-            let next = try await api.libraryMetadataGetRefreshStatus(libraryId: libraryId)
-            // 阶段没推进时不替换，别让 2 秒一次的轮询白白重绘
-            if next != state { state = next }
-            if !next.refreshing, !finishedReported {
-                finishedReported = true
-                onFinished()
-            } else if next.refreshing {
-                finishedReported = false
-            }
-        } catch {
-            // 保留旧状态，下一轮再试（见类型注释）
-        }
-    }
-
-    private func stop() async {
-        do {
-            _ = try await api.libraryMetadataStopRefresh(libraryId: libraryId)
-            await reload()
-        } catch {
-            feedback.error(error)
-        }
+        panel(state)
     }
 
     private func panel(_ state: API.MetadataRefreshView) -> some View {
@@ -74,9 +32,7 @@ struct MetadataRefreshPanel: View {
                     .foregroundStyle(Theme.info)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                Button(state.stopping ? "收尾中…" : "停止") {
-                    Task { await stop() }
-                }
+                Button(state.stopping ? "收尾中…" : "停止", action: stop)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.white.opacity(0.7))
                 .buttonStyle(.plain)

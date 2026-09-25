@@ -37,6 +37,8 @@ struct LibraryItemDetailView: View {
     @State private var chapterPolls = 0
     @State private var sheet: ItemSheet?
     @State private var deleteFile: API.LibraryFileView?
+    /// 修正识别结果拍板过：关窗时再重拉（同 Web reidentifyDirty）
+    @State private var reidentifyDirty = false
 
     /// 分集区当前选中的那一集（及其文件）
     struct SelectedEpisode: Equatable {
@@ -66,7 +68,7 @@ struct LibraryItemDetailView: View {
                     Text("未能加载该条目").font(.headline).foregroundStyle(Theme.text)
                     Text("条目可能已被删除或重新识别为其他作品，请返回后查看。")
                         .font(.subheadline).foregroundStyle(Theme.textMuted).multilineTextAlignment(.center)
-                    Button { router.pop() } label: { Label("返回\(library?.name ?? "库存")", systemImage: "chevron.left") }
+                    Button { router.pop() } label: { Label("返回\(backLabel)", systemImage: "chevron.left") }
                         .buttonStyle(.glass)
                 }
                 .padding(24)
@@ -97,20 +99,41 @@ struct LibraryItemDetailView: View {
             let chaptersPolling = detail.chaptersPending && !detail.scraping && chapterPolls < 20
             guard detail.scraping || chaptersPolling else { return }
             if !detail.scraping { chapterPolls += 1 }
-            if let next = try? await api.libraryItemsGet(libraryId: libraryId, mediaItemId: itemId) { self.detail = next }
+            if let next = try? await api.libraryItemsGet(libraryId: libraryId, mediaItemId: itemId) {
+                self.detail = next
+                // 章节补齐（pending 变 false）就把轮数清零，下次「重新生成章节」还有满 20 轮（同 Web）
+                if !next.chaptersPending { chapterPolls = 0 }
+            }
         }
-        .sheet(item: $sheet) { sheet in
+        .sheet(item: $sheet, onDismiss: {
+            // 条目可能已经不在了（文件全改挂走 / 全标为非独立作品）：关窗再重拉，404 落到兜底态
+            if reidentifyDirty {
+                reidentifyDirty = false
+                Task { await reload() }
+            }
+        }) { sheet in
             sheetContent(sheet).sheetFeedback()
         }
         .sheet(item: $deleteFile) { file in
             DeleteFileSheet(libraryId: libraryId, mediaItemId: itemId, file: file,
                             onDeleted: { Task { await reload() } },
-                            onItemDeleted: { router.pop() })
+                            onItemDeleted: leaveToLibrary)
                 .sheetFeedback()
         }
     }
 
     // MARK: 派生
+
+    /// 兜底态返回键的去处名（同 Web navFallback）：从发现详情来 →「发现详情」；从媒体库首页来 →「媒体库」；
+    /// 其余按本库名（拿不到库名叫「库存」）。App 用真实返回栈判断来路，等价于 Web 的 returnTo / from=recent
+    private var backLabel: String {
+        let stack = router.paths[router.selectedTab] ?? []
+        switch stack.dropLast().last {
+        case .mediaDetail?: return "发现详情"
+        case nil where router.selectedTab == .library, .libraryHome?: return "媒体库"
+        default: return library?.name ?? "库存"
+        }
+    }
 
     private var isMovie: Bool { detail?.kind != "tv" }
 
@@ -452,11 +475,23 @@ struct LibraryItemDetailView: View {
         var personId: Int?
     }
 
+    /// 头像占位的首字（同 Web cast-row initialsOf）：中日韩取首字；拉丁名单词取前两个字母、多词取首尾单词首字母，大写
+    static func initials(of name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return "?" }
+        if trimmed.unicodeScalars.contains(where: { (0x3400 ... 0x9FFF).contains($0.value) || (0x3040 ... 0x30FF).contains($0.value) || (0xAC00 ... 0xD7AF).contains($0.value) }) {
+            return String(first)
+        }
+        let words = trimmed.split(whereSeparator: \.isWhitespace)
+        if words.count == 1 { return String(words[0].prefix(2)).uppercased() }
+        return (String(words[0].prefix(1)) + String(words[words.count - 1].prefix(1))).uppercased()
+    }
+
     private func castCard(_ person: CastPerson) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             ZStack {
                 Theme.surfaceRaised
-                Text(String(person.name.prefix(1))).font(.title2.weight(.bold)).foregroundStyle(.white.opacity(0.3))
+                Text(Self.initials(of: person.name)).font(.title2.weight(.bold)).foregroundStyle(.white.opacity(0.3))
                 if person.avatar != nil {
                     RemoteImage(url: api.image(person.avatar, .posterCard), placeholderSymbol: "person.fill")
                 }
@@ -602,13 +637,13 @@ struct LibraryItemDetailView: View {
                 )
             }
         case .reidentify:
-            ReidentifySheet(libraryId: libraryId, mediaItemId: itemId) { Task { await reload() } }
+            ReidentifySheet(libraryId: libraryId, mediaItemId: itemId) { reidentifyDirty = true }
         case .artwork:
             ArtworkPickerSheet(libraryId: libraryId, mediaItemId: itemId) { Task { await reload() } }
         case .transfer:
             TransferItemSheet(libraryId: libraryId, mediaItemId: itemId, title: title)
         case .delete:
-            DeleteItemSheet(libraryId: libraryId, mediaItemId: itemId, title: title) { router.pop() }
+            DeleteItemSheet(libraryId: libraryId, mediaItemId: itemId, title: title, onDeleted: leaveToLibrary)
         }
     }
 
@@ -624,9 +659,22 @@ struct LibraryItemDetailView: View {
             failed = false
             if !d.chaptersPending { chapterPolls = 0 }
         } catch is CancellationError {
+        } catch let error as APIError where error.status == 404 {
+            // 条目已不存在（改挂走了 / 删掉了）：不论页面上有没有旧数据都落到兜底态，别继续显示已不存在的条目
+            failed = true
         } catch {
+            // 网络抖动：保留已显示的内容，首次加载才落兜底态
             if detail == nil { failed = true }
         }
+    }
+
+    /// 删除影片（或删掉最后一个文件连带条目）后离开：落到本库页（同 Web router.replace(/library/{id})）。
+    /// 上一屏就是本库页时直接返回；否则把栈顶的条目页换成本库页
+    private func leaveToLibrary() {
+        var stack = router.paths[router.selectedTab] ?? []
+        if !stack.isEmpty { stack.removeLast() }
+        if stack.last != .library(id: libraryId) { stack.append(.library(id: libraryId)) }
+        router.paths[router.selectedTab] = stack
     }
 
     private func loadResume() async {
