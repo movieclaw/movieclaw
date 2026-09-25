@@ -36,6 +36,8 @@ struct SubscriptionDetailView: View {
     @State private var seasonsInitialized = false
     @State private var upgradeRunConsumed = false
     @State private var forecastPolls = 0
+    /// 带「返回 / 先不」取消键的确认框（同 Web cancelLabel）
+    @State private var confirms = SubsConfirmCenter()
 
     enum DetailSheet: Identifiable {
         case manage, adjust, upgradeRun, switchRule, cancel
@@ -103,6 +105,7 @@ struct SubscriptionDetailView: View {
         .sheet(item: $sheet, onDismiss: runPendingAction) { sheet in
             sheetContent(sheet)
         }
+        .modifier(SubsConfirmHost(center: confirms))
         .accessibilityIdentifier("subscription-detail")
     }
 
@@ -126,6 +129,11 @@ struct SubscriptionDetailView: View {
         if openUpgradeRun, !upgradeRunConsumed, detail != nil, permissions.canSubscribe {
             upgradeRunConsumed = true
             sheet = .upgradeRun
+        }
+        // 在途一出现就立刻拉一次实时进度（同 Web useVisiblePolling 的 leading）：
+        // 5 秒轮询在页面出现时详情还没到、被 hasInFlight 挡掉，否则要多等一整个周期
+        if hasInFlight, downloads.isEmpty {
+            await refreshDownloads()
         }
     }
 
@@ -382,12 +390,13 @@ struct SubscriptionDetailView: View {
 
     private func togglePause(_ detail: API.SubscriptionDetailView) async {
         let resuming = detail.status == "paused"
-        let ok = await feedback.confirm(
+        let ok = await confirms.confirm(
             resuming ? "恢复《\(detail.media.title)》的订阅追踪？" : "暂停《\(detail.media.title)》的订阅追踪？",
             message: resuming
                 ? "恢复后会继续搜索缺失资源，并按当前规则自动投递符合条件的结果。"
                 : "暂停后不会继续搜索或投递资源；已经提交的下载不受影响，可随时恢复。",
-            confirmTitle: resuming ? "恢复追踪" : "暂停追踪"
+            confirmTitle: resuming ? "恢复追踪" : "暂停追踪",
+            cancelTitle: "返回"
         )
         guard ok else { return }
         busy = true
@@ -419,10 +428,11 @@ struct SubscriptionDetailView: View {
 
     /// 立即搜索：缺口跳过冷却重新排队；「暂停中/无可搜缺口」由后端给可读错误
     private func searchNow(_ detail: API.SubscriptionDetailView) async {
-        let ok = await feedback.confirm(
+        let ok = await confirms.confirm(
             "立即搜索《\(detail.media.title)》的缺失资源？",
             message: "将跳过当前搜索冷却，重新搜索已经可以搜索的缺口。命中当前规则组的资源可能会自动提交下载。",
-            confirmTitle: "立即搜索"
+            confirmTitle: "立即搜索",
+            cancelTitle: "返回"
         )
         guard ok else { return }
         busy = true
@@ -442,10 +452,11 @@ struct SubscriptionDetailView: View {
             sheet = .cancel
             return
         }
-        let ok = await feedback.confirm(
+        let ok = await confirms.confirm(
             "取消订阅《\(detail.media.title)》？",
             message: "将取消你的订阅关注；已经下载或入库的文件不会被删除。",
             confirmTitle: "取消订阅",
+            cancelTitle: "先不",
             destructive: true
         )
         guard ok else { return }

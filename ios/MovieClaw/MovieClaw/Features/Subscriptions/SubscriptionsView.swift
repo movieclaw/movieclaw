@@ -200,8 +200,16 @@ struct SubscriptionsView: View {
             .frame(maxWidth: .infinity)
             .padding(.top, 80)
         } else if failed {
-            ErrorState(title: "订阅列表加载失败", message: "请检查网络后重试", retry: { await reload() })
-                .padding(.top, 40)
+            // 同 Web：只有一行「订阅列表加载失败」+ 重试（已有旧快照时不进错误态，保留旧内容）
+            VStack(spacing: 12) {
+                Text("订阅列表加载失败").font(.subheadline).foregroundStyle(Theme.textMuted)
+                Button("重试") { Task { await reload() } }
+                    .buttonStyle(.glass)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 64)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("error-state")
         } else if visible.isEmpty {
             emptyState.padding(.top, 40)
         } else if filter == "all" {

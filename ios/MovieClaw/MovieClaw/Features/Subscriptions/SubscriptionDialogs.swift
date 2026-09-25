@@ -57,8 +57,12 @@ struct SeasonPickRow: View {
 // MARK: - 投递路由预检
 
 /// 选库即预演「下载会落到哪、能否自动入库」；配置问题当场亮出（后端与真实投递同源判定）
+///
+/// 两处口径不同（照搬 Web）：订阅弹层的监听模式会多说一句暂存整理去向、库内目录去掉尾斜杠；
+/// 调整订阅弹层（`adjusting`）只说监听目录、目录原样显示。
 struct DispatchPreviewNote: View {
     let preview: API.DispatchPreviewView
+    var adjusting = false
 
     var body: some View {
         if preview.ok {
@@ -76,14 +80,14 @@ struct DispatchPreviewNote: View {
     private var text: String {
         if preview.mode == "watch" {
             let path = preview.path ?? ""
-            if let staging = preview.stagingPath {
+            if !adjusting, let staging = preview.stagingPath {
                 return "将投递到自动入库的监听目录 \(path)，下载完成后整理到 \(staging)，文件进入媒体库根目录后自动入账"
             }
             return "将投递到自动入库的监听目录 \(path)，下载完成后自动整理入库"
         }
         // 条目目录由后端按命名模板渲染（entry_dir），不自己拼「标题 (年份)」
         var dir = preview.entryDir ?? preview.path ?? ""
-        while dir.hasSuffix("/") { dir.removeLast() }
+        while !adjusting, dir.hasSuffix("/") { dir.removeLast() }
         return "将直接下载到库内目录 \(dir)，完成后自动入账"
     }
 }
@@ -316,7 +320,7 @@ struct SubscriptionAdjustSheet: View {
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 12))
                     .accessibilityIdentifier("adjust-library")
-                    if let preview { DispatchPreviewNote(preview: preview) }
+                    if let preview { DispatchPreviewNote(preview: preview, adjusting: true) }
                 }
             }
         } footer: {
@@ -522,5 +526,68 @@ struct SubscriptionManageSheet: View {
         }
         .disabled(busy)
         .accessibilityIdentifier("manage-\(title)")
+    }
+}
+
+// MARK: - 自定义取消键的确认框
+
+/// 订阅详情页的确认框：与全局 `Feedback.confirm` 同一形态（系统 alert），只多一个可定制的取消键文案。
+///
+/// 为什么不用全局那个：它的取消键固定「取消」。Web 订阅详情的「立即搜索」「暂停/恢复追踪」取消键是「返回」，
+/// 成员「取消订阅」的取消键是「先不」——若用「取消」，会和确认键「取消订阅」并列、两个都以「取消」开头，容易看混。
+@Observable
+final class SubsConfirmCenter {
+    struct Request {
+        var title: String
+        var message: String?
+        var confirmTitle: String
+        var cancelTitle: String
+        var destructive: Bool
+        fileprivate let resolver: Resolver
+    }
+
+    /// 只回答一次（按钮动作与弹窗关闭回调都可能触发）
+    fileprivate final class Resolver {
+        private var continuation: CheckedContinuation<Bool, Never>?
+        init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+        func resolve(_ value: Bool) {
+            continuation?.resume(returning: value)
+            continuation = nil
+        }
+    }
+
+    var request: Request?
+
+    func confirm(_ title: String, message: String?, confirmTitle: String, cancelTitle: String, destructive: Bool = false) async -> Bool {
+        await withCheckedContinuation { continuation in
+            request = Request(
+                title: title, message: message, confirmTitle: confirmTitle, cancelTitle: cancelTitle,
+                destructive: destructive, resolver: Resolver(continuation)
+            )
+        }
+    }
+
+    fileprivate func finish(_ value: Bool) {
+        let pending = request
+        request = nil
+        pending?.resolver.resolve(value)
+    }
+}
+
+/// 承载 `SubsConfirmCenter` 的弹窗（挂在使用它的页面上）
+struct SubsConfirmHost: ViewModifier {
+    @Bindable var center: SubsConfirmCenter
+
+    func body(content: Content) -> some View {
+        content.alert(
+            center.request?.title ?? "",
+            isPresented: Binding(get: { center.request != nil }, set: { if !$0 { center.finish(false) } }),
+            presenting: center.request
+        ) { request in
+            Button(request.cancelTitle, role: .cancel) { center.finish(false) }
+            Button(request.confirmTitle, role: request.destructive ? .destructive : nil) { center.finish(true) }
+        } message: { request in
+            if let message = request.message { Text(message) }
+        }
     }
 }

@@ -93,7 +93,9 @@ struct SubscribeSheet: View {
         .interactiveDismissDisabled(busy)
         .accessibilityIdentifier("subscribe-sheet")
         .task { await runPrepare(request.titleRef) }
-        .task(id: libraryId) { await refreshDispatchPreview() }
+        // 投递路由预览随「入库库」与「预检收敛出的条目」两者变化重拉（同 Web 依赖 [prepared?.media, libraryId]）：
+        // 豆瓣歧义选定候选后库 id 可能不变，只盯库 id 会漏掉这次重拉
+        .task(id: "\(libraryId ?? -1)-\(prepared?.media?.tmdbId ?? -1)") { await refreshDispatchPreview() }
         .sheet(isPresented: $creatingRuleSet) {
             RuleSetEditorSheet(ruleSet: nil) { saved in
                 ruleSets.append(saved)
@@ -184,35 +186,30 @@ struct SubscribeSheet: View {
                 .foregroundStyle(Theme.text.opacity(0.85))
                 .symbolRenderingMode(.multicolor)
                 .accessibilityIdentifier("subscribe-existing")
-            VStack(spacing: 10) {
+            // 同 Web 管理态：一行右对齐，好的 →（洗版入口时）去洗一轮版 → 取消订阅
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+                Button("好的") { dismiss() }
+                    .buttonStyle(.glass)
+                    .accessibilityIdentifier("subscribe-ok")
                 if upgradeMode {
                     // 洗版入口进到已有订阅：并入既有订阅，去详情触发一轮
-                    Button {
+                    Button("去洗一轮版") {
                         dismiss()
                         router.push(.subscription(id: existing, upgradeRun: true))
-                    } label: {
-                        Text("去洗一轮版").frame(maxWidth: .infinity).padding(.vertical, 6)
                     }
                     .discoverProminentButton()
                     .accessibilityIdentifier("subscribe-go-upgrade")
                 }
-                Button {
-                    dismiss()
-                } label: {
-                    Text("好的").frame(maxWidth: .infinity).padding(.vertical, 6)
-                }
-                .buttonStyle(.glass)
-                .accessibilityIdentifier("subscribe-ok")
-                Button(role: .destructive) {
+                Button("取消订阅", role: .destructive) {
                     Task { await unsubscribe(existing) }
-                } label: {
-                    Text("取消订阅").frame(maxWidth: .infinity).padding(.vertical, 6)
                 }
                 .buttonStyle(.glass)
                 .tint(SubsColor.danger)
                 .disabled(busy)
                 .accessibilityIdentifier("subscribe-unsubscribe")
             }
+            .font(.subheadline.weight(.medium))
         }
     }
 
