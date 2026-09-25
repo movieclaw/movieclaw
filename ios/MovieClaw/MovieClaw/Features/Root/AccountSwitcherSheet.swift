@@ -3,7 +3,8 @@ import SwiftUI
 /// 切换账号（Web components/account-switcher-dialog.tsx，设计见 docs/design/account-switching.md）。
 ///
 /// 本机登录过的全部账号（后端 `movieclaw_accounts` Cookie 账号袋，最多 5 个）；
-/// 点其他账号即切换（不用再输密码），左滑移除；底部「添加账号」与「退出全部账号」。
+/// 点其他账号即切换（不用再输密码），行尾 × 移除（也可左滑）；底部「添加账号」与「退出全部账号」，
+/// 存满 5 个时「添加账号」换成上限说明（文案同 Web，「本浏览器」改称「本机」）。
 /// 切换后 RootView 以用户名为 id 重建整棵界面树，不会串到上一个账号的数据。
 struct AccountSwitcherSheet: View {
     @Environment(AppModel.self) private var model
@@ -27,6 +28,9 @@ struct AccountSwitcherSheet: View {
                                     Button("退出", role: .destructive) { Task { await remove(account) } }
                                 }
                         }
+                    } header: {
+                        Text("本机已登录的账号，点击即可切换，不用再输密码。")
+                            .textCase(nil)
                     }
                     Section {
                         if list.count < Self.maxAccounts {
@@ -37,9 +41,13 @@ struct AccountSwitcherSheet: View {
                             }
                         }
                         Button(role: .destructive) {
-                            Task { await logoutAll() }
+                            Task { await logoutAll(count: list.count) }
                         } label: {
                             Label("退出全部账号", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+                    } footer: {
+                        if list.count >= Self.maxAccounts {
+                            Text("最多同时保存 \(Self.maxAccounts) 个账号，移除一个后可再添加")
                         }
                     }
                 }
@@ -58,24 +66,43 @@ struct AccountSwitcherSheet: View {
     }
 
     private func row(_ account: API.AccountView) -> some View {
-        Button {
-            Task { await switchTo(account) }
-        } label: {
-            HStack(spacing: 12) {
-                AvatarBadge(session: nil, avatarUrl: account.avatarUrl, nickname: account.nickname, size: 40)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(account.nickname).foregroundStyle(Theme.text)
-                    Text("@\(account.username) · \(account.role == "admin" ? "超级管理员" : "成员")")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textMuted)
+        HStack(spacing: 10) {
+            Button {
+                Task { await switchTo(account) }
+            } label: {
+                HStack(spacing: 12) {
+                    AvatarBadge(session: nil, avatarUrl: account.avatarUrl, nickname: account.nickname, size: 40)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(account.nickname).foregroundStyle(Theme.text)
+                        Text("@\(account.username) · \(account.role == "admin" ? "超级管理员" : "成员")")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textMuted)
+                    }
+                    Spacer()
+                    if account.active {
+                        Label("当前", systemImage: "checkmark")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Theme.accent)
+                    }
                 }
-                Spacer()
-                if account.active {
-                    Image(systemName: "checkmark").foregroundStyle(Theme.accentStrong)
-                }
+                .contentShape(Rectangle())
             }
+            // 当前账号不可点，但不置灰（Web 当前行是高亮而不是禁用色）
+            .allowsHitTesting(!account.active)
+            // 行尾 ×：从本机移除该账号（Web AccountRow 行尾常驻）
+            Button {
+                Task { await remove(account) }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Theme.textFaint)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("从本机移除 \(account.nickname)")
         }
-        .disabled(account.active)
+        // 一行两个按钮：各自 borderless，避免 List 把整行点击同时派给两者
+        .buttonStyle(.borderless)
     }
 
     private func load() async {
@@ -117,8 +144,12 @@ struct AccountSwitcherSheet: View {
         }
     }
 
-    private func logoutAll() async {
-        guard await feedback.confirm("退出全部账号？", message: "本机保存的所有账号都将退出登录。", confirmTitle: "全部退出", destructive: true) else { return }
+    private func logoutAll(count: Int) async {
+        guard await feedback.confirm(
+            "退出全部账号？",
+            message: "本机里的 \(count) 个账号都会退出登录，再回来需要逐个重新输入密码。共用设备时建议这样做。",
+            confirmTitle: "全部退出", destructive: true
+        ) else { return }
         dismiss()
         await model.logout(all: true)
     }

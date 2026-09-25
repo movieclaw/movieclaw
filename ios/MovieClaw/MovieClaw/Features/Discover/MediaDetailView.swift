@@ -74,7 +74,7 @@ struct MediaDetailView: View {
                 content(detail)
             }
         }
-        .appBackground()
+        .appBackground(.plain) // 氛围页：自带沉浸大图，不铺全站蒙版（Web isHomeRoute）
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {

@@ -31,15 +31,15 @@ struct ActivityView: View {
         _watchView = State(initialValue: raw.flatMap(WatchSlice.init(rawValue:)) ?? .playing)
     }
 
-    /// 站内链接 /activity?view=… 切到本标签时带来的视图参数
+    /// 站内链接 /activity?view=… 切到本标签时带来的视图参数。
+    /// 与 Web「地址即状态」同口径（lib/task-center.ts）：任务切片名 → 任务视角；
+    /// 其余（观看切片名、缺省、非法值）→ 观看视角，非法值落「正在播放」；
+    /// 没被点名的那一侧回到各自默认（观看=正在播放、任务=全部）。
     private func apply(view raw: String) {
-        if let task = TaskSlice(rawValue: raw) {
-            scope = .tasks
-            taskView = task
-        } else if let watch = WatchSlice(rawValue: raw) {
-            scope = .media
-            watchView = watch
-        }
+        let task = TaskSlice(rawValue: raw)
+        scope = task == nil ? .media : .tasks
+        taskView = task ?? .all
+        watchView = WatchSlice(rawValue: raw) ?? .playing
     }
 
     var body: some View {

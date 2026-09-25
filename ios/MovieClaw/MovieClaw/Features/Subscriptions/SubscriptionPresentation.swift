@@ -76,26 +76,11 @@ enum SubsFormat {
 
     static func clock(_ date: Date) -> String { clockFormatter.string(from: date) }
 
-    /// 相对时间，与 dayjs zh-cn `fromNow()` 同一套阈值与措辞（「几秒前 / 3 分钟前 / 2 天前 / 3 天后」）；
-    /// 空值「从未」（Web formatRelativeTime）。
+    /// 相对时间，与 dayjs zh-cn `fromNow()` 同一套阈值与措辞（「几秒前 / 3 分钟前 / 2 天前 / 3 天内」）；
+    /// 空值「从未」（Web formatRelativeTime）。算法统一在 `Formatters.fromNow`（R-3：全 App 一套口径）。
     static func relative(_ raw: String?, now: Date = .now) -> String {
         guard let date = date(raw) else { return "从未" }
-        let delta = now.timeIntervalSince(date)
-        let seconds = abs(delta)
-        let minutes = seconds / 60, hours = minutes / 60, days = hours / 24
-        let text: String
-        if seconds < 45 { text = "几秒" }
-        else if seconds < 90 { text = "1 分钟" }
-        else if minutes < 45 { text = "\(Int(minutes.rounded())) 分钟" }
-        else if minutes < 90 { text = "1 小时" }
-        else if hours < 22 { text = "\(Int(hours.rounded())) 小时" }
-        else if hours < 36 { text = "1 天" }
-        else if days < 26 { text = "\(Int(days.rounded())) 天" }
-        else if days < 46 { text = "1 个月" }
-        else if days < 320 { text = "\(max(2, Int((days / 30.4).rounded()))) 个月" }
-        else if days < 548 { text = "1 年" }
-        else { text = "\(max(2, Int((days / 365).rounded()))) 年" }
-        return delta >= 0 ? "\(text)前" : "\(text)后"
+        return Formatters.fromNow(date, now: now)
     }
 
     /// 秒数 → 「15 分钟」「1.5 小时」（Web formatDuration）

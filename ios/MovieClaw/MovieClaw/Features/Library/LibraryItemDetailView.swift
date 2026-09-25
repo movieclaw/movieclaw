@@ -83,7 +83,7 @@ struct LibraryItemDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .appBackground()
+        .appBackground(.plain) // 氛围页：自带沉浸大图，不铺全站蒙版（Web isHomeRoute）
         .navigationTitle(detail?.title ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

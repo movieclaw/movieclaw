@@ -34,5 +34,6 @@ struct SettingsIndexView: View {
             }
         }
         .navigationTitle("设置")
+        .appBackground()
     }
 }

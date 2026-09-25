@@ -960,12 +960,7 @@ enum ActivityFormat {
     }
 
     static func relative(_ date: Date) -> String {
-        let seconds = Date.now.timeIntervalSince(date)
-        if seconds < 45 { return "几秒前" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: .now)
+        Formatters.fromNow(date)
     }
 
     /// 绝对时间「2026/09/25 18:05」

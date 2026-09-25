@@ -36,18 +36,13 @@ enum Theme {
 }
 
 extension View {
-    /// 页面统一背景：深色底 + 顶部微弱冷光（与 Web 背景一致），并铺满安全区
-    func appBackground() -> some View {
-        background {
-            ZStack {
-                Theme.background
-                LinearGradient(
-                    colors: [Color(red: 0.10, green: 0.12, blue: 0.18).opacity(0.9), .clear],
-                    startPoint: .top, endPoint: .center
-                )
-            }
-            .ignoresSafeArea()
-        }
+    /// 页面统一背景（银玻璃主题的「底」）：用户选定的背景图 + 模糊压暗蒙版，铺满安全区，
+    /// 外观页换图 / 调质感后全 App 即时跟随（见 AppBackdropStore）。
+    /// 同时把页内 List / Form 的系统底色隐藏，让背景透出来（Web 设置等页面的行直接铺在蒙版上）。
+    /// - Parameter style: 默认 `.scrim`；影片详情类氛围页传 `.plain`，登录页传 `.sharp`
+    func appBackground(_ style: AppBackdropStyle = .scrim) -> some View {
+        scrollContentBackground(.hidden)
+            .background { AppBackdropView(style: style) }
     }
 
     /// 卡片底：半透明抬升面 + 细描边
@@ -100,13 +95,64 @@ enum Formatters {
         return isoWithFraction.date(from: withZ) ?? iso.date(from: withZ)
     }
 
-    /// 相对时间：「3 分钟前」「18 天前」
+    /// 相对时间：「几秒前」「3 分钟前」「18 天前」「2 个月前」；空值返回空串（调用方各自给占位）。
+    /// 口径即 Web `formatRelativeTime`（lib/time.ts → dayjs zh-cn `fromNow()`），见 `fromNow(_:now:)`。
     static func relative(_ raw: String?) -> String {
         guard let date = date(raw) else { return "" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: .now)
+        return fromNow(date)
+    }
+
+    /// 全 App 唯一的「多久之前」算法，逐条复刻 dayjs relativeTime 插件（默认阈值 + zh-cn 措辞）：
+    /// 每一档先把差值换算成该档单位并**四舍五入**，再与阈值比较——
+    /// ≤44 秒「几秒」、≤89 秒「1 分钟」、≤44 分「N 分钟」、≤89 分「1 小时」、≤21 时「N 小时」、
+    /// ≤35 时「1 天」、≤25 天「N 天」、≤45 天「1 个月」、≤10 月「N 个月」、≤17 月「1 年」、再往后「N 年」；
+    /// 过去加「前」，将来加「内」（zh-cn 的 future 是「%s内」）。
+    /// 不用系统 RelativeDateTimeFormatter：它会出「1周前」「2周前」，与网页「11 天前」对不上。
+    /// 设备/令牌「最近活跃」用的是 Web 另一套分钟粒度口径（SettingsTime.deviceRelative），不走这里。
+    static func fromNow(_ date: Date, now: Date = .now) -> String {
+        let delta = now.timeIntervalSince(date)
+        let seconds = abs(delta)
+        // JS Math.round：正数 .5 进位，与 Swift 的 toNearestOrAwayFromZero 一致
+        func round(_ value: Double) -> Int { Int(value.rounded()) }
+        let text: String
+        if round(seconds) <= 44 {
+            text = "几秒"
+        } else if round(seconds) <= 89 {
+            text = "1 分钟"
+        } else if round(seconds / 60) <= 44 {
+            text = "\(max(1, round(seconds / 60))) 分钟"
+        } else if round(seconds / 60) <= 89 {
+            text = "1 小时"
+        } else if round(seconds / 3600) <= 21 {
+            text = "\(max(1, round(seconds / 3600))) 小时"
+        } else if round(seconds / 3600) <= 35 {
+            text = "1 天"
+        } else if round(seconds / 86400) <= 25 {
+            text = "\(max(1, round(seconds / 86400))) 天"
+        } else if round(seconds / 86400) <= 45 {
+            text = "1 个月"
+        } else {
+            let months = monthDiff(from: min(date, now), to: max(date, now))
+            if round(months) <= 10 {
+                text = "\(max(1, round(months))) 个月"
+            } else if round(months) <= 17 {
+                text = "1 年"
+            } else {
+                text = "\(max(1, round(months / 12))) 年"
+            }
+        }
+        return delta >= 0 ? "\(text)前" : "\(text)内"
+    }
+
+    /// 两个时刻相差的月数（带小数，同 dayjs monthDiff：整月数 + 余下部分占下一个整月的比例）
+    private static func monthDiff(from start: Date, to end: Date) -> Double {
+        let calendar = Calendar.current
+        let whole = calendar.dateComponents([.month], from: start, to: end).month ?? 0
+        guard let anchor = calendar.date(byAdding: .month, value: whole, to: start),
+              let next = calendar.date(byAdding: .month, value: whole + 1, to: start),
+              next > anchor
+        else { return Double(whole) }
+        return Double(whole) + end.timeIntervalSince(anchor) / next.timeIntervalSince(anchor)
     }
 
     /// 「2026-09-25 17:03」
