@@ -462,6 +462,8 @@ struct DownloadConfirmSheet: View {
     @State private var resolvedPath: String?
     @State private var preflighting = false
     @State private var busy = false
+    /// 内容实测高度：弹层高度随内容自适应，长路径换行也不截断（同 Web break-all 自动换行）
+    @State private var contentHeight: CGFloat = 250
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -484,11 +486,12 @@ struct DownloadConfirmSheet: View {
                         Text(headline ?? "由下载器决定")
                             .font(.caption.monospaced())
                             .foregroundStyle(.white)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
             HStack(spacing: 4) {
-                Text("上次用过 · \(Formatters.relative(target.updatedAt)) ·")
+                Text("上次用过 · \(SubsFormat.relative(target.updatedAt)) ·")
                 Button("不再记住", action: onForget).underline()
             }
             .font(.caption)
@@ -507,7 +510,10 @@ struct DownloadConfirmSheet: View {
             }
         }
         .padding(20)
-        .presentationDetents([.height(250)])
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .presentationDetents([.height(contentHeight)])
         .task {
             guard target.kind == "smart", let identity = request.identity else { return }
             preflighting = true

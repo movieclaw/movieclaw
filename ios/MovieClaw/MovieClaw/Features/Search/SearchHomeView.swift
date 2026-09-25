@@ -168,7 +168,7 @@ struct SearchHomeView: View {
                         }
                         if latest.hasSnapshot { DiscoverTag(text: "快照", foreground: Theme.accent2) }
                         Spacer(minLength: 4)
-                        Text(Formatters.relative(latest.lastSearchedAt)).font(.caption).foregroundStyle(Theme.textFaint).lineLimit(1)
+                        Text(SubsFormat.relative(latest.lastSearchedAt)).font(.caption).foregroundStyle(Theme.textFaint).lineLimit(1)
                     }
                     .font(.subheadline)
                     .contentShape(.rect)
@@ -201,7 +201,7 @@ struct SearchHomeView: View {
                                     .foregroundStyle(Theme.textMuted)
                                 if item.hasSnapshot { DiscoverTag(text: "快照", foreground: Theme.accent2) }
                                 Spacer(minLength: 4)
-                                Text(Formatters.relative(item.lastSearchedAt)).font(.caption).foregroundStyle(Theme.textFaint)
+                                Text(SubsFormat.relative(item.lastSearchedAt)).font(.caption).foregroundStyle(Theme.textFaint)
                             }
                             .font(.subheadline)
                             .contentShape(.rect)
