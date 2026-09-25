@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// 用户报「放不出来 / 很卡」时截这一张图：源规格、处理方式、有没有走显卡、掉帧、会话 id、判定理由、
 /// 以及 App 独有的「用的哪个引擎、怎么渲染」全在里面。每一节先摆「源是什么」，下一行「→ 做了什么」。
-/// 服务端快照由控制器每秒拉一次（只在面板打开时），本地引擎读数面板自己每秒拉一次。
+/// 服务端快照由控制器每 2 秒拉一次（只在面板打开时，同 Web），本地引擎读数面板自己每秒拉一次。
 struct PlayerDiagnosticsPanel: View {
     let controller: PlaybackController
     /// 面板高度：竖屏限在中线上方（不压住中央的播放键），横屏可以高一些（同 Web 的取舍）
@@ -96,6 +96,13 @@ struct PlayerDiagnosticsPanel: View {
             if let worker = diagnostics?.workerId {
                 ActionLine("Worker：\(worker)" + (diagnostics?.workerOnline == true ? " · 在线" : diagnostics?.workerOnline == false ? " · 离线" : " · 切换中"))
             }
+            if diagnostics?.workerVersion != nil || diagnostics?.ffmpegVersion != nil {
+                ActionLine([diagnostics?.workerVersion.map { "Worker \($0)" }, diagnostics?.ffmpegVersion.map { "ffmpeg \($0)" }]
+                    .compactMap { $0 }.joined(separator: " · "))
+            }
+            if diagnostics?.workerPlatform != nil || diagnostics?.workerArch != nil {
+                ActionLine("平台：" + [diagnostics?.workerPlatform, diagnostics?.workerArch].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+            }
             if let job = diagnostics?.jobId {
                 ActionLine("任务：\(job)" + (diagnostics?.jobState.map { " · \(Self.jobStateLabels[$0] ?? $0)" } ?? "") + (diagnostics?.jobSpeed.map { " · \($0)" } ?? ""))
             }
@@ -143,6 +150,13 @@ struct PlayerDiagnosticsPanel: View {
                 .foregroundStyle(.white.opacity(0.75))
             Text(controller.phase == .buffering ? "缓冲中" : controller.paused ? "已暂停" : "播放中")
                 .foregroundStyle(.white.opacity(0.75))
+            // 「不丝滑」的量化行：上次跳转等了多久；卡顿不含 seek 造成的等待（同 Web qoe.ts 口径），两个数分开读
+            let qoe = controller.qoeLive
+            Text([
+                qoe.lastSeekMs.map { String(format: "上次跳转 %.1f 秒", Double($0) / 1000) },
+                "卡顿 \(qoe.rebufferCount) 次" + (qoe.rebufferCount > 0 ? String(format: " · 累计 %.1f 秒", Double(qoe.rebufferMs) / 1000) : ""),
+            ].compactMap { $0 }.joined(separator: " · "))
+                .foregroundStyle(.white.opacity(0.75))
             Text("会话 \(controller.activeSessionId ?? "无（直出）")")
                 .foregroundStyle(.white.opacity(0.5))
                 .textSelection(.enabled)
@@ -159,6 +173,12 @@ struct PlayerDiagnosticsPanel: View {
                 ActionLine("NAS 会话缓存 \(Formatters.bytes(diagnostics.cacheBytes))" + (diagnostics.cacheHit ? " · 命中上次转码产物（\(diagnostics.cachedSegments) 段免转）" : ""))
                 if let failed = diagnostics.failedSegments.first {
                     ActionLine("当前缺口 \(segment(failed))" + (diagnostics.failedSegments.count > 1 ? " 等 \(diagnostics.failedSegments.count) 段" : " · 上传失败待重试"), alert: true)
+                }
+                if let historical = diagnostics.historicalFailedSegments.first {
+                    ActionLine("历史失败 \(segment(historical))" + (diagnostics.historicalFailedSegments.count > 1 ? " 等 \(diagnostics.historicalFailedSegments.count) 段" : " · 已落后当前播放位置"))
+                }
+                if let upload = diagnostics.recentUploads.first {
+                    ActionLine("最近上传 \(uploadLabel(upload))", alert: upload.status >= 400)
                 }
                 if let wait = diagnostics.segmentWaitMs {
                     ActionLine(String(format: "最近供片等待 %.1f 秒", Double(wait) / 1000) + (diagnostics.segmentStatus.map { " · HTTP \($0)" } ?? ""))
@@ -180,6 +200,13 @@ struct PlayerDiagnosticsPanel: View {
     private func mbps(_ bps: Int?) -> String? {
         guard let bps, bps > 0 else { return nil }
         return String(format: bps >= 10_000_000 ? "%.0f Mbps" : "%.1f Mbps", Double(bps) / 1_000_000)
+    }
+
+    /// 「seg00012.m4s · 成功 · 2.1 MB · 2.1 MB 期望」（同 Web uploadLabel）
+    private func uploadLabel(_ upload: API.PlaybackArtifactUploadView) -> String {
+        let status = upload.status == 201 ? "成功" : "HTTP \(upload.status)"
+        let expected = upload.contentLength.map { "\(Formatters.bytes($0)) 期望" } ?? (upload.transferEncoding == "chunked" ? "chunked" : nil)
+        return [upload.name, status, Formatters.bytes(upload.receivedBytes), expected].compactMap { $0 }.joined(separator: " · ")
     }
 
     private func segment(_ index: Int?) -> String {

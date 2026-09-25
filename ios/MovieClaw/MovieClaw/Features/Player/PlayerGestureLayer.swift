@@ -11,10 +11,14 @@ import UIKit
 /// 判定规则：
 /// - 手指移动不到 12pt 就抬起 = 轻点；距上次轻点 ≤ 300ms 且落在左右三分之一 = 双击跳转；
 /// - 移动超过 12pt：横向为主 → 拖进度；纵向为主 → 左半屏亮度、右半屏音量；
-/// - 按住 500ms 不动 = 长按 2 倍速（抬手恢复）；已进入倍速后的移动不再改判。
-/// - 从屏幕上下边缘 32pt 内起手的触摸交给系统（控制中心/主屏幕手势），不当成播放器手势。
+/// - 按住 500ms 不动 = 长按 2 倍速（抬手恢复）；已进入倍速后的移动不再改判。暂停时不起长按，松手按轻点处理；
+/// - 从屏幕上下边缘 32pt 内起手的触摸交给系统（控制中心/主屏幕手势），不当成播放器手势；
+/// - 竖滑调节另有排除带（同 Web touch-adjust.ts）：顶部 12%、底部 24%（进度条与控制区）、左右各 32pt 起手不调；
+///   滑过「高度 × 60%」从 0 拉满。
 struct PlayerGestureLayer: UIViewRepresentable {
     var enabled: Bool
+    /// 现在能不能起长按倍速（暂停、锁屏时不能）
+    var canHold: Bool
     var onTap: (_ xRatio: CGFloat, _ isDouble: Bool) -> Void
     var onScrub: (_ phase: GesturePhase, _ deltaRatio: CGFloat) -> Void
     var onAdjust: (_ phase: GesturePhase, _ side: AdjustSide, _ deltaRatio: CGFloat) -> Void
@@ -49,6 +53,10 @@ struct PlayerGestureLayer: UIViewRepresentable {
         private static let edgeGuard: CGFloat = 32
         private static let doubleTapWindow: TimeInterval = 0.3
         private static let holdDelay: TimeInterval = 0.5
+        /// 竖滑调节：满量程 = 可用高度 × 60%；起手排除带（比例 / pt）
+        private static let fullSweepRatio: CGFloat = 0.6
+        private static let adjustTopExclude: CGFloat = 0.12
+        private static let adjustBottomExclude: CGFloat = 0.24
 
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
             guard let config, config.enabled, let touch = touches.first, event?.allTouches?.count ?? 1 == 1 else { return }
@@ -58,6 +66,7 @@ struct PlayerGestureLayer: UIViewRepresentable {
             start = point
             intent = .undecided
             holdTimer?.invalidate()
+            guard config.canHold else { return }
             holdTimer = Timer.scheduledTimer(withTimeInterval: Self.holdDelay, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, self.tracking, case .undecided = self.intent else { return }
@@ -79,6 +88,11 @@ struct PlayerGestureLayer: UIViewRepresentable {
                     intent = .scrub
                     config.onScrub(.began, 0)
                 } else {
+                    guard adjustAllowed(at: start) else {
+                        // 排除带里起手的竖滑多半是想去摸进度条 / 下拉通知中心：整次触摸都不当手势
+                        tracking = false
+                        return
+                    }
                     let side: AdjustSide = start.x < bounds.width / 2 ? .brightness : .volume
                     intent = .adjust(side)
                     config.onAdjust(.began, side, 0)
@@ -87,7 +101,7 @@ struct PlayerGestureLayer: UIViewRepresentable {
                 config.onScrub(.changed, dx / max(1, bounds.width))
             case let .adjust(side):
                 // 上滑为增：屏幕坐标 y 向下，取负
-                config.onAdjust(.changed, side, -dy / max(1, bounds.height))
+                config.onAdjust(.changed, side, -dy / max(1, bounds.height * Self.fullSweepRatio))
             case .hold:
                 break
             }
@@ -99,6 +113,12 @@ struct PlayerGestureLayer: UIViewRepresentable {
 
         override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
             finish(cancelled: true, touch: touches.first)
+        }
+
+        private func adjustAllowed(at point: CGPoint) -> Bool {
+            point.y >= bounds.height * Self.adjustTopExclude
+                && point.y <= bounds.height * (1 - Self.adjustBottomExclude)
+                && point.x >= Self.edgeGuard && point.x <= bounds.width - Self.edgeGuard
         }
 
         private func finish(cancelled: Bool, touch: UITouch?) {

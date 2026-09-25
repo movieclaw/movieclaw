@@ -59,6 +59,32 @@ struct PlayerErrorView: View {
     }
 }
 
+/// 条目信息读取失败的整页（对应 Web player-page 的 failed 分支）：只有原因和「返回」，
+/// 不给重试——条目都看不到，会话必然也开不了
+struct PlayerInfoErrorView: View {
+    let message: String
+    let exit: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 16) {
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                Button("返回", action: exit)
+                    .buttonStyle(.glass)
+                    .accessibilityIdentifier("player-info-error-back")
+            }
+            .frame(maxWidth: 480)
+            .padding(24)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("player-info-error")
+    }
+}
+
 /// 软件转码同意弹窗（对应 Web consent-dialog.tsx，docs/design/web-player.md §3.6）。
 ///
 /// 保存粒度是全局开关，没有「仅本次允许」；普通成员看到的是说明而不是按钮（全局设置只有超管能改，

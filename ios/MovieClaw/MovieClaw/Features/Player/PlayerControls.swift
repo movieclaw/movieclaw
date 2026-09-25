@@ -198,7 +198,8 @@ private struct BarButton: View {
     }
 }
 
-/// 进度条：文件时间轴，已缓冲区、章节刻度；拖动时上方浮出缩略图与落点时间，松手才跳转。
+/// 进度条：文件时间轴，已缓冲区、章节刻度；拖动时上方浮出缩略图与落点时间。
+/// 跳转便宜（落点在缓冲里 / 原文件直出停住时）拖动途中画面就跟过去，松手再精确落地。
 struct PlayerProgressBar: View {
     let controller: PlaybackController
     let trickplay: TrickplayImages
@@ -242,7 +243,10 @@ struct PlayerProgressBar: View {
                     .onChanged { value in
                         guard duration > 0 else { return }
                         dragging = true
-                        scrubMs = Int(min(1, max(0, value.location.x / width)) * duration)
+                        let target = Int(min(1, max(0, value.location.x / width)) * duration)
+                        scrubMs = target
+                        // 跳转便宜时画面跟着手指走（节奏见 ScrubFollow），松手再精确落地
+                        controller.scrubFollow(toFileMs: target)
                     }
                     .onEnded { _ in
                         if let target = scrubMs { controller.seek(toFileMs: target) }
