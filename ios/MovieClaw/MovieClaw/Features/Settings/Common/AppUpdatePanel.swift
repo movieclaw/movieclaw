@@ -212,6 +212,7 @@ struct AppUpdatePanel<Header: View>: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 24)
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("restart-waiting")
     }
 
@@ -284,6 +285,7 @@ struct AppUpdatePanel<Header: View>: View {
                             .accessibilityIdentifier("app-dismiss-exit")
                     }
                 }
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("app-abnormal-exit")
             }
         }

@@ -37,8 +37,7 @@ struct AIDefaultsSettingsView: View {
                 emptyState
             } else {
                 Section {
-                    (Text("为不同场景各选一个默认模型。可选项来自") + Text("「模型接入」").foregroundStyle(Theme.accent)
-                        + Text("里所有已接入供应商的模型目录；首次接入时已自动设为该供应商目录里的第一个模型，可随时更改。"))
+                    Text("为不同场景各选一个默认模型。可选项来自\(Text("「模型接入」").foregroundStyle(Theme.accent))里所有已接入供应商的模型目录；首次接入时已自动设为该供应商目录里的第一个模型，可随时更改。")
                         .font(.subheadline).foregroundStyle(Theme.textMuted)
                         .onTapGesture { router.push(.settingsSection(.llm)) }
                         .listRowBackground(Color.clear)

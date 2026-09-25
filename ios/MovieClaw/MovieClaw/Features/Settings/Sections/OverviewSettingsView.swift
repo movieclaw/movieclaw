@@ -124,6 +124,7 @@ struct OverviewSettingsView: View {
                 .background(Color.white.opacity(0.03), in: .rect(cornerRadius: 12))
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pipeline-health")
     }
 }
@@ -131,7 +132,7 @@ struct OverviewSettingsView: View {
 // MARK: - 状态语义与修复去处
 
 /// 状态 → 颜色 / 文案（节点、检查项、库行共用一套语义）
-enum PipelineStatus {
+enum SettingsPipelineStatus {
     static func color(_ status: String) -> Color {
         switch status {
         case "ok": Theme.success
@@ -208,6 +209,7 @@ private struct SetupChecklist: View {
         .padding(16)
         .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.08)))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("setup-checklist")
     }
 }
@@ -224,7 +226,7 @@ private struct IssueCard: View {
         let tint = isError ? Theme.danger : Theme.warning
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
-                SettingsStatusDot(color: PipelineStatus.color(issue.status)).padding(.top, 6)
+                SettingsStatusDot(color: SettingsPipelineStatus.color(issue.status)).padding(.top, 6)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(issue.title).font(.subheadline.weight(.semibold))
                     if !issue.affectedLibraries.isEmpty {
@@ -247,7 +249,7 @@ private struct IssueCard: View {
                         Text(option.why).font(.caption).foregroundStyle(Theme.textFaint)
                     }
                     Text(option.steps).font(.subheadline).foregroundStyle(Theme.textMuted)
-                    if let target = PipelineStatus.fixTarget(option.fixSection) {
+                    if let target = SettingsPipelineStatus.fixTarget(option.fixSection) {
                         Button("\(option.fixLabel) →") { router.push(target.route) }
                             .buttonStyle(.glass).controlSize(.small)
                     }
@@ -282,7 +284,7 @@ private struct FlowStepper: View {
                 HStack(spacing: 6) {
                     if index > 0 { Rectangle().fill(Color.white.opacity(0.2)).frame(width: 12, height: 1) }
                     HStack(spacing: 6) {
-                        SettingsStatusDot(color: PipelineStatus.color(node.status), size: 6)
+                        SettingsStatusDot(color: SettingsPipelineStatus.color(node.status), size: 6)
                         Text(node.label).font(.subheadline.weight(.medium)).foregroundStyle(.white.opacity(0.9)).fixedSize()
                         if let sub = node.sub, !sub.isEmpty {
                             // 路径类长值保留末尾（最有辨识度的部分）
@@ -300,11 +302,11 @@ private struct FlowStepper: View {
     }
 
     private func background(_ status: String) -> Color {
-        status == "ok" ? Color.white.opacity(0.03) : PipelineStatus.color(status).opacity(0.1)
+        status == "ok" ? Color.white.opacity(0.03) : SettingsPipelineStatus.color(status).opacity(0.1)
     }
 
     private func border(_ status: String) -> Color {
-        status == "ok" ? Color.white.opacity(0.08) : PipelineStatus.color(status).opacity(0.32)
+        status == "ok" ? Color.white.opacity(0.08) : SettingsPipelineStatus.color(status).opacity(0.32)
     }
 }
 
@@ -318,11 +320,11 @@ private struct ProblemList: View {
             Divider().overlay(Color.white.opacity(0.06))
             ForEach(Array(checks.enumerated()), id: \.offset) { _, check in
                 HStack(alignment: .top, spacing: 8) {
-                    SettingsStatusDot(color: PipelineStatus.color(check.status), size: 6).padding(.top, 6)
+                    SettingsStatusDot(color: SettingsPipelineStatus.color(check.status), size: 6).padding(.top, 6)
                     VStack(alignment: .leading, spacing: 4) {
-                        (Text(check.label).fontWeight(.medium).foregroundStyle(Theme.text) + Text("  \(check.detail)"))
+                        Text("\(Text(check.label).fontWeight(.medium).foregroundStyle(Theme.text))  \(check.detail)")
                             .font(.subheadline).foregroundStyle(Theme.textMuted)
-                        if check.status != "ok", let fix = PipelineStatus.fixTarget(check.fixSection) {
+                        if check.status != "ok", let fix = SettingsPipelineStatus.fixTarget(check.fixSection) {
                             Button("\(fix.label) →") { router.push(fix.route) }
                                 .font(.subheadline.weight(.medium))
                                 .foregroundStyle(Theme.accent)
@@ -376,10 +378,10 @@ private struct LibraryPipelineCard: View {
         let transfer = byKey(["transfer_disk", "watch_active"])
         let ingestError = pipeline.checks.contains { $0.key == "dispatch_dir" && $0.fixSection == "libraries" && $0.status != "ok" }
         var result = [FlowNode(key: "dispatch", label: pipeline.mode == "watch" ? "投递到监听目录" : "投递",
-                               sub: pipeline.path, status: PipelineStatus.worst(dispatch.map(\.status)))]
+                               sub: pipeline.path, status: SettingsPipelineStatus.worst(dispatch.map(\.status)))]
         if pipeline.mode == "watch" {
             result.append(FlowNode(key: "transfer", label: pipeline.stagingPath != nil ? "整理输出" : "转移进库",
-                                   sub: pipeline.stagingPath, status: PipelineStatus.worst(transfer.map(\.status))))
+                                   sub: pipeline.stagingPath, status: SettingsPipelineStatus.worst(transfer.map(\.status))))
         }
         if pipeline.stagingPath != nil {
             // 自定义目录规则：整理后隔着用户自己的外部流转，movieclaw 不判它的死活，节点仅作说明
@@ -399,8 +401,8 @@ private struct LibraryPipelineCard: View {
                 Text((pipeline.kind == "movie" ? "电影" : "剧集") + (pipeline.isDefault ? " · 默认" : ""))
                     .font(.caption).foregroundStyle(Theme.textFaint)
                 Spacer()
-                Text(PipelineStatus.label(pipeline.status)).font(.subheadline.weight(.medium))
-                    .foregroundStyle(PipelineStatus.color(pipeline.status))
+                Text(SettingsPipelineStatus.label(pipeline.status)).font(.subheadline.weight(.medium))
+                    .foregroundStyle(SettingsPipelineStatus.color(pipeline.status))
             }
             FlowStepper(nodes: nodes)
             // 正向叙事：订阅命中本库会发生什么
@@ -415,6 +417,7 @@ private struct LibraryPipelineCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.08)))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pipeline-library-\(pipeline.libraryId)")
     }
 }

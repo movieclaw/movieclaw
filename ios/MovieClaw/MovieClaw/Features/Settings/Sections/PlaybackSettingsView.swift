@@ -24,7 +24,7 @@ struct PlaybackSettingsView: View {
     @State private var saving = false
     @State private var saveError: String?
     @State private var saved = false
-    @State private var status: TranscodeWorkerStatus?
+    @State private var status: SettingsTranscodeWorkerStatus?
     @State private var statusLoaded = false
     @State private var pendingWorkers: [API.DeviceRequestView] = []
     @State private var authorizedWorkers: [API.ApiTokenView] = []
@@ -173,7 +173,7 @@ struct PlaybackSettingsView: View {
                 )
             }
             .accessibilityIdentifier("remote-transcode-enabled")
-            (Text("当前状态：") + Text(statusText).foregroundStyle(statusColor))
+            Text("当前状态：\(Text(statusText).foregroundStyle(statusColor))")
                 .font(.subheadline)
             ForEach(config.issues, id: \.self) { issue in
                 Text("· \(issue)").font(.caption).foregroundStyle(Theme.warning)
@@ -187,8 +187,7 @@ struct PlaybackSettingsView: View {
         Section("Worker") {
             if !pendingWorkers.isEmpty {
                 HStack(spacing: 10) {
-                    (Text("有 \(pendingWorkers.count) 台 Worker 正在等待批准 ")
-                        + Text(pendingWorkers.map(\.userCode).joined(separator: " · ")).font(.caption.monospaced()))
+                    Text("有 \(pendingWorkers.count) 台 Worker 正在等待批准 \(Text(pendingWorkers.map(\.userCode).joined(separator: " · ")).font(.caption.monospaced()))")
                         .font(.subheadline).foregroundStyle(Theme.warning)
                     Spacer()
                     Button("去审批") { router.push(.settingsSection(.devices)) }
@@ -297,7 +296,7 @@ struct PlaybackSettingsView: View {
 
     /// 在线状态与授权清单：附属指示器，失败不弹错，不盖掉用户正在填的表单
     private func pollStatus() async {
-        status = try? await api.send("GET", "/transcode-worker/status", as: TranscodeWorkerStatus.self)
+        status = try? await api.send("GET", "/transcode-worker/status", as: SettingsTranscodeWorkerStatus.self)
         statusLoaded = true
         do {
             async let requests = api.authDevicesRequests()
@@ -338,7 +337,7 @@ struct PlaybackSettingsView: View {
 }
 
 /// `GET /transcode-worker/status` 的响应（生成器给的是任意字典，这里按 Web lib/api/transcode-worker.ts 手写）
-nonisolated struct TranscodeWorkerStatus: Decodable, Sendable {
+nonisolated struct SettingsTranscodeWorkerStatus: Decodable, Sendable {
     struct Worker: Decodable, Sendable {
         let workerId: String
         let workerVersion: String?

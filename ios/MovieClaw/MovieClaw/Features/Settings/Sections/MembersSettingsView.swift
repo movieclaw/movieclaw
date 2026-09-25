@@ -15,7 +15,7 @@ struct MembersSettingsView: View {
     @State private var sites: [API.CatalogItem] = []
     @State private var creating = false
     @State private var editing: API.MemberView?
-    @State private var passwordResult: MemberPasswordResult?
+    @State private var passwordResult: SettingsMemberPasswordResult?
 
     var body: some View {
         AsyncContent(members, retry: load) { rows in
@@ -61,7 +61,7 @@ struct MembersSettingsView: View {
                     rows.append(member)
                     members = .loaded(rows)
                 }
-                passwordResult = MemberPasswordResult(title: "成员已创建", username: member.username, password: password)
+                passwordResult = SettingsMemberPasswordResult(title: "成员已创建", username: member.username, password: password)
             }
             .sheetFeedback()
         }
@@ -104,7 +104,7 @@ struct MembersSettingsView: View {
         guard ok else { return }
         do {
             let result = try await api.membersPasswordReset(memberId: member.id)
-            passwordResult = MemberPasswordResult(title: "密码已重置", username: result.username, password: result.password)
+            passwordResult = SettingsMemberPasswordResult(title: "密码已重置", username: result.username, password: result.password)
         } catch {
             feedback.error("重置失败：\(error.localizedDescription)")
         }
@@ -151,7 +151,7 @@ struct MembersSettingsView: View {
 }
 
 /// 一次性明文密码结果（创建 / 重置）
-struct MemberPasswordResult: Identifiable {
+struct SettingsMemberPasswordResult: Identifiable {
     let id = UUID()
     let title: String
     let username: String
@@ -239,6 +239,7 @@ private struct MemberRow: View {
         .padding(.vertical, 4)
         .contentShape(.rect)
         .onTapGesture(perform: onEdit)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("member-row-\(member.username)")
     }
 }
@@ -612,7 +613,7 @@ private struct MemberChip: View {
 // MARK: - 一次性密码结果
 
 private struct PasswordResultSheet: View {
-    let result: MemberPasswordResult
+    let result: SettingsMemberPasswordResult
     @Environment(\.dismiss) private var dismiss
     @Environment(Feedback.self) private var feedback
 

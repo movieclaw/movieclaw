@@ -27,6 +27,7 @@ struct AppearanceSettingsView: View {
     @State private var themeError: String?
     // 背景图
     @State private var backdropItem: PhotosPickerItem?
+    @State private var pickingBackdrop = false
     @State private var backdropBusy = false
     @State private var backdropError: String?
     // 界面质感草稿
@@ -61,6 +62,7 @@ struct AppearanceSettingsView: View {
         }
         .appBackground()
         .task { await load() }
+        .photosPicker(isPresented: $pickingBackdrop, selection: $backdropItem, matching: .images)
         .onChange(of: backdropItem) { _, item in
             guard let item else { return }
             backdropItem = nil
@@ -186,7 +188,7 @@ struct AppearanceSettingsView: View {
         return Section {
             VStack(alignment: .leading, spacing: 14) {
                 // 大预览：点按即选图更换（Web 的「大预览 = 投放区」）
-                PhotosPicker(selection: $backdropItem, matching: .images) {
+                Button { pickingBackdrop = true } label: {
                     ZStack(alignment: .bottomLeading) {
                         RemoteImage(url: activeBackdropURL, placeholderSymbol: "photo")
                             .aspectRatio(16 / 9, contentMode: .fill)
@@ -227,7 +229,7 @@ struct AppearanceSettingsView: View {
                                 onDelete: { Task { await deleteBackdrop(item.id) } }
                             )
                         }
-                        PhotosPicker(selection: $backdropItem, matching: .images) {
+                        Button { pickingBackdrop = true } label: {
                             VStack(spacing: 6) {
                                 RoundedRectangle(cornerRadius: 8)
                                     .strokeBorder(Color.white.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
@@ -449,6 +451,7 @@ struct AppearanceSettingsView: View {
                         .accessibilityLabel("把「\(item.label)」下移")
                         .accessibilityIdentifier("nav-down-\(item.id)")
                 }
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("nav-row-\(item.id)")
             }
             if let navError {

@@ -11,7 +11,7 @@ import SwiftUI
 /// - 全屏查看：同一份工具栏与日志窗口铺满屏幕。
 struct LogsSettingsView: View {
     @Environment(\.api) private var api
-    @State private var model = LogViewerModel()
+    @State private var model = SettingsLogModel()
     @State private var fullscreen = false
 
     var body: some View {
@@ -49,7 +49,7 @@ struct LogsSettingsView: View {
 // MARK: - 数据
 
 /// 一条日志（时间只留当天时刻，日期由所选天数隐含）
-struct LogEntry: Identifiable {
+struct SettingsLogEntry: Identifiable {
     enum Level: String, CaseIterable { case error = "ERROR", warning = "WARNING", info = "INFO", debug = "DEBUG" }
     let id: Int
     let time: String
@@ -60,10 +60,10 @@ struct LogEntry: Identifiable {
 
 /// 日志查看器状态：普通态与全屏态共用同一份（Web 同一份 JSX 复用）
 @Observable
-final class LogViewerModel {
+final class SettingsLogModel {
     static let refreshKey = "movieclaw.log-refresh-interval"
     static let refreshOptions: [(label: String, value: Int)] = [("关闭", 0), ("3s", 3000), ("10s", 10000), ("30s", 30000)]
-    static let levelFilters: [(id: LogEntry.Level?, label: String)] = [
+    static let levelFilters: [(id: SettingsLogEntry.Level?, label: String)] = [
         (nil, "全部"), (.error, "错误"), (.warning, "警告"), (.info, "信息"), (.debug, "调试"),
     ]
 
@@ -71,10 +71,10 @@ final class LogViewerModel {
     var days: [API.LogDay] = []
     var activeDay: String?
     var content: API.LogContent?
-    var entries: [LogEntry] = []
+    var entries: [SettingsLogEntry] = []
     var loading = true
     var error: String?
-    var levelFilter: LogEntry.Level?
+    var levelFilter: SettingsLogEntry.Level?
     var query = ""
     var refreshMs: Int {
         didSet { UserDefaults.standard.set(refreshMs, forKey: Self.refreshKey) }
@@ -94,7 +94,7 @@ final class LogViewerModel {
 
     var isLatestDay: Bool { activeDay != nil && activeDay == days.first?.day }
 
-    var visible: [LogEntry] {
+    var visible: [SettingsLogEntry] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         return entries.filter { entry in
             (levelFilter == nil || entry.level == levelFilter)
@@ -102,7 +102,7 @@ final class LogViewerModel {
         }
     }
 
-    func count(_ level: LogEntry.Level?) -> Int {
+    func count(_ level: SettingsLogEntry.Level?) -> Int {
         guard let level else { return entries.count }
         return entries.filter { $0.level == level }.count
     }
@@ -174,21 +174,21 @@ final class LogViewerModel {
     private static let pattern = try! NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}) \| ([A-Z]+) \| (\S+) \| (.*)$"#)
 
     /// 行流 → 条目；无法匹配格式的行视为上一条的续行（堆栈等）
-    static func parse(_ lines: [String]) -> [LogEntry] {
-        var result: [LogEntry] = []
+    static func parse(_ lines: [String]) -> [SettingsLogEntry] {
+        var result: [SettingsLogEntry] = []
         result.reserveCapacity(lines.count)
         for line in lines {
             let ns = line as NSString
             if let match = pattern.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) {
                 let raw = ns.substring(with: match.range(at: 2))
-                let level = raw == "CRITICAL" ? .error : (LogEntry.Level(rawValue: raw) ?? .info)
-                result.append(LogEntry(id: result.count, time: ns.substring(with: match.range(at: 1)), level: level,
+                let level = raw == "CRITICAL" ? .error : (SettingsLogEntry.Level(rawValue: raw) ?? .info)
+                result.append(SettingsLogEntry(id: result.count, time: ns.substring(with: match.range(at: 1)), level: level,
                                        module: ns.substring(with: match.range(at: 3)), message: ns.substring(with: match.range(at: 4))))
             } else if !result.isEmpty {
                 result[result.count - 1].message += "\n" + line
             } else if !line.trimmingCharacters(in: .whitespaces).isEmpty {
                 // 文件开头就是续行（tail 截断把堆栈拦腰截断），单独成条兜底
-                result.append(LogEntry(id: 0, time: "", level: .info, module: "", message: line))
+                result.append(SettingsLogEntry(id: 0, time: "", level: .info, module: "", message: line))
             }
         }
         return result
@@ -198,7 +198,7 @@ final class LogViewerModel {
 // MARK: - 工具栏
 
 private struct LogToolbar: View {
-    @Bindable var model: LogViewerModel
+    @Bindable var model: SettingsLogModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -243,7 +243,7 @@ private struct LogToolbar: View {
                     Text("自动刷新").font(.subheadline).foregroundStyle(Theme.textMuted)
                 }
                 Picker("自动刷新频率", selection: $model.refreshMs) {
-                    ForEach(LogViewerModel.refreshOptions, id: \.value) { option in
+                    ForEach(SettingsLogModel.refreshOptions, id: \.value) { option in
                         Text(option.label).tag(option.value)
                     }
                 }
@@ -257,7 +257,7 @@ private struct LogToolbar: View {
 // MARK: - 日志窗口
 
 private struct LogWindow: View {
-    @Bindable var model: LogViewerModel
+    @Bindable var model: SettingsLogModel
     @Binding var fullscreen: Bool
 
     var body: some View {
@@ -268,7 +268,7 @@ private struct LogWindow: View {
             VStack(spacing: 8) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
-                        ForEach(LogViewerModel.levelFilters, id: \.label) { filter in
+                        ForEach(SettingsLogModel.levelFilters, id: \.label) { filter in
                             let active = filter.id == model.levelFilter
                             let count = model.count(filter.id)
                             Button { model.levelFilter = filter.id } label: {
@@ -384,6 +384,7 @@ private struct LogWindow: View {
         .clipShape(.rect(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.08)))
         .frame(maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("logs-window")
     }
 
@@ -397,7 +398,7 @@ private struct LogWindow: View {
 
 /// 一行日志：时间（暗淡等宽）+ 级别徽标 + 模块（银蓝）+ 正文（可换行、命中高亮）
 private struct LogRow: View {
-    let entry: LogEntry
+    let entry: SettingsLogEntry
     let query: String
 
     var body: some View {
@@ -465,7 +466,7 @@ private struct LogRow: View {
 // MARK: - 全屏
 
 private struct LogFullscreen: View {
-    @Bindable var model: LogViewerModel
+    @Bindable var model: SettingsLogModel
     @Binding var fullscreen: Bool
 
     var body: some View {

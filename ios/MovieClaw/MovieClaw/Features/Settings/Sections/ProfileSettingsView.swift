@@ -17,6 +17,7 @@ struct ProfileSettingsView: View {
 
     // 头像
     @State private var avatarItem: PhotosPickerItem?
+    @State private var pickingAvatar = false
     @State private var avatarBusy = false
     @State private var avatarError: String?
     // 昵称
@@ -44,6 +45,7 @@ struct ProfileSettingsView: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .appBackground()
+            .photosPicker(isPresented: $pickingAvatar, selection: $avatarItem, matching: .images)
             .onChange(of: avatarItem) { _, item in
                 guard let item else { return }
                 avatarItem = nil
@@ -58,7 +60,7 @@ struct ProfileSettingsView: View {
 
     private func overviewCard(_ session: API.SessionView) -> some View {
         HStack(spacing: 18) {
-            PhotosPicker(selection: $avatarItem, matching: .images) {
+            Button { pickingAvatar = true } label: {
                 ZStack {
                     AvatarBadge(session: session, size: 72)
                     if avatarBusy {

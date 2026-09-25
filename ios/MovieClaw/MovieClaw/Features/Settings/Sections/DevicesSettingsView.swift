@@ -60,6 +60,7 @@ struct DevicesSettingsView: View {
             }
             manualTokenSection
         }
+        .scrollDismissesKeyboard(.immediately)
         .appBackground()
         .task { await load() }
         .polling(every: 3) {
@@ -139,7 +140,7 @@ struct DevicesSettingsView: View {
             SettingsStatusDot(color: live ? Theme.success : Color.white.opacity(0.25), glow: live)
             VStack(alignment: .leading, spacing: 3) {
                 Text(device.name).font(.body.weight(.medium)).lineLimit(1)
-                Text("\(DeviceText.clientType(device.clientType)) · \(DeviceText.grantBadge(device.clientType)) · \(SettingsTime.deviceRelative(device.lastUsedAt))")
+                Text("\(SettingsDeviceText.clientType(device.clientType)) · \(SettingsDeviceText.grantBadge(device.clientType)) · \(SettingsTime.deviceRelative(device.lastUsedAt))")
                     .font(.caption).foregroundStyle(Theme.textFaint)
             }
             Spacer(minLength: 8)
@@ -149,6 +150,7 @@ struct DevicesSettingsView: View {
                 .disabled(busy == device.id)
                 .accessibilityIdentifier("device-revoke-\(device.name)")
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("device-row-\(device.name)")
     }
 
@@ -190,7 +192,7 @@ struct DevicesSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(tokenNameError == nil ? Theme.textFaint : Theme.danger)
                 }
-                grantNote(DeviceText.manualGrant)
+                grantNote(SettingsDeviceText.manualGrant)
                 HStack(spacing: 10) {
                     Button(creating ? "创建中…" : "创建令牌") { Task { await createToken() } }
                         .settingsProminentButton()
@@ -223,7 +225,7 @@ struct DevicesSettingsView: View {
         }
     }
 
-    private func grantNote(_ grant: DeviceText.Grant) -> some View {
+    private func grantNote(_ grant: SettingsDeviceText.Grant) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(grant.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.accent)
             Text(grant.body).font(.subheadline).foregroundStyle(Theme.textMuted)
@@ -257,6 +259,7 @@ struct DevicesSettingsView: View {
                     .font(.subheadline).foregroundStyle(Theme.warning)
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("token-created-card")
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -265,8 +268,7 @@ struct DevicesSettingsView: View {
                 SettingsCopyButton(text: snippet, title: "复制两行")
                     .buttonStyle(.glass).controlSize(.small)
             }
-            (Text("MOVIECLAW_SERVER=").foregroundStyle(Theme.accent2) + Text(address.url).foregroundStyle(Theme.text)
-                + Text("\nMOVIECLAW_TOKEN=").foregroundStyle(Theme.accent2) + Text(token.token).foregroundStyle(Theme.warning))
+            Text("\(Text("MOVIECLAW_SERVER=").foregroundStyle(Theme.accent2))\(Text(address.url).foregroundStyle(Theme.text))\n\(Text("MOVIECLAW_TOKEN=").foregroundStyle(Theme.accent2))\(Text(token.token).foregroundStyle(Theme.warning))")
                 .font(.footnote.monospaced())
                 .textSelection(.enabled)
                 .padding(12)
@@ -333,7 +335,7 @@ private struct ApprovalCard: View {
     let onDeny: () -> Void
 
     var body: some View {
-        let grant = DeviceText.grant(request.clientType)
+        let grant = SettingsDeviceText.grant(request.clientType)
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text(request.clientName).font(.body.weight(.semibold))
@@ -347,14 +349,13 @@ private struct ApprovalCard: View {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
                 GridRow {
                     Text("类型").foregroundStyle(Theme.textFaint)
-                    Text(DeviceText.clientType(request.clientType)).foregroundStyle(Theme.textMuted)
+                    Text(SettingsDeviceText.clientType(request.clientType)).foregroundStyle(Theme.textMuted)
                 }
                 GridRow {
                     Text("来源").foregroundStyle(Theme.textFaint)
                     if request.sourceIp.isEmpty {
                         // 桥接网络的容器看到的是网桥网关，与其给个误导地址不如直说，把判断依据推回配对码
-                        Text("无法确定 ").foregroundStyle(Theme.textFaint)
-                            + Text("容器网络改写了源地址，请以配对码为准").font(.caption).foregroundStyle(Theme.textFaint)
+                        Text("无法确定 \(Text("容器网络改写了源地址，请以配对码为准").font(.caption))").foregroundStyle(Theme.textFaint)
                     } else {
                         Text(request.sourceIp).font(.subheadline.monospaced()).foregroundStyle(Theme.textMuted)
                     }
@@ -387,7 +388,7 @@ private struct ApprovalCard: View {
 
 // MARK: - 展示口径（Web lib/devices-display.ts，措辞是安全设计的一部分，照搬不改）
 
-enum DeviceText {
+enum SettingsDeviceText {
     struct Grant {
         let title: String
         let body: String

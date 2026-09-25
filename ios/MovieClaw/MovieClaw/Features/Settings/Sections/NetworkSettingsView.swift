@@ -292,6 +292,7 @@ struct NetworkSettingsView: View {
                     .font(.caption).foregroundStyle(result.ok ? Theme.success : Theme.danger)
                 SettingsHelpTip(text: result.message, label: "测试结果详情")
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("network-test-result-\(service)")
         case nil:
             EmptyView()
@@ -318,6 +319,7 @@ struct NetworkSettingsView: View {
                     SettingsHelpTip(text: "解决「TMDB 不可达」有两条独立的路：代理让流量绕行（访问地址不变）；镜像把官方地址换成一个可直连的反代地址（流量不变、地址变了）。\n\n有代理就不用配镜像，二选一即可。若两者都设置，请求会经代理去访问镜像地址。\n\n镜像可以是自建反代（nginx / Cloudflare Workers）或公共镜像；注意公共镜像会经手你的 API Key，稳定性与隐私自行权衡。")
                 }
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("network-mirror")
         }
     }

@@ -25,9 +25,9 @@ struct ScheduledTasksPanel<Header: View>: View {
                     .listRowBackground(Color.clear)
                 if let error { SettingsNotice(text: error) }
                 if let reconcile = tasks?.first(where: { $0.key == "library_reconcile" }),
-                   ScheduleShape.suggestReconcile(reconcile, anyNetwork: anyNetwork) {
+                   SettingsSchedule.suggestReconcile(reconcile, anyNetwork: anyNetwork) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("有媒体库放在网络挂载上：实时监控收不到远端变化，新文件全靠「媒体库对账」发现。现在是\(ScheduleShape.describe(reconcile))，建议调到每 1 小时——增量对账通常只需几秒。")
+                        Text("有媒体库放在网络挂载上：实时监控收不到远端变化，新文件全靠「媒体库对账」发现。现在是\(SettingsSchedule.describe(reconcile))，建议调到每 1 小时——增量对账通常只需几秒。")
                             .font(.subheadline)
                         Button("调到每 1 小时") {
                             Task { await save(reconcile, .init(enabled: true, triggerType: "interval", intervalSeconds: 3600, cronExpr: nil)) }
@@ -78,7 +78,7 @@ struct ScheduledTasksPanel<Header: View>: View {
 
 // MARK: - 周期形状（Web lib/scheduled-tasks.ts）
 
-enum ScheduleShape {
+enum SettingsSchedule {
     /// 「分 时 * * *」形状的 cron → 每天固定时刻；其它形状返回 nil
     static func dailyTime(_ cron: String?) -> (hour: Int, minute: Int)? {
         guard let cron else { return nil }
@@ -130,14 +130,14 @@ private struct TaskEditor: View {
 
     private static func mode(of task: API.ScheduledTaskView) -> Mode {
         if task.triggerType == "interval" { return .interval }
-        return ScheduleShape.dailyTime(task.cronExpr) != nil ? .daily : .cron
+        return SettingsSchedule.dailyTime(task.cronExpr) != nil ? .daily : .cron
     }
 
     /// 服务器那份变了（保存成功 / 别处改了）就把编辑态对齐回去
     private func sync() {
         mode = Self.mode(of: task)
         if let seconds = task.intervalSeconds, seconds > 0 { hours = max(1, Int((Double(seconds) / 3600).rounded())) }
-        let daily = ScheduleShape.dailyTime(task.cronExpr) ?? (3, 0)
+        let daily = SettingsSchedule.dailyTime(task.cronExpr) ?? (3, 0)
         time = Calendar.current.date(bySettingHour: daily.hour, minute: daily.minute, second: 0, of: .now) ?? .now
         cron = task.cronExpr ?? ""
     }
@@ -149,7 +149,7 @@ private struct TaskEditor: View {
         case .daily:
             let parts = Calendar.current.dateComponents([.hour, .minute], from: time)
             return .init(enabled: task.enabled, triggerType: "cron", intervalSeconds: nil,
-                         cronExpr: ScheduleShape.dailyCron(hour: parts.hour ?? 3, minute: parts.minute ?? 0))
+                         cronExpr: SettingsSchedule.dailyCron(hour: parts.hour ?? 3, minute: parts.minute ?? 0))
         case .cron:
             return .init(enabled: task.enabled, triggerType: "cron", intervalSeconds: nil,
                          cronExpr: cron.trimmingCharacters(in: .whitespaces))
@@ -172,7 +172,7 @@ private struct TaskEditor: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
                         Text(task.title).font(.body.weight(.medium))
-                        Text(ScheduleShape.describe(task)).font(.subheadline).foregroundStyle(Theme.textMuted)
+                        Text(SettingsSchedule.describe(task)).font(.subheadline).foregroundStyle(Theme.textMuted)
                     }
                     if !task.description.isEmpty {
                         Text(task.description).font(.caption).foregroundStyle(Theme.textMuted)
