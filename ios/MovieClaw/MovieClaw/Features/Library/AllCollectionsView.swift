@@ -93,7 +93,7 @@ struct AllCollectionsView: View {
 
     private func load() async {
         async let cols = try? api.collectionList()
-        async let libs = try? api.libraryList()
+        async let libs = try? api.libraryList(scope: "all")
         let (c, l) = await (cols, libs)
         rows = c ?? rows ?? []
         if let l { libraries = l }

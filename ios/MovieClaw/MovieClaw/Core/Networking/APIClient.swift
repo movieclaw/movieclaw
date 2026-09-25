@@ -206,10 +206,12 @@ nonisolated struct APIClient: Sendable {
         return data
     }
 
-    /// 登录 / 初始化接口本身的 401 是「密码错误」，不能当会话过期处理。
+    /// 这些接口的 401 不是「会话过期」，不能把用户踢回登录页：
+    /// - 登录 / 初始化本身：401 = 密码错误；
+    /// - 访客分享 `/share/*`（含分享播放）：401 = 需要分享密码或密码错误（同 Web `/s/` 页不跳登录）。
     private static func isAuthEndpoint(_ url: URL?) -> Bool {
         guard let path = url?.path else { return false }
-        return path.hasSuffix("/auth/login") || path.hasSuffix("/auth/bootstrap")
+        return path.hasSuffix("/auth/login") || path.hasSuffix("/auth/bootstrap") || path.contains("/api/v1/share/")
     }
 
     static func networkMessage(_ error: URLError) -> String {

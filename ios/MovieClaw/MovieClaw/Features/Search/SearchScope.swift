@@ -215,7 +215,7 @@ struct SearchAccess: Equatable {
     static func resolve(api: APIClient, permissions: Permissions) async -> SearchAccess {
         var access = SearchAccess(canMedia: permissions.canSubscribe, canTorrent: permissions.canSearch, canLibrary: permissions.isAdmin, ready: true)
         if !permissions.isAdmin {
-            access.canLibrary = ((try? await api.libraryList()) ?? []).isEmpty == false
+            access.canLibrary = ((try? await api.libraryList(scope: "all")) ?? []).isEmpty == false
         }
         return access
     }

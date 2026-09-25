@@ -317,7 +317,7 @@ struct LibraryHomeView: View {
             if prefs.rows == nil {
                 prefs.rows = (try? await api.uiPrefsShow())?.home.rows ?? []
             }
-            async let libsTask = api.libraryList()
+            async let libsTask = api.libraryList(scope: "all")
             async let colsTask = try? api.collectionList()
             let libs = try await libsTask
             let cols = await colsTask ?? collections

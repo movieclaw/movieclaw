@@ -54,7 +54,7 @@ struct ScheduledTasksPanel<Header: View>: View {
     private func load() async {
         do {
             async let rows = api.appTasksList()
-            async let libs = try? api.libraryList()
+            async let libs = try? api.libraryList(scope: "all")
             tasks = try await rows
             anyNetwork = (await libs ?? []).contains(where: \.networkMount)
             error = nil

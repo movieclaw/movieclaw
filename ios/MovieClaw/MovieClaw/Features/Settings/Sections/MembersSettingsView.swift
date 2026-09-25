@@ -83,7 +83,7 @@ struct MembersSettingsView: View {
         await Loadable.load(into: $members, onRefreshError: { feedback.error("加载成员失败：\($0.localizedDescription)") }) {
             try await api.membersList()
         }
-        async let libs = try? api.libraryList()
+        async let libs = try? api.libraryList(scope: "all")
         async let catalog = try? api.siteCatalog()
         libraries = await libs ?? []
         sites = await catalog ?? []

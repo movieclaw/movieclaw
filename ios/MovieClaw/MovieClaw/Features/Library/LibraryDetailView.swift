@@ -678,7 +678,7 @@ struct LibraryDetailView: View {
         let id = libraryId
         let manage = permissions.canManageLibraries
         do {
-            async let libs = api.libraryList()
+            async let libs = api.libraryList(scope: "all")
             async let prov = try? api.libraryItemsList(libraryId: id, sort: "added_at", limit: 200, identity: "provisional")
             async let miss = manage ? try? api.libraryMissingList(libraryId: id) : []
             async let unknown = manage ? try? api.libraryIdentificationListUnidentifiedFiles(libraryId: id) : []

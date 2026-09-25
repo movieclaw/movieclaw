@@ -429,7 +429,7 @@ struct CollectionDetailView: View {
                     return input
                 }
             } else {
-                async let libs = api.libraryList()
+                async let libs = api.libraryList(scope: "all")
                 async let cols = api.collectionList()
                 let (l, c) = try await (libs, cols)
                 rows = HomeRows.toPrefs(HomeRows.build(prefs: homePrefs.rows ?? [], libraries: l, collections: c) + [HomeRows.newCollectionRow(collection)])

@@ -96,7 +96,7 @@ struct LibraryCustomizeView: View {
 
     private func load() async {
         do {
-            async let libs = api.libraryList()
+            async let libs = api.libraryList(scope: "all")
             async let cols = api.collectionList()
             async let ui = api.uiPrefsShow()
             let (l, c, u) = try await (libs, cols, ui)

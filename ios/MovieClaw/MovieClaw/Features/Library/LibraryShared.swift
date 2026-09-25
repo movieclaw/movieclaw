@@ -11,7 +11,7 @@ enum LibraryKindMeta {
         case "movie": "电影"
         case "tv": "剧集"
         case "video": "其他"
-        case "photo": "照片"
+        case "photo": "图片"
         default: kind
         }
     }

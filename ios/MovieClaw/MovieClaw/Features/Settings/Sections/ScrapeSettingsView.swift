@@ -242,7 +242,7 @@ struct ScrapeSettingsView: View {
     private func loadAuxiliary() async {
         async let langs = try? api.scrapeLanguages()
         async let ctrs = try? api.scrapeCountries()
-        async let libs = try? api.libraryList()
+        async let libs = try? api.libraryList(scope: "all")
         languages = await langs ?? []
         countries = await ctrs ?? []
         overrides = (await libs ?? [])
