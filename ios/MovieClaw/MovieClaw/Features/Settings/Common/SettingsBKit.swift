@@ -361,7 +361,7 @@ struct SettingsBDirectoryPicker: View {
                     } label: {
                         Label("选择此目录", systemImage: "checkmark").font(.body.weight(.semibold))
                     }
-                    .buttonStyle(.glassProminent)
+                    .discoverProminentButton()
                     .disabled(view == nil || loading)
                     .accessibilityIdentifier("directory-picker-select")
                 }

@@ -36,6 +36,8 @@ private struct SettingsBSimulateSection: View {
             TextField("输入片名，如：葬送的芙莉莲", text: $query)
                 .autocorrectionDisabled()
                 .accessibilityIdentifier("simulate-query")
+                // 注意：.task / .sheet 不能挂在 Section 上——List 会把修饰符分发给每一行，变成多份
+                .task(id: query) { await search() }
             if searching {
                 Text("正在搜索…").font(.footnote).foregroundStyle(Theme.textFaint)
             } else if let candidates, picked == nil {
@@ -69,7 +71,6 @@ private struct SettingsBSimulateSection: View {
         } header: {
             Text("模拟一单")
         }
-        .task(id: query) { await search() }
     }
 
     @ViewBuilder
@@ -230,14 +231,15 @@ private struct SettingsBRuleSetsSection: View {
                     .buttonStyle(.glass)
                     .textCase(nil)
                     .accessibilityIdentifier("ruleset-create")
+                    // 挂在单个视图上（挂 Section 会被分发到每一行）
+                    .task { await reload() }
+                    .sheet(item: $editing) { target in
+                        RuleSetEditorSheet(ruleSet: target.ruleSet, template: target.template) { _ in
+                            Task { await reload() }
+                        }
+                        .sheetFeedback()
+                    }
             }
-        }
-        .task { await reload() }
-        .sheet(item: $editing) { target in
-            RuleSetEditorSheet(ruleSet: target.ruleSet, template: target.template) { _ in
-                Task { await reload() }
-            }
-            .sheetFeedback()
         }
     }
 
