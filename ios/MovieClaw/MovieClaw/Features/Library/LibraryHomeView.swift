@@ -10,6 +10,16 @@ final class LibraryHomePrefs {
     static let shared = LibraryHomePrefs()
     /// nil = 还没从服务器拉到
     var rows: [API.HomeRowPref]?
+
+    /// 保存首页行清单。后端 PUT `/ui/preferences` 是整体覆盖，所以以当前完整偏好为底只换 home.rows；
+    /// 成功后写回共享副本（自定义页、合集页「显示在首页」共用）。
+    func save(_ rows: [API.HomeRowPrefInput], api: APIClient) async throws {
+        let base = try await api.uiPrefsShow()
+        var input = try JSONDecoder().decode(API.UiPreferencesSettingInput.self, from: JSONEncoder().encode(base))
+        input.home = API.HomeUiPrefsInput(rows: rows)
+        let saved = try await api.uiPrefsUpdate(body: input)
+        self.rows = saved.home.rows
+    }
 }
 
 /// 媒体库首页（Web `library-view.tsx`，路由 `/library`）。
