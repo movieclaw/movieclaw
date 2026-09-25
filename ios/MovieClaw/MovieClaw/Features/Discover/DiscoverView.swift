@@ -45,6 +45,12 @@ struct DiscoverView: View {
             }
         }
         .appBackground()
+        // 站内链接 /discover/{movie|tv} 切到本标签时带来的类型
+        .onChange(of: router.rootParameter, initial: true) { _, parameter in
+            guard let parameter, parameter.tab == .discover else { return }
+            mediaType = parameter.value == "tv" ? "tv" : "movie"
+            router.rootParameter = nil
+        }
         .toolbar { toolbarContent }
         .navigationBarTitleDisplayMode(.inline)
         .task(id: feedKey) {

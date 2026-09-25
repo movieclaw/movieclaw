@@ -95,6 +95,7 @@ final class Router {
         if let root = Self.tabRoot(of: route) {
             selectedTab = root
             paths[root] = []
+            rememberRootParameter(of: route)
             return
         }
         paths[selectedTab, default: []].append(route)
@@ -105,6 +106,7 @@ final class Router {
         if let root = Self.tabRoot(of: route) {
             selectedTab = root
             paths[root] = []
+            rememberRootParameter(of: route)
             return
         }
         showsMore = false
@@ -139,6 +141,24 @@ final class Router {
 
     func present(_ sheet: AppSheet) {
         self.sheet = sheet
+    }
+
+    /// 切到标签根时附带的参数（活动页的 view、发现页的电影/剧集），由对应根页面读取后清空
+    struct RootParameter: Equatable {
+        var tab: MainTab
+        var value: String
+        let id = UUID()
+    }
+
+    var rootParameter: RootParameter?
+
+    /// 记下标签根路由携带的参数
+    private func rememberRootParameter(of route: AppRoute) {
+        switch route {
+        case let .activity(view?): rootParameter = RootParameter(tab: .activity, value: view)
+        case let .discover(kind): rootParameter = RootParameter(tab: .discover, value: kind)
+        default: break
+        }
     }
 
     /// 标签根页面对应的路由不压栈，而是切标签

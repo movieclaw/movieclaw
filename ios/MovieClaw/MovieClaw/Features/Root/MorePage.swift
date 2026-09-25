@@ -159,7 +159,7 @@ struct MorePage: View {
         async let sessionList = try? api.sessionList(limit: 50)
         async let noticeList = try? api.noticesList()
         sessions = await sessionList ?? []
-        notices = await noticeList ?? []
+        notices = NoticeCenterView.visible(await noticeList ?? [])
     }
 
     private func fork(_ item: API.SessionSummary) async {

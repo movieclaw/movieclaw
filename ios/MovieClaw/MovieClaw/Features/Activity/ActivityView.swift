@@ -20,19 +20,26 @@ struct ActivityView: View {
 
     enum Scope: String { case media, tasks }
 
+    @Environment(Router.self) private var router
+
     init(initialView: String?) {
         self.initialView = initialView
-        var raw = initialView
-        #if DEBUG
-        // 开发期截图直达：外壳切到活动标签时不会带查询参数，这里从 -mcRoute 里补读 view
-        if raw == nil, let route = DebugLaunch.route, route.hasPrefix("/activity") || route.hasPrefix("/tasks") {
-            raw = URLComponents(string: route)?.queryItems?.first { $0.name == "view" }?.value
-        }
-        #endif
+        let raw = initialView
         let task = raw.flatMap(TaskSlice.init(rawValue:))
         _scope = State(initialValue: task == nil ? .media : .tasks)
         _taskView = State(initialValue: task ?? .all)
         _watchView = State(initialValue: raw.flatMap(WatchSlice.init(rawValue:)) ?? .playing)
+    }
+
+    /// 站内链接 /activity?view=… 切到本标签时带来的视图参数
+    private func apply(view raw: String) {
+        if let task = TaskSlice(rawValue: raw) {
+            scope = .tasks
+            taskView = task
+        } else if let watch = WatchSlice(rawValue: raw) {
+            scope = .media
+            watchView = watch
+        }
     }
 
     var body: some View {
@@ -61,6 +68,11 @@ struct ActivityView: View {
             }
         }
         .appBackground()
+        .onChange(of: router.rootParameter, initial: true) { _, parameter in
+            guard let parameter, parameter.tab == .activity else { return }
+            apply(view: parameter.value)
+            router.rootParameter = nil
+        }
     }
 
     private var header: some View {
