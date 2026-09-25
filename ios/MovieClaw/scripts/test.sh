@@ -26,7 +26,7 @@ PID=$!
 
 done_at=0
 while kill -0 $PID 2>/dev/null; do
-  if (( done_at == 0 )) && grep -qE "\*\* TEST (SUCCEEDED|FAILED)|Test Suite 'All tests' (passed|failed)|Testing cancelled" "$LOG"; then
+  if (( done_at == 0 )) && grep -qE "\*\* TEST (SUCCEEDED|FAILED)|Test Suite '(All|Selected) tests' (passed|failed)|Testing cancelled" "$LOG"; then
     done_at=$SECONDS
   fi
   if (( done_at > 0 && SECONDS - done_at > 15 )); then
