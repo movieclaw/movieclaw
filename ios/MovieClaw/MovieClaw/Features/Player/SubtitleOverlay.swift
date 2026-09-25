@@ -121,7 +121,10 @@ struct SubtitleOverlay: View {
     private func load() async {
         cues = []
         guard let url else { return }
-        guard let (data, response) = try? await session.data(from: url),
+        // 内封轨首次要服务端通读整个容器抽出来（大文件可达数十秒），超时放宽到 5 分钟
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 300
+        guard let (data, response) = try? await session.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let text = String(data: data, encoding: .utf8) else { return }
         cues = WebVTT.parse(text)

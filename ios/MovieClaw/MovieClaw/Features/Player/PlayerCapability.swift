@@ -42,7 +42,10 @@ enum PlayerCapability {
     }
 
     /// MPV 的能力：能解就报，不看硬解（FFmpeg 软解兜底）
-    static func mpv() -> API.ClientCapabilityIn {
+    /// - Parameter mobileLimited: 按「移动端原生 HLS」申报（1080p、AAC 双声道限制）。
+    ///   只在服务端拒绝/要同意时用来换一张取流凭据——服务端只在给出播放计划时才签发 token，
+    ///   而 MPV 拿到 token 后会直接拉原文件，计划本身用不上（见 PlaybackController.performRequest）。
+    static func mpv(mobileLimited: Bool = false) -> API.ClientCapabilityIn {
         let video = ["h264", "hevc", "av1", "vp9", "vp8", "mpeg2video", "mpeg4", "vc1"].map {
             API.VideoSupportIn(codec: $0, maxHeight: 2160, smooth: true, powerEfficient: $0 == "h264" || $0 == "hevc")
         }
@@ -55,9 +58,11 @@ enum PlayerCapability {
             containers: ["mp4", "hls-fmp4", "mkv", "webm", "ts", "m2ts", "avi"],
             // mpv 自己做 HDR→SDR 色调映射，服务端不需要 tone-map
             hdrPassthrough: true,
-            mse: "none",
-            isMobile: UIDevice.current.userInterfaceIdiom == .phone,
-            nativeHls: true
+            // 服务端对「移动端原生 HLS」（iOS Safari）有 1080p、AAC 双声道等限制；
+            // MPV 不受这些约束，按「完整 MSE 的桌面客户端」申报，免得被无谓地降分辨率/降混
+            mse: mobileLimited ? "none" : "full",
+            isMobile: mobileLimited,
+            nativeHls: mobileLimited
         )
     }
 

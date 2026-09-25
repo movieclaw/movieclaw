@@ -5,6 +5,8 @@ import XCTest
 /// 两种引擎各跑一遍：系统播放器（AVPlayer，挑一部 MP4 原文件直出）与 MPV（挑一部 MKV，libmpv 直出原文件）。
 /// 片子由测试在服务器上现找（先按容器挑，找不到就跳过），不写死条目 id。
 /// 测完把这部片的续播点恢复成测试前的值，尽量不改动服务器上的真实观看记录。
+/// 安全约束：每次点控件前都断言它 isHittable（被遮住就让用例失败，绝不按坐标误点下层）；
+/// 不点任何会改服务器配置的按钮（软转同意弹窗的「开启并播放」等）。
 ///
 /// 服务器与账号通过环境变量传入（xcodebuild 需加 TEST_RUNNER_ 前缀）：
 ///   MC_TEST_SERVER / MC_TEST_USERNAME / MC_TEST_PASSWORD；可选 MC_SHOT_DIR（把关键界面截图写到这个目录）
@@ -53,10 +55,10 @@ final class PlayerUITests: XCTestCase {
 
         tapControl(app, "player-lock")
         XCTAssertFalse(app.buttons["player-play-pause"].exists, "锁屏后控制层应隐藏")
-        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        tapEmptyArea(app, dx: 0.5, dy: 0.5)
         XCTAssertTrue(app.buttons["player-unlock"].waitForExistence(timeout: 3), "锁屏时点画面应出现解锁键")
         shot(app, "landscape-locked")
-        app.buttons["player-unlock"].tap()
+        tapControl(app, "player-unlock")
 
         tapControl(app, "player-close") // 横屏时是「退出横屏」
         let portrait = NSPredicate { _, _ in window.frame.width < window.frame.height }
@@ -115,7 +117,7 @@ final class PlayerUITests: XCTestCase {
         XCTAssertTrue(app.buttons["engine-\(engine)"].waitForExistence(timeout: 5), "设置菜单没有打开")
         shot(app, "\(shotPrefix)-settings")
         // 点画面空白处收起菜单
-        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.55)).tap()
+        tapEmptyArea(app, dx: 0.95, dy: 0.55)
         XCTAssertTrue(app.buttons["engine-\(engine)"].waitForNonExistence(timeout: 3), "点画面应收起菜单")
 
         // 退出
@@ -139,7 +141,7 @@ final class PlayerUITests: XCTestCase {
     @MainActor
     private func revealChrome(_ app: XCUIApplication) {
         if !app.staticTexts["player-time"].exists {
-            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7)).tap()
+            tapEmptyArea(app, dx: 0.5, dy: 0.7)
         }
         _ = app.staticTexts["player-time"].waitForExistence(timeout: 3)
     }
@@ -153,9 +155,20 @@ final class PlayerUITests: XCTestCase {
                 button.tap()
                 return
             }
-            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7)).tap()
+            // 控制条藏起来了：点画面唤出
+            tapEmptyArea(app, dx: 0.5, dy: 0.7)
         }
-        XCTFail("找不到控件 \(identifier)")
+        XCTFail("控件 \(identifier) 不存在或被遮挡（isHittable=false）")
+    }
+
+    /// 点画面空白处（唤出/收起控制层、锁屏时唤出解锁键）。
+    /// 点之前确认落点处没有任何可点的按钮——只该落在手势层上，绝不盲点到下层控件
+    @MainActor
+    private func tapEmptyArea(_ app: XCUIApplication, dx: CGFloat, dy: CGFloat) {
+        let point = app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy))
+        let covering = app.buttons.allElementsBoundByIndex.first { $0.isHittable && $0.frame.contains(point.screenPoint) }
+        XCTAssertNil(covering, "落点 (\(dx), \(dy)) 上有控件 \(covering?.identifier ?? "")，不能盲点")
+        point.tap()
     }
 
     /// 当前播放头（秒），读自底栏时间标签的可访问性值

@@ -360,7 +360,14 @@ final class PlaybackController {
 
             // 2. 开会话
             let capability = useMPV ? PlayerCapability.mpv() : PlayerCapability.avPlayer()
-            let session = try await scope.startSession(sessionBody(capability: capability, startMs: startMs, forMPV: useMPV))
+            var session = try await scope.startSession(sessionBody(capability: capability, startMs: startMs, forMPV: useMPV))
+            if useMPV, session.decision.outcome != "plan", quality == nil, !bandwidthDegraded, myAttempt == attempt {
+                // 服务端按「浏览器口径」拒绝了（例如 4K 杜比视界没有显卡做色调映射）或要求同意软转，
+                // 但 MPV 自己就能解原片。服务端只在给出计划时签发取流 token，于是按移动端口径再要一次计划，
+                // 拿到 token 就直出原文件，顺手释放那条用不上的转码会话。
+                let retry = try await scope.startSession(sessionBody(capability: PlayerCapability.mpv(mobileLimited: true), startMs: startMs, forMPV: true))
+                if retry.decision.outcome == "plan" { session = retry }
+            }
             guard myAttempt == attempt, !closed else {
                 // 请求已被超越：响应里可能带着刚拉起的转码会话，此后没人认领，当场掐掉
                 if let sid = session.sessionId { await scope.stop(sid) }
@@ -410,10 +417,9 @@ final class PlaybackController {
         }
 
         // 3. 决定地址与时间轴
-        let videoCopy = decision.video?.action == "copy" && decision.video?.burnSubtitle == nil
         var url: URL?
         var original = false
-        if useMPV, videoCopy, !mpvDirectFailed, let token = PlaybackAPI.token(in: session.streamUrl) {
+        if useMPV, mpvShouldPlayOriginal(session), let token = PlaybackAPI.token(in: session.streamUrl) {
             // MPV 直出原文件：服务端为 remux/音频转码起的会话用不上，立刻释放
             url = scope.streamURL("/api/v1/playback/files/\(fileId)/stream?token=\(token)")
             original = true
@@ -478,6 +484,20 @@ final class PlaybackController {
         loadTrickplay(fileId: fileId, token: PlaybackAPI.token(in: session.streamUrl))
         restartDiagnosticsPolling()
         nowPlaying.update(controller: self)
+    }
+
+    /// MPV 该不该直接拉原文件。MPV 什么编码都能解，服务端判的「要转码」多半只是替浏览器/AVPlayer 着想
+    /// （杜比视界色调映射、编码不支持……），这些情况 MPV 直出更好、NAS 也省一路转码。
+    /// 只有「码率必须降下来」时才真的需要服务端转码：用户手动限了画质且源超过上限，或线路装不下原片。
+    private func mpvShouldPlayOriginal(_ session: API.PlaybackSessionView) -> Bool {
+        guard !mpvDirectFailed, !bandwidthDegraded else { return false }
+        if let quality, let height = Self.height(of: session.source?.resolution), height > quality { return false }
+        return true
+    }
+
+    /// 「2160p」「1080i」→ 2160 / 1080
+    private static func height(of resolution: String?) -> Int? {
+        resolution.flatMap { Int($0.filter(\.isNumber)) }
     }
 
     private func fail(_ message: String, suggestion: String?) {

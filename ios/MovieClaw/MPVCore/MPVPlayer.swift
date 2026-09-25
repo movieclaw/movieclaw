@@ -18,8 +18,8 @@ import UIKit
 ///   解码/输出线程全部退出），渲染层要活到那一刻之后才能释放。
 ///
 /// ## 渲染
-/// 两条路径（见 `MPVRenderBackend`）：默认 Metal（MoltenVK + gpu-next，支持 10bit/HDR）；
-/// OpenGL ES 渲染 API（libmpv render context）作为备用，可在 Debug 下用 `-mcMPVBackend openGL` 切换验证。
+/// 两条路径（见 `MPVRenderBackend`）：真机用 Metal（MoltenVK + gpu-next，支持 10bit/HDR）；
+/// 模拟器用 OpenGL ES 渲染 API（libmpv render context）。Debug 下可用 `-mcMPVBackend metal|openGL` 强制。
 @MainActor
 public final class MPVPlayer {
     /// 渲染表面：由调用方塞进视图层级（铺满播放区域）
@@ -279,8 +279,10 @@ nonisolated public enum MPVRenderBackend: String, Sendable {
         #endif
     }
 
-    /// 默认 Metal：实测 iOS 27 模拟器（Apple Silicon 宿主）上 MoltenVK 同样可用；OpenGL ES 仅作备用
-    nonisolated public static var automatic: MPVRenderBackend { .metal }
+    /// 真机默认 Metal。模拟器默认 OpenGL ES：实测 iOS 27 模拟器上 MoltenVK 能放 1080p 8bit，
+    /// 但 4K 10bit（HEVC/杜比视界）上传纹理时模拟器的 Metal 驱动（MTLSimDriver）申请共享内存越界直接崩溃，
+    /// 这是模拟器驱动的限制，真机不受影响
+    nonisolated public static var automatic: MPVRenderBackend { isSimulator ? .openGL : .metal }
 }
 
 nonisolated public struct MPVTrack: Sendable, Hashable {
