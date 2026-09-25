@@ -44,6 +44,9 @@ struct AgentComposerImage: Identifiable {
 ///   ├─ 多行输入区（最多 6 行，超出框内滚动）；行首或空白后敲「/」弹技能快选 ─┤
 ///   └─ 工具行：＋（上传图片 / 使用技能） · 模型（菜单里连带调思维链强度）  · 发送/停止 ─┘
 ///
+/// 上传图片的三种来源同 Web 在 iPhone 上 `<input type=file accept=image/*>` 弹出的系统选择：
+/// 照片图库 / 拍照 / 选取文件，三者走同一条「压缩 → 上传 → 进托盘」链路，文件名保留原名（压缩后改 .jpg）。
+///
 /// 能力不可用时整个控件不渲染（没有模型清单就没有模型胶囊），生成中只禁用不卸载，工具行不因运行状态改变布局。
 struct AgentComposer: View {
     @Binding var draft: AgentDraft
@@ -70,6 +73,8 @@ struct AgentComposer: View {
     @State private var showsModelMenu = false
     @State private var pickingPhotos = false
     @State private var photoItems: [PhotosPickerItem] = []
+    @State private var capturingPhoto = false
+    @State private var importingFiles = false
     /// 「/」快选的技能清单：每次触发现拉（服务端改技能即生效）
     @State private var slashSkills: [API.SkillView] = []
     @State private var slashActive = false
@@ -94,6 +99,13 @@ struct AgentComposer: View {
                 .lineLimit(2 ... 6)
                 .focused($focused)
                 .disabled(disabled)
+                // 外接键盘同 Web：回车发送、Shift+回车换行（技能快选展开时回车不拦）。
+                // 屏幕键盘的换行键仍是换行、发送靠发送键，符合 iOS 多行输入习惯
+                .onKeyPress(.return, phases: .down) { press in
+                    guard !press.modifiers.contains(.shift), !(slashActive && slash != nil) else { return .ignored }
+                    submit()
+                    return .handled
+                }
                 .padding(.horizontal, 16)
                 .padding(.top, 14)
                 .padding(.bottom, 4)
@@ -114,6 +126,19 @@ struct AgentComposer: View {
             guard !items.isEmpty else { return }
             photoItems = []
             addPhotos(items)
+        }
+        .fileImporter(isPresented: $importingFiles, allowedContentTypes: AgentImageCompressor.acceptedTypes, allowsMultipleSelection: true) { result in
+            switch result {
+            case let .success(urls): addFiles(urls)
+            case let .failure(error): uploadError = error.localizedDescription
+            }
+        }
+        .fullScreenCover(isPresented: $capturingPhoto) {
+            AgentCameraPicker { image in
+                capturingPhoto = false
+                if let image { addCapturedPhoto(image) }
+            }
+            .ignoresSafeArea()
         }
     }
 
@@ -198,9 +223,13 @@ struct AgentComposer: View {
             .accessibilityLabel("添加图片或技能")
             .accessibilityIdentifier("agent-composer-plus")
             .popover(isPresented: $showsPlusMenu, arrowEdge: .bottom) {
-                AgentPlusMenu(imageUpload: imageUpload) {
+                AgentPlusMenu(imageUpload: imageUpload) { source in
                     showsPlusMenu = false
-                    pickingPhotos = true
+                    switch source {
+                    case .library: pickingPhotos = true
+                    case .camera: capturingPhoto = true
+                    case .files: importingFiles = true
+                    }
                 } onPickSkill: { name in
                     showsPlusMenu = false
                     addSkill(name)
@@ -335,19 +364,57 @@ struct AgentComposer: View {
         onSubmit()
     }
 
+    /// 照片图库：优先按文件取（带原文件名），取不到再退回裸数据
     private func addPhotos(_ items: [PhotosPickerItem]) {
+        addImages(items.map { item in
+            {
+                if let file = try? await item.loadTransferable(type: AgentPickedImageFile.self) {
+                    return (file.data, file.filename, file.contentType ?? item.supportedContentTypes.first)
+                }
+                guard let data = try await item.loadTransferable(type: Data.self) else {
+                    throw APIError.network("读取图片失败，请换一张再试")
+                }
+                return (data, nil, item.supportedContentTypes.first)
+            }
+        })
+    }
+
+    /// 「文件」App 选的图片（沙盒外的文件要先申请访问权）
+    private func addFiles(_ urls: [URL]) {
+        addImages(urls.map { url in
+            {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                guard let data = try? Data(contentsOf: url) else {
+                    throw APIError.network("读取图片失败，请换一张再试")
+                }
+                return (data, url.lastPathComponent, UTType(filenameExtension: url.pathExtension))
+            }
+        })
+    }
+
+    /// 相机拍的照片：没有文件名，统一编成 JPEG 后走同一条压缩链
+    private func addCapturedPhoto(_ image: UIImage) {
+        addImages([{
+            guard let data = image.jpegData(compressionQuality: 0.95) else {
+                throw APIError.network("读取照片失败，请重拍一张")
+            }
+            return (data, nil, .jpeg)
+        }])
+    }
+
+    /// 三种来源共用：超出张数上限先报错，其余逐张读取 → 压缩 → 上传 → 进托盘
+    private func addImages(_ loaders: [() async throws -> (Data, String?, UTType?)]) {
         uploadError = nil
         let room = max(0, Self.maxImages - draft.images.count - uploading)
-        if items.count > room { uploadError = "一条消息最多发送 \(Self.maxImages) 张图片" }
-        for item in items.prefix(room) {
+        if loaders.count > room { uploadError = "一条消息最多发送 \(Self.maxImages) 张图片" }
+        for load in loaders.prefix(room) {
             uploading += 1
             Task {
                 defer { uploading -= 1 }
                 do {
-                    guard let data = try await item.loadTransferable(type: Data.self) else {
-                        throw APIError.network("读取图片失败，请换一张再试")
-                    }
-                    let prepared = try AgentImageCompressor.prepare(data, contentType: item.supportedContentTypes.first)
+                    let (data, filename, contentType) = try await load()
+                    let prepared = try AgentImageCompressor.prepare(data, contentType: contentType, filename: filename)
                     let uploaded = try await api.agentUploadAttachment(data: prepared.data, filename: prepared.filename, mimeType: prepared.mimeType)
                     let preview = UIImage(data: prepared.data)
                     if let preview { AgentImagePreviews.images[uploaded.attachmentId] = preview }
@@ -363,8 +430,12 @@ struct AgentComposer: View {
 /// 上传前压缩（对应 Web `lib/agent-attachments.ts`）：最长边 2048、JPEG 0.85。
 /// 视觉模型的有效分辨率就在这个量级，手机原图从几 MB 降到几百 KB；GIF 不压缩（会丢动画帧）。
 /// 服务端只收 jpeg/png/gif/webp：HEIC 等其它格式一律转成 JPEG。
+///
+/// 文件名同 Web：原样上传保留原名；压缩或转码成 JPEG 时换成 `.jpg` 扩展名；没有原名（相机）兜底「图片」。
 enum AgentImageCompressor {
     static let maxEdge: CGFloat = 2048
+    /// 「选取文件」可选的格式（同 Web `accept`）
+    static let acceptedTypes: [UTType] = [.jpeg, .png, .gif, .webP]
 
     struct Prepared {
         var data: Data
@@ -372,18 +443,23 @@ enum AgentImageCompressor {
         var mimeType: String
     }
 
-    static func prepare(_ data: Data, contentType: UTType?) throws -> Prepared {
+    static func prepare(_ data: Data, contentType: UTType?, filename: String? = nil) throws -> Prepared {
+        let original = filename.flatMap { $0.isEmpty ? nil : $0 }
+        /// 原样上传：有原名用原名，没有按类型兜底
+        func keep(_ ext: String, _ mime: String) -> Prepared {
+            Prepared(data: data, filename: original ?? "图片.\(ext)", mimeType: mime)
+        }
         if contentType?.conforms(to: .gif) == true {
-            return Prepared(data: data, filename: "图片.gif", mimeType: "image/gif")
+            return keep("gif", "image/gif")
         }
         guard let image = UIImage(data: data) else {
             throw APIError.network("不支持的图片格式，请选择 JPG / PNG / WebP / GIF 图片")
         }
         let longest = max(image.size.width * image.scale, image.size.height * image.scale)
         if longest <= maxEdge {
-            if contentType?.conforms(to: .jpeg) == true { return Prepared(data: data, filename: "图片.jpg", mimeType: "image/jpeg") }
-            if contentType?.conforms(to: .png) == true { return Prepared(data: data, filename: "图片.png", mimeType: "image/png") }
-            if contentType?.conforms(to: .webP) == true { return Prepared(data: data, filename: "图片.webp", mimeType: "image/webp") }
+            if contentType?.conforms(to: .jpeg) == true { return keep("jpg", "image/jpeg") }
+            if contentType?.conforms(to: .png) == true { return keep("png", "image/png") }
+            if contentType?.conforms(to: .webP) == true { return keep("webp", "image/webp") }
         }
         let scale = min(1, maxEdge / longest)
         let size = CGSize(width: (image.size.width * image.scale * scale).rounded(), height: (image.size.height * image.scale * scale).rounded())
@@ -395,7 +471,68 @@ enum AgentImageCompressor {
         guard let jpeg = resized.jpegData(compressionQuality: 0.85) else {
             throw APIError.network("图片压缩失败，请换一张再试")
         }
-        return Prepared(data: jpeg, filename: "图片.jpg", mimeType: "image/jpeg")
+        return Prepared(data: jpeg, filename: jpegName(original), mimeType: "image/jpeg")
+    }
+
+    /// 压缩/转码后的文件名：原名去扩展名换成 .jpg（同 Web `name.replace(/\.[^.]+$/, "") + ".jpg"`）
+    static func jpegName(_ original: String?) -> String {
+        guard let original else { return "图片.jpg" }
+        let base = (original as NSString).deletingPathExtension
+        return base.isEmpty ? "图片.jpg" : base + ".jpg"
+    }
+}
+
+/// 照片图库里选中的图片按「文件」取：能拿到原文件名（如 IMG_1234.HEIC），托盘与气泡显示原名
+struct AgentPickedImageFile: Transferable {
+    var data: Data
+    var filename: String
+    var contentType: UTType?
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            let url = received.file
+            return AgentPickedImageFile(
+                data: try Data(contentsOf: url),
+                filename: url.lastPathComponent,
+                contentType: UTType(filenameExtension: url.pathExtension)
+            )
+        }
+    }
+}
+
+/// 相机拍照（UIImagePickerController 的 SwiftUI 包装）；取消返回 nil
+struct AgentCameraPicker: UIViewControllerRepresentable {
+    let onFinish: (UIImage?) -> Void
+
+    /// 设备有相机且 App 声明了相机用途（Info.plist 的 NSCameraUsageDescription）才提供「拍照」——
+    /// 缺用途说明时调起相机会被系统直接终止进程
+    static var isAvailable: Bool {
+        UIImagePickerController.isSourceTypeAvailable(.camera)
+            && Bundle.main.object(forInfoDictionaryKey: "NSCameraUsageDescription") != nil
+    }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onFinish: onFinish) }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let onFinish: (UIImage?) -> Void
+        init(onFinish: @escaping (UIImage?) -> Void) { self.onFinish = onFinish }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            onFinish(info[.originalImage] as? UIImage)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            onFinish(nil)
+        }
     }
 }
 
@@ -414,10 +551,12 @@ struct AgentSkillRow: View {
     }
 }
 
-/// 加号菜单：上传图片 + 使用技能（技能列表每次展开现拉，与服务端「改技能即生效」一致）
+/// 加号菜单：上传图片（照片图库 / 拍照 / 选取文件）+ 使用技能（技能列表每次展开现拉，与服务端「改技能即生效」一致）
 struct AgentPlusMenu: View {
+    enum ImageSource { case library, camera, files }
+
     var imageUpload: Bool
-    var onPickImage: () -> Void
+    var onPickImage: (ImageSource) -> Void
     var onPickSkill: (String) -> Void
 
     @Environment(\.api) private var api
@@ -429,16 +568,12 @@ struct AgentPlusMenu: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 if imageUpload {
-                    Button(action: onPickImage) {
-                        Label("上传图片", systemImage: "photo")
-                            .font(.system(size: 15))
-                            .foregroundStyle(Theme.text)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 10).padding(.vertical, 10)
-                            .contentShape(.rect)
+                    Text("上传图片").font(.system(size: 13)).foregroundStyle(Theme.textFaint).padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 2)
+                    imageSourceRow("照片图库", systemImage: "photo.on.rectangle", source: .library, id: "agent-pick-image")
+                    if AgentCameraPicker.isAvailable {
+                        imageSourceRow("拍照", systemImage: "camera", source: .camera, id: "agent-pick-camera")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("agent-pick-image")
+                    imageSourceRow("选取文件", systemImage: "folder", source: .files, id: "agent-pick-file")
                     Divider().padding(.horizontal, 10).padding(.vertical, 4)
                 }
                 Text("使用技能").font(.system(size: 13)).foregroundStyle(Theme.textFaint).padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 2)
@@ -469,6 +604,19 @@ struct AgentPlusMenu: View {
             }
         }
         .accessibilityIdentifier("agent-plus-menu")
+    }
+
+    private func imageSourceRow(_ title: String, systemImage: String, source: ImageSource, id: String) -> some View {
+        Button { onPickImage(source) } label: {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 15))
+                .foregroundStyle(Theme.text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10).padding(.vertical, 10)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(id)
     }
 }
 

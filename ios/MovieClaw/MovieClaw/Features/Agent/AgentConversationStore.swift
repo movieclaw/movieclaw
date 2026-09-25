@@ -73,7 +73,7 @@ final class AgentConversation {
             turns[i].error = nil
             turns[i].stopped = false
             turns[i].interrupted = false
-            turns[i].startedAt = Date.now
+            // startedAt 保留转录里用户消息的时间戳：页脚显示真实已运行时长（同 Web），不从 0s 重新计
         }
         self.turns = turns
         title = Self.title(of: summary)
