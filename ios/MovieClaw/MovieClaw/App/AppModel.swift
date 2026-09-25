@@ -19,7 +19,7 @@ final class AppModel {
         case needsServer
         case needsSetup
         case needsLogin
-        case ready(SessionView)
+        case ready(API.SessionView)
     }
 
     private(set) var phase: Phase = .launching
@@ -30,7 +30,7 @@ final class AppModel {
 
     var api: APIClient? { server.map { APIClient(server: $0) } }
 
-    var session: SessionView? {
+    var session: API.SessionView? {
         if case let .ready(session) = phase { return session }
         return nil
     }
@@ -69,7 +69,7 @@ final class AppModel {
                 phase = .needsSetup
                 return
             }
-            phase = .ready(try await api.me())
+            phase = .ready(try await api.authMe())
         } catch let error as APIError where error.isUnauthorized {
             phase = .needsLogin
         } catch {
@@ -83,7 +83,7 @@ final class AppModel {
     /// 返回值仅用于测试；失败以抛错形式交给界面展示。
     func connect(to address: ServerAddress) async throws {
         let api = APIClient(server: address)
-        let health: HealthResponse
+        let health: API.HealthResponse
         do {
             health = try await api.health()
         } catch APIError.decoding {
@@ -99,7 +99,7 @@ final class AppModel {
         launchError = nil
         if !status.initialized {
             phase = .needsSetup
-        } else if let session = try? await api.me() {
+        } else if let session = try? await api.authMe() {
             // 这台服务器之前登录过，Cookie 仍有效
             phase = .ready(session)
         } else {
@@ -109,25 +109,25 @@ final class AppModel {
 
     func login(username: String, password: String, remember: Bool) async throws {
         guard let api else { throw ConnectError.noServer }
-        let session = try await api.login(username: username, password: password, remember: remember)
+        let session = try await api.authLogin(body: .init(username: username, password: password, remember: remember))
         launchError = nil
         phase = .ready(session)
     }
 
     func createAdmin(username: String, password: String) async throws {
         guard let api else { throw ConnectError.noServer }
-        let session = try await api.createAdmin(username: username, password: password)
+        let session = try await api.authBootstrapCreate(body: .init(username: username, password: password))
         phase = .ready(session)
     }
 
     /// 改昵称、换头像、切换账号后同步全局会话
-    func update(session: SessionView) {
+    func update(session: API.SessionView) {
         phase = .ready(session)
     }
 
     /// 退出当前账号：还有别的已登录账号时自动切过去（与 Web 行为一致）。
     func logout(all: Bool = false) async {
-        let next = try? await api?.logout(all: all)
+        let next = try? await api?.authLogout(body: .init(all: all))
         if let next {
             phase = .ready(next)
         } else {

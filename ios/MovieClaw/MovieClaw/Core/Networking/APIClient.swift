@@ -68,19 +68,10 @@ nonisolated struct APIClient: Sendable {
     let server: ServerAddress
     let session: URLSession
 
-    /// 统一的 JSON 解码器：后端字段是 snake_case，Swift 侧用 camelCase。
-    /// 注意：该策略也会改写 `[String: T]` 字典的键，字典键有业务含义时要用自定义类型接住。
-    static let decoder: JSONDecoder = {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return decoder
-    }()
-
-    static let encoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        return encoder
-    }()
+    /// 统一的 JSON 编解码器。不设 key 策略：生成的模型都显式写了 CodingKeys
+    /// （snake_case ↔ camelCase），而 convertFromSnakeCase 会连字典的键一起改写。
+    static let decoder = JSONDecoder()
+    static let encoder = JSONEncoder()
 
     /// App 全局共用的 URLSession：共享 Cookie 存储、接受并回写 Cookie。
     static let sharedSession: URLSession = {
