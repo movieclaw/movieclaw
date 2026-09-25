@@ -99,6 +99,7 @@ private struct PlayerContent: View {
     @State private var menu: PlayerMenu = .none
     @State private var locked = false
     @State private var lockHint = false
+    @State private var lockHintTask: Task<Void, Never>?
     @State private var brightness = 1.0
     @State private var adjust: AdjustState?
     @State private var volumeUnsupported = false
@@ -326,11 +327,13 @@ private struct PlayerContent: View {
         .animation(.easeInOut(duration: 0.2), value: lockHint)
     }
 
+    /// 唤出解锁键，3 秒后收起；再点一下重新计时（旧的倒计时作废，否则会提前把刚唤出的键收掉）
     private func revealLock() {
         lockHint = true
-        Task {
+        lockHintTask?.cancel()
+        lockHintTask = Task {
             try? await Task.sleep(for: .seconds(3))
-            lockHint = false
+            if !Task.isCancelled { lockHint = false }
         }
     }
 
