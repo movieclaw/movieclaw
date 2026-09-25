@@ -180,13 +180,18 @@ struct WallRecallPill: View {
     }
 }
 
-/// 墙尾的加载指示（Web `WallLoadMore`）：出现即触发下一页，文案报窗口进度
+/// 墙尾的加载指示（Web `WallLoadMore`）：**真正滚进视口**才触发下一页，文案报窗口进度。
+///
+/// 不能用 onAppear / task：墙外层是普通 VStack，子视图一创建就算「出现」，
+/// 会一页接一页把整库拉完。这里按滚动可见性判断（等价 Web 的 IntersectionObserver）；
+/// 加载完仍在视口里（一页不满一屏）就接着要下一页。
 struct WallLoadMoreFooter: View {
     let hasMore: Bool
     let start: Int
     let loaded: Int
     var total: Int?
     var onReach: () async -> Void
+    @State private var visible = false
 
     var body: some View {
         if hasMore {
@@ -198,7 +203,29 @@ struct WallLoadMoreFooter: View {
             .foregroundStyle(Theme.textFaint)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 20)
-            .task(id: start + loaded) { await onReach() }
+            .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
+            .task(id: "\(visible)|\(start + loaded)") {
+                if visible { await onReach() }
+            }
+            .accessibilityIdentifier("wall-load-more")
+        }
+    }
+}
+
+/// 墙顶的向上补页哨兵（Web `WallLoadPrev`）：窗口不从 0 开始时，滚到顶才把上一页接回来
+struct WallLoadPreviousSentinel: View {
+    let start: Int
+    var onReach: () async -> Void
+    @State private var visible = false
+
+    var body: some View {
+        if start > 0 {
+            Color.clear
+                .frame(height: 1)
+                .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
+                .task(id: "\(visible)|\(start)") {
+                    if visible { await onReach() }
+                }
         }
     }
 }

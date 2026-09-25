@@ -218,6 +218,7 @@ struct LibraryItemDetailView: View {
                 .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.4), radius: 8)
+                .accessibilityValue(String(detail.mediaItemId))
                 .accessibilityIdentifier("item-title")
             if !isMovie, let selectedEpisode {
                 Text("第 \(selectedEpisode.season) 季 第 \(selectedEpisode.episode.episodeNumber) 集\(selectedEpisode.episode.name.map { " - \($0)" } ?? "")")

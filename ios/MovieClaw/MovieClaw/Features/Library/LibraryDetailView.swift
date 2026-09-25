@@ -415,7 +415,7 @@ struct LibraryDetailView: View {
                 } else if pager.items == nil {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
                 } else {
-                    posterWall(library, items: items)
+                    posterWall(library, items: items, proxy: proxy)
                 }
                 if !galleryOn, !photoWall, !provisional.isEmpty {
                     provisionalSection
@@ -444,10 +444,13 @@ struct LibraryDetailView: View {
     }
 
     @ViewBuilder
-    private func posterWall(_ library: API.LibraryView, items: [API.LibraryItemView]) -> some View {
+    private func posterWall(_ library: API.LibraryView, items: [API.LibraryItemView], proxy: ScrollViewProxy) -> some View {
         let showRating = sort.sort == "rating" || filter.ratingGte != nil
-        if pager.start > 0 {
-            Color.clear.frame(height: 1).task(id: pager.start) { await pager.loadPrevious() }
+        WallLoadPreviousSentinel(start: pager.start) {
+            // 接上上一页后把原来的第一格钉回顶部，眼下这一屏不跳
+            let anchor = pager.items?.first?.id
+            await pager.loadPrevious()
+            if let anchor { proxy.scrollTo(anchor, anchor: .top) }
         }
         if timeline {
             let posters = items.filter { $0.primaryAspect < 1 }

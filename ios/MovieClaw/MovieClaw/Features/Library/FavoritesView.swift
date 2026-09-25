@@ -14,6 +14,7 @@ struct FavoritesView: View {
     @State private var recallOffset: Int?
     @State private var firstVisible: Int = 0
     @State private var didOfferRecall = false
+    @State private var scrollProxy: ScrollViewProxy?
 
     private static let sortKey = "movieclaw.favorites.wall-sort"
     private static let recallScope = "library:favorites"
@@ -63,6 +64,7 @@ struct FavoritesView: View {
                 }
             }
             .animation(.snappy, value: recallOffset)
+            .onAppear { scrollProxy = proxy }
         }
         .appBackground()
         .navigationTitle("我的收藏")
@@ -125,8 +127,10 @@ struct FavoritesView: View {
                 try await api.playbackFavoritesGallery(limit: limit, offset: offset, sort: effectiveSort, order: order)
             }
         } else if let items = pager.items, !items.isEmpty {
-            if pager.start > 0 {
-                Color.clear.frame(height: 1).task(id: pager.start) { await pager.loadPrevious() }
+            WallLoadPreviousSentinel(start: pager.start) {
+                let anchor = pager.items?.first?.id
+                await pager.loadPrevious()
+                if let anchor, let proxy = scrollProxy { proxy.scrollTo(anchor, anchor: .top) }
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 12, alignment: .top)], alignment: .leading, spacing: 20) {
                 ForEach(items) { item in
