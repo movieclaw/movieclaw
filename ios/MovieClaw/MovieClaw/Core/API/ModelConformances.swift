@@ -18,3 +18,6 @@ extension API.FavoriteItemView: Identifiable {
 extension API.DownloadTaskView: Identifiable {}
 
 extension API.JobView: Identifiable {}
+
+// 设置（成员）
+extension API.MemberView: Identifiable {}
