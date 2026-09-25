@@ -312,6 +312,36 @@ export const LibraryIcon = (p: IconProps) => (
 );
 
 /**
+ * 发现（手机底栏专用）：房子。
+ *
+ * 底栏去掉文字后（2026-09-25），CompassIcon 的罗盘在 iPhone 上就是 Safari 的图标，
+ * 容易被读成「打开浏览器」。发现页是打开应用落地的第一页，纯图标底栏（Instagram、
+ * YouTube）都用房子表示这一页。用户从 6 个备选里选定；桌面侧栏与 Netflix 主题仍用罗盘。
+ * 与上面的 HouseIcon（屋顶 + 墙、无门）是两种画法：这个是闭合轮廓带门洞，28px 下更饱满。
+ */
+export const HomeIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M4 10.4 12 3.8l8 6.6V19a1.5 1.5 0 0 1-1.5 1.5H15v-5.2H9v5.2H5.5A1.5 1.5 0 0 1 4 19Z" />
+  </Base>
+);
+
+/**
+ * 媒体库（手机底栏专用）：卡片堆叠 + 实心播放三角。
+ *
+ * 底栏去掉文字后（2026-09-25），LibraryIcon 的四宫格读起来像「应用列表 / 网格视图」。
+ * 堆叠卡片是苹果「资料库」的通用画法（Apple Music、Apple TV 的资料库页签），iOS 用户
+ * 一眼认得；前卡里的播放三角点明是视频库。用户从 7 个备选里选定。桌面侧栏与 Netflix
+ * 主题仍用 LibraryIcon——侧栏有文字，且那里四宫格要避开相邻的胶片 / 电视方框图标。
+ */
+export const LibraryStackIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="3.5" y="8.5" width="17" height="12" rx="2.2" />
+    <path d="M5.8 5.5h12.4M8 2.9h8" />
+    <path d="M10.5 11.7v5.6l4.6-2.8Z" fill="currentColor" />
+  </Base>
+);
+
+/**
  * 瀑布流墙 / 海报墙：媒体库顶栏「海报墙 ⇄ 图床浏览」的一对切换图标。
  *
  * 视图切换器的通用做法是把图标画成**目标布局本身的样子**（同 Finder /

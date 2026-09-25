@@ -1630,7 +1630,8 @@ body.cmdk-open .app-shell {
  * —— 移动端液态玻璃底栏（components/glass-tab-bar.tsx，银玻璃 <768px）——
  * iOS 26 系统 Tab Bar 的 Web 复刻，规格与出处见
  * docs/design/web-themes-mobile/04-iOS-液态玻璃底栏.md：
- *   - 胶囊高 62px、左右缩进 21px、与搜索圆钮间距 8px、距屏幕物理底边约 22px
+ *   - 胶囊高 54px（纯图标后从 iOS 标准的 62px 收窄，按 Instagram iOS 26 底栏量得约 54pt）、
+ *     左右缩进 21px、与搜索圆钮间距 8px、距屏幕物理底边约 22px
  *     （苹果未公布数值，取社区对 iOS 26 截图的量测）；
  *   - 距底按视口算（--tabbar-bottom = safe-bottom − 12px，最少 22px）；胶囊本身
  *     留在视口内，只有下方的 .glass-tabbar-edge 铺底层向下超出 --vp-overshoot。
@@ -1640,7 +1641,7 @@ body.cmdk-open .app-shell {
  *     透明度一律放在 background alpha 里。
  */
 .glass-tabbar {
-  --tabbar-h: 62px;
+  --tabbar-h: 54px;
   /* 收起态整排缩到 44px（对 iOS 26 相册收起态逐像素量出：收起圆钮、搜索圆钮
      约 44pt，附件约 45pt，展开态标签栏 62pt），并且**贴着底边**收缩——底边不动、
      顶边下来，所以原生看着「更小、更低」。--tabbar-h 一改，胶囊收起宽度、
@@ -1665,7 +1666,7 @@ body.cmdk-open .app-shell {
 }
 
 /* —— 底部附件（iOS 26 tab bar bottom accessory；组件 glass-tab-bar.tsx）——
-   常驻在底栏那一行、收起圆钮与搜索圆钮之间（左让 62px + 8px，有搜索键时右同），
+   常驻在底栏那一行、收起圆钮与搜索圆钮之间（左让 44px + 8px，有搜索键时右同），
    与圆钮同高。主菜单展开时它隐藏（淡出 + 略缩），收回后再现——它不会浮到底栏
    上方去挤内容（用户拍板）。
    选择器带上 .glass-capsule 提一级特异度：.glass-capsule 自身声明了 position:relative
@@ -1727,7 +1728,8 @@ body.cmdk-open .app-shell {
 }
 
 .glass-tabbar:has(.glass-tabbar__search) {
-  --bar-full: calc(100vw - max(21px, var(--safe-left)) - max(21px, var(--safe-right)) - 70px);
+  /* 让出搜索圆钮（= --tabbar-h 54px）+ 间距 8px */
+  --bar-full: calc(100vw - max(21px, var(--safe-left)) - max(21px, var(--safe-right)) - 62px);
 }
 
 .glass-tabbar > * {
@@ -1763,6 +1765,60 @@ body.cmdk-open .app-shell {
   pointer-events: none;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 28%, transparent 72%, rgba(255, 255, 255, 0.045));
+}
+
+/* WebGL 玻璃厚边（lib/glass-rim.ts）：每个胶囊里铺满一块 canvas，画外沿一圈的
+   折射 / 色散 / 菲涅尔 / 高光，内缘渐隐到透明、露出下面 CSS 的磨砂中心。
+   渲染出第一帧后组件才给胶囊打 data-rim="on"，此后中心与厚边是同一块暗色毛玻璃
+   （模糊 18px + 饱和 150% + 近黑冷灰 72%，按用户给的 Instagram 截图实测）；
+   中心材质必须与 RIM_MATERIAL 一致，否则内缘接缝处会出现一圈色差。原先的
+   内描边 / 顶沿高光由着色器的菲涅尔与高光接替。WebGL 不可用时不打标记，
+   保持上面的暗玻璃。 */
+.glass-rim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.glass-capsule[data-rim="on"] {
+  /* 与 RIM_MATERIAL 同步：暗色毛玻璃（按 Instagram iOS 26 底栏实测），厚边叠同一层 */
+  background: rgba(12, 14, 18, 0.72);
+  backdrop-filter: blur(18px) saturate(150%);
+  box-shadow:
+    0 16px 36px -14px rgba(0, 0, 0, 0.85),
+    0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.glass-capsule[data-rim="on"] > .glass-rim {
+  opacity: 1;
+}
+
+.glass-capsule[data-rim="on"]::before {
+  content: none;
+}
+
+/* 搜索键原本不定位，会被定位的厚边 canvas 盖住，提到它上面 */
+.glass-capsule[data-rim="on"] .glass-tabbar__search-btn {
+  position: relative;
+}
+
+/* 清透玻璃下不再铺滚动边缘层：它的 6px 模糊 + 压暗正落在胶囊正下方，透过清透
+   中心看就是一层雾（2026-09-25 用户真机反馈）。厚边的场景采集同样跳过它（glass-rim.ts） */
+body:has(.glass-capsule[data-rim="on"]) .glass-tabbar-edge {
+  display: none;
+}
+
+/* 清透中心没有底色托字，白色图标 / 标签压在亮海报上会糊：加一层淡投影勾边 */
+.glass-capsule[data-rim="on"] svg {
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
+}
+
+.glass-capsule[data-rim="on"] .glass-tabbar-accessory__seg > button {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
 
 /* 按压辉光：触点处由内发亮（HIG：玻璃从指尖照亮），按下 90ms 亮起、松手 520ms
@@ -1862,9 +1918,10 @@ body.cmdk-open .app-shell {
   background: rgba(255, 255, 255, 0.22);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   will-change: transform;
+  /* 行进态高光到位即收（原 260ms 淡出在胶囊停稳后还拖着一截，显得慢） */
   transition:
-    background 260ms ease,
-    box-shadow 260ms ease,
+    background 120ms ease,
+    box-shadow 120ms ease,
     opacity 160ms ease;
 }
 
@@ -1919,9 +1976,10 @@ body.cmdk-open .app-shell {
   color: rgba(255, 255, 255, 0.82);
 }
 
+/* 纯图标页签（无文字标签，参照 Instagram iOS 26 底栏）：图标放大一档、在胶囊里垂直居中 */
 .glass-tabbar__tab svg {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
 }
 
 /* 收起圆钮里的图标：相册收起态的图标约 22pt（44pt 圆钮的一半），比展开态页签的
@@ -1941,13 +1999,6 @@ body.cmdk-open .app-shell {
   transition-duration: 110ms;
 }
 
-.glass-tabbar__tab span {
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1;
-  letter-spacing: 0.01em;
-}
-
 /* 页签圆点（活动页签）：贴在图标右上角，iOS 标签栏红点的规格——7px 实心点、
    一圈与胶囊同色的描边把它从图标线条里托出来。不带数字：26px 图标旁的数字
    角标太重。永远只有一颗，颜色按优先级取最该被看见的那件事（见
@@ -1955,8 +2006,9 @@ body.cmdk-open .app-shell {
    2026-09-24 试过红/蓝与绿两颗并排，实机上挤成一团像渲染错误，用户否掉 */
 .glass-tabbar__badge {
   position: absolute;
-  top: 9px;
-  left: calc(50% + 8px);
+  /* 贴 28px 居中图标的右上角 */
+  top: calc(50% - 15px);
+  left: calc(50% + 9px);
   width: 7px;
   height: 7px;
   border-radius: 999px;
@@ -2075,7 +2127,7 @@ body.cmdk-open .app-shell {
   left: 0;
   right: 0;
   bottom: calc(-1 * var(--vp-overshoot));
-  height: calc(var(--tabbar-bottom) + var(--vp-overshoot) + 62px + 44px);
+  height: calc(var(--tabbar-bottom) + var(--vp-overshoot) + 54px + 44px);
   pointer-events: none;
   transition: height 480ms var(--ease-spring);
   background: linear-gradient(180deg, transparent, rgba(8, 10, 15, 0.42) 62%, rgba(8, 10, 15, 0.58));
@@ -2114,7 +2166,7 @@ body.cmdk-open .app-shell {
    那会把滚动视口在底栏上方截断，玻璃下面就只剩空底了。 */
 @media (max-width: 767px) {
   .app-shell[data-tabbar="true"] > main .scroll-safe::after {
-    height: calc(var(--tabbar-bottom) + 62px + 12px);
+    height: calc(var(--tabbar-bottom) + 54px + 12px);
   }
 
 }

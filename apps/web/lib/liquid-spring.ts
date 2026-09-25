@@ -32,8 +32,12 @@ export interface SpringFrame {
   v: number;
 }
 
-/** 默认手感：约 0.45s 到位、过冲约 4%（按 vendor TabBar 的观感调出） */
-export const INDICATOR_SPRING: Required<SpringOptions> = { stiffness: 320, damping: 25, dt: 1 / 60 };
+/**
+ * 默认手感：约 100ms 走完九成行程、0.22~0.3s 静止、过冲约 0.5%。
+ * 2026-09-25 从 320/25（九成 150ms、尾巴拖到 0.45s）收紧：用户真机反馈「没有 iOS 那么
+ * 丝滑、有一段缓慢的过渡」，iOS 26 的选中胶囊是一下就到、几乎不晃。
+ */
+export const INDICATOR_SPRING: Required<SpringOptions> = { stiffness: 650, damping: 36, dt: 1 / 60 };
 
 /**
  * 从 from（初速度 v0）弹向 to，逐步积分直到静止，返回每一步的位置与速度。
@@ -82,17 +86,23 @@ export function liquidTransform(x: number, v: number, lift: number): string {
 }
 
 /**
- * 整段滑动的 WAAPI 关键帧：位置来自弹簧模拟，抬起量按正弦包络（起止为 0、
- * 行程中段最高），只在确实有位移时抬起——原地重播不应该鼓一下。
+ * 整段滑动的 WAAPI 关键帧：位置来自弹簧模拟；抬起量按**行程进度**（已走距离 / 总距离）
+ * 取正弦包络——走到一半最高、到达目标即落回，弹簧收尾那段微小回摆里不再鼓着
+ * （按时间取包络时，胶囊到位后还要花一两百毫秒慢慢缩回，观感拖沓）。
+ * 点击滑动只抬起一半（6%），满额抬起留给按住拖动的气泡；原地重播不抬起。
  */
 export function liquidKeyframes(frames: SpringFrame[]): Keyframe[] {
   const total = frames[frames.length - 1].t || 1;
-  const travel = Math.abs(frames[frames.length - 1].x - frames[0].x);
-  const liftAmount = Math.min(travel / 60, 1);
-  return frames.map((f) => ({
-    offset: f.t / total,
-    transform: liquidTransform(f.x, f.v, liftAmount * Math.sin(Math.PI * (f.t / total))),
-  }));
+  const from = frames[0].x;
+  const travel = Math.abs(frames[frames.length - 1].x - from);
+  const liftAmount = Math.min(travel / 60, 1) * 0.5;
+  return frames.map((f) => {
+    const progress = travel > 0 ? Math.min(Math.abs(f.x - from) / travel, 1) : 1;
+    return {
+      offset: f.t / total,
+      transform: liquidTransform(f.x, f.v, liftAmount * Math.sin(Math.PI * progress)),
+    };
+  });
 }
 
 /** 已播放 elapsed 毫秒时的状态（打断续算用）；超出范围取末帧 */

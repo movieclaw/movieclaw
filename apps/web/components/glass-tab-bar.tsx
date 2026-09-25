@@ -12,9 +12,10 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 
-import { ActivityIcon, BookmarkIcon, CompassIcon, LibraryIcon } from "@/components/icons";
+import { ActivityIcon, BookmarkIcon, HomeIcon, LibraryStackIcon } from "@/components/icons";
 import { mediaLiveCount, useMediaActivity } from "@/components/media-activity-section";
 import { SearchCommand } from "@/components/search-command";
+import { GlassRim, type RimTarget } from "@/lib/glass-rim";
 import {
   liquidKeyframes,
   liquidTransform,
@@ -51,16 +52,18 @@ import { taskActivityBadge, useTaskActivity, type TaskActivityBadge } from "@/li
  * 活动、设置、AI 会话、切换账号等低频入口；「新会话」不占页签，入口在「更多」
  * 面板里的一行（进 /new 整页，那一页与会话页同样不显示底栏）。
  *
- * 玻璃走 CSS backdrop-filter 而不是 vendor/liquid-glass 的 WebGL：后者只能
- * 折射一张静态背景图，底栏浮在滚动的海报墙上必须对真实内容实时取样——
- * 2026-09-23 实测对比（docs/design/web-themes-mobile/04 §3.5）：直接用 vendor
- * LiquidGlassTabBar 在海报上是一块不透明黑胶囊，CSS 模糊 + WebGL 边光的混合版
- * 与纯 CSS 几乎看不出差别却多占两个 WebGL 上下文。Safari 也不支持 SVG 位移
- * 折射，边缘透镜感用 CSS 渐变近似（样式见 globals.css 的 .glass-tabbar 组）。
+ * 玻璃分两层（docs/design/web-themes-mobile/04 §3.7）：
+ *   - 胶囊中心是清透的 CSS 层（不模糊不染色），透出真实的滚动内容（WebGL 读不到网页内容，
+ *     2026-09-23 直接用 vendor LiquidGlassTabBar 在海报上是一块黑胶囊，§3.5）；
+ *   - 胶囊厚边一圈由 lib/glass-rim.ts 用 WebGL 画折射 / 色散 / 菲涅尔 / 高光
+ *     （光学模型移植自 liquid-glass-studio）：每帧把底栏下方的背景图与海报重建成
+ *     场景纹理来折射，所以边上折进去的是真实滚过的海报。每个胶囊里一块 canvas
+ *     （.glass-rim）承接渲染结果；WebGL2 不可用或渲染出错时胶囊不打 data-rim，
+ *     保持原来的纯 CSS 暗玻璃。
  */
 
-const DISCOVER_TAB = { id: "discover", label: "发现", href: "/discover/movie", Icon: CompassIcon } as const;
-const LIBRARY_TAB = { id: "library", label: "媒体库", href: "/library", Icon: LibraryIcon } as const;
+const DISCOVER_TAB = { id: "discover", label: "发现", href: "/discover/movie", Icon: HomeIcon } as const;
+const LIBRARY_TAB = { id: "library", label: "媒体库", href: "/library", Icon: LibraryStackIcon } as const;
 const SUBSCRIPTION_TAB = {
   id: "subscriptions",
   label: "订阅",
@@ -197,6 +200,38 @@ export function GlassTabBar() {
   // 没有归属页签的路由（/search 等）不收缩：收起后只剩「当前页签」的
   // 圆钮，而这里没有当前页签可显示
   const isMinimized = (hasAccessory ? !expandedOverAccessory : minimized) && ActiveIcon !== null;
+
+  // ———— WebGL 玻璃厚边 ————
+  const barRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLDivElement>(null);
+  const accessoryRef = useRef<HTMLDivElement>(null);
+  const rimRef = useRef<GlassRim | null>(null);
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-transparency: reduce)").matches) return;
+    let rim: GlassRim;
+    try {
+      rim = new GlassRim();
+    } catch (error) {
+      console.warn(String(error instanceof Error ? error.message : error));
+      return;
+    }
+    rimRef.current = rim;
+    rim.start(() =>
+      [barRef, searchRef, accessoryRef].flatMap((ref): RimTarget[] => {
+        const capsule = ref.current;
+        const canvas = capsule?.querySelector<HTMLCanvasElement>(":scope > canvas.glass-rim");
+        return capsule && canvas ? [{ capsule, canvas }] : [];
+      }),
+    );
+    return () => {
+      rim.dispose();
+      rimRef.current = null;
+    };
+  }, []);
+  // 换页、收缩 / 展开、附件与搜索键显隐：重新出几帧（新页面的海报、胶囊新形状）
+  useEffect(() => {
+    rimRef.current?.wake();
+  }, [pathname, isMinimized, hasAccessory, canSearch]);
 
   // ———— 液态选中胶囊 ————
   const navRef = useRef<HTMLElement>(null);
@@ -361,6 +396,7 @@ export function GlassTabBar() {
           主菜单展开时隐藏（样式见 .glass-tabbar-accessory） */}
       {accessory != null && (
         <div
+          ref={accessoryRef}
           className="glass-tabbar-accessory glass-capsule"
           data-minimized={isMinimized}
           data-search={Boolean(canSearch && chrome)}
@@ -369,17 +405,20 @@ export function GlassTabBar() {
           onPointerCancel={glowOff}
           onPointerLeave={glowOff}
         >
+          <canvas className="glass-rim" aria-hidden="true" />
           {accessory}
         </div>
       )}
       <nav ref={navRef} aria-label="主导航" className="glass-tabbar" data-minimized={isMinimized}>
         <div
+          ref={barRef}
           className="glass-tabbar__bar glass-capsule"
           onPointerDown={glowAt}
           onPointerUp={glowOff}
           onPointerCancel={glowOff}
           onPointerLeave={glowOff}
         >
+          <canvas className="glass-rim" aria-hidden="true" />
           <div
             ref={tabsRef}
             className="glass-tabbar__tabs"
@@ -414,6 +453,8 @@ export function GlassTabBar() {
                 key={id}
                 href={href as Route}
                 aria-current={index === activeIndex ? "page" : undefined}
+                // 纯图标页签（2026-09-25 用户要求去掉文字，参照 Instagram 底栏）：名字只给读屏
+                aria-label={label}
                 className="glass-tabbar__tab"
                 style={{ "--i": index } as CSSProperties}
                 // 点击即起跳，不等路由真正切换完（新页面渲染可能要几百毫秒）
@@ -429,7 +470,6 @@ export function GlassTabBar() {
                 draggable={false}
               >
                 <Icon />
-                <span>{label}</span>
                 {/* 小圆点而不是数字：iOS 标签栏的「有新动态」惯例，数字角标在 26px
                     图标旁太重（用户看过实机截图直接否掉）；具体数量进活动页看 */}
                 {id === "activity" && activityDot && (
@@ -461,12 +501,14 @@ export function GlassTabBar() {
             外壳在挂底栏的形态下不再在顶栏渲染搜索键，全站只此一份 */}
         {canSearch && chrome && (
           <div
+            ref={searchRef}
             className="glass-tabbar__search glass-capsule"
             onPointerDown={glowAt}
             onPointerUp={glowOff}
             onPointerCancel={glowOff}
             onPointerLeave={glowOff}
           >
+            <canvas className="glass-rim" aria-hidden="true" />
             <SearchCommand onSearch={chrome.onSearch} triggerClassName="glass-tabbar__search-btn" />
           </div>
         )}

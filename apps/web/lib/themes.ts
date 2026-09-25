@@ -89,7 +89,8 @@ export const THEMES: ThemeMeta[] = [
     structural: false,
     chrome: {
       mobileTopBarHeight: 52,
-      mobileTabBar: { mode: "floating", height: 62, bottomOffset: FLOATING_TABBAR_BOTTOM_OFFSET },
+      // 纯图标底栏 54px（2026-09-25 去掉页签文字后收窄；银玻璃 CSS 的 --tabbar-h 同值）
+      mobileTabBar: { mode: "floating", height: 54, bottomOffset: FLOATING_TABBAR_BOTTOM_OFFSET },
     },
   },
   {
