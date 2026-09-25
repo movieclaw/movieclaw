@@ -468,7 +468,7 @@ struct LibraryManageView: View {
         reloadSeq += 1
         let seq = reloadSeq
         do {
-            let libs = try await api.libraryList()
+            let libs = try await api.libraryList(scope: "all")
             guard seq == reloadSeq else { return }
             failed = false
             if libs != libraries { libraries = libs }
