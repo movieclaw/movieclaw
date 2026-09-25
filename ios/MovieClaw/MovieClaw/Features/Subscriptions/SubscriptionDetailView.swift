@@ -274,7 +274,7 @@ struct SubscriptionDetailView: View {
         HStack(spacing: 8) {
             if showSearch {
                 Button { Task { await searchNow(detail) } } label: {
-                    Label("立即搜索", systemImage: "arrow.clockwise").lineLimit(1).frame(maxWidth: .infinity).padding(.vertical, 5)
+                    actionLabel("立即搜索", systemImage: "arrow.clockwise")
                 }
                 .discoverProminentButton()
                 .disabled(busy)
@@ -283,14 +283,14 @@ struct SubscriptionDetailView: View {
             if showManual {
                 // 到站点资源搜索里挑一条种子直接投给本订阅（跳过规则组限制）
                 Button { router.push(.search(.init(q: detail.media.title, forSubscription: detail.id))) } label: {
-                    Label("手动选种", systemImage: "magnifyingglass").lineLimit(1).frame(maxWidth: .infinity).padding(.vertical, 5)
+                    actionLabel("手动选种", systemImage: "magnifyingglass")
                 }
                 .buttonStyle(.glass)
                 .accessibilityIdentifier("manual-pick")
             }
             if showMore {
                 Button { sheet = .manage } label: {
-                    Label("更多", systemImage: "ellipsis").lineLimit(1).frame(maxWidth: .infinity).padding(.vertical, 5)
+                    actionLabel("更多", systemImage: "ellipsis")
                 }
                 .buttonStyle(.glass)
                 .disabled(busy)
@@ -298,6 +298,17 @@ struct SubscriptionDetailView: View {
             }
         }
         .font(.subheadline.weight(.semibold))
+    }
+
+    /// 三键等宽一行：图标缩小、文字不截断（窄屏自动缩字号而不是出省略号）
+    private func actionLabel(_ title: String, systemImage: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage).font(.footnote.weight(.semibold))
+            Text(title).lineLimit(1).minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 5)
+        .padding(.horizontal, -6)
     }
 
     // MARK: 弹层

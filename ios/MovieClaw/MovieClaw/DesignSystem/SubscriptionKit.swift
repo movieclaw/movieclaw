@@ -34,7 +34,7 @@ struct SubsSheetScaffold<Content: View, Footer: View>: View {
                 .padding(.bottom, 24)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .safeAreaInset(edge: .bottom) {
+            .safeAreaBar(edge: .bottom) {
                 footer()
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)

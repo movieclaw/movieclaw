@@ -27,6 +27,10 @@ struct SubscriptionsView: View {
     @State private var tasks: [API.DownloadTaskView] = []
     @State private var now = Date()
 
+    #if DEBUG
+    private static var debugSubscribeConsumed = false
+    #endif
+
     private var index: SubscriptionIndex { SubscriptionIndex.shared }
     private var all: [API.SubscriptionView]? { index.subscriptions }
     private var tvSubs: [API.SubscriptionView] { (all ?? []).filter { $0.media.kind == "tv" } }
@@ -81,6 +85,15 @@ struct SubscriptionsView: View {
         }
         .refreshable { await reload() }
         .task { await reload() }
+        #if DEBUG
+        .task {
+            // 开发期：-mcSubscribe tmdb:tv:1399 [-mcSubscribeUpgrade YES] 进入订阅页后直接唤起订阅弹层
+            // （截图对照与 UI 测试用；与 -mcRoute /subscriptions 搭配）
+            guard !Self.debugSubscribeConsumed, let ref = UserDefaults.standard.string(forKey: "mcSubscribe") else { return }
+            Self.debugSubscribeConsumed = true
+            router.present(.subscribe(SubscribeRequest(titleRef: ref, upgrade: UserDefaults.standard.bool(forKey: "mcSubscribeUpgrade"))))
+        }
+        #endif
         .task { await loadNames() }
         .polling(every: 10) { await refreshArrivals() }
         .polling(every: 10, immediately: true) { await refreshTasks() }
