@@ -52,8 +52,9 @@ struct TrackSubtitleGenButton: View {
         } else {
             switch model.llm {
             case .checking:
-                // 检查中不短暂露出触发按钮（同 Web）
-                EmptyView()
+                // 检查中不短暂露出触发按钮（同 Web）。用零尺寸占位而不是 EmptyView：
+                // EmptyView 不进视图树，挂在它上面的 .task（能力探测、任务跟踪）永远不会启动
+                Color.clear.frame(width: 0, height: 0)
             case .missing:
                 Button {
                     router.open(.settingsSection(.llm))
