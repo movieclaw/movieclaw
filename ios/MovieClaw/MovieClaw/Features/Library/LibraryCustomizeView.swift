@@ -253,7 +253,6 @@ private struct RowItem: View {
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .disabled(!editable)
                 .accessibilityIdentifier("row-title-\(row.id)")
                 Button {
                     onChange { $0.hidden.toggle() }
