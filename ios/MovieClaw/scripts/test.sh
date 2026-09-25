@@ -18,7 +18,7 @@ LOG="$(mktemp -t mc-test).log"
 
 [[ -d MovieClaw.xcodeproj ]] || xcodegen generate >/dev/null
 
-TEST_RUNNER_MC_LIVE="${MC_LIVE:-0}" xcodebuild -project MovieClaw.xcodeproj -scheme MovieClaw \
+TEST_RUNNER_MC_LIVE="${MC_LIVE:-0}" TEST_RUNNER_MC_TEST_SERVER="${MC_TEST_SERVER:-}" TEST_RUNNER_MC_TEST_USERNAME="${MC_TEST_USERNAME:-}" TEST_RUNNER_MC_TEST_PASSWORD="${MC_TEST_PASSWORD:-}" xcodebuild -project MovieClaw.xcodeproj -scheme MovieClaw \
   -destination "platform=iOS Simulator,name=$SIM" -derivedDataPath "$DERIVED" \
   -clonedSourcePackagesDirPath "${MC_SPM:-$HOME/workspace/.mc-ios-spm}" "$@" test \
   >"$LOG" 2>&1 &

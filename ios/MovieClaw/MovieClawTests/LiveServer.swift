@@ -4,7 +4,7 @@ import Foundation
 /// 联调用的真实服务器（默认本机 dev 环境）。环境变量：
 /// MC_LIVE=1 开启；MC_TEST_SERVER / MC_TEST_USERNAME / MC_TEST_PASSWORD 覆盖默认值。
 nonisolated enum LiveServer {
-    static let env = ProcessInfo.processInfo.environment
+    static let env = ProcessInfo.processInfo.environment.filter { !$0.value.isEmpty }
     static let enabled = env["MC_LIVE"] == "1"
 
     private static let shared = Task { () throws -> APIClient in
