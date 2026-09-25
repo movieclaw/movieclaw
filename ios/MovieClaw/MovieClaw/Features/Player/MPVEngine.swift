@@ -29,8 +29,6 @@ final class MPVEngine: PlayerEngine {
     private var cacheTime: Double?
     private var width = 0
     private var height = 0
-    private var cacheSince: Date?
-    private var watchdog: Timer?
     private var lastReported: EngineEvent?
 
     /// 文件装载前就选定的轨，装载后补上
@@ -38,8 +36,6 @@ final class MPVEngine: PlayerEngine {
     private var pendingAudio: Int?
     /// 已经 sub-add 过的外挂轨（轨引用 → 是否已挂上），避免重复下载
     private var addedSubtitles: Set<String> = []
-
-    private static let stallLimit: TimeInterval = 45
 
     var view: UIView { core.view }
 
@@ -52,10 +48,8 @@ final class MPVEngine: PlayerEngine {
         #else
         core = try MPVPlayer()
         #endif
+        // 卡顿 / 缺粮由控制器的 StallWatch 按播放头与缓冲统一判定（两个引擎同一套口径）
         core.onEvent = { [weak self] event in self?.handle(event) }
-        watchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkStall() }
-        }
     }
 
     /// 渲染方式（诊断面板用）
@@ -185,8 +179,6 @@ final class MPVEngine: PlayerEngine {
     }
 
     func destroy() {
-        watchdog?.invalidate()
-        watchdog = nil
         onEvent = nil
         core.destroy()
     }
@@ -230,7 +222,6 @@ final class MPVEngine: PlayerEngine {
             reportState()
         case let ("paused-for-cache", .flag(flag)):
             pausedForCache = flag
-            cacheSince = flag ? (cacheSince ?? Date()) : nil
             reportState()
         case let ("seeking", .flag(flag)):
             seeking = flag
@@ -267,11 +258,5 @@ final class MPVEngine: PlayerEngine {
             lastReported = event
             onEvent?(event)
         }
-    }
-
-    private func checkStall() {
-        guard pausedForCache, let since = cacheSince, Date().timeIntervalSince(since) > Self.stallLimit else { return }
-        cacheSince = nil
-        emit(.failed(reason: "供流中断：缓冲超过 \(Int(Self.stallLimit)) 秒没有进展", cause: .starved))
     }
 }

@@ -5,7 +5,10 @@ import SwiftUI
 /// 跨库的一面墙：与 Jellyfin 客户端里点的心同一份名单。两种形态共用同一份排序：
 /// - 海报墙：`GET /playback/favorites` 分页（每页 60），整面墙钉死 2:3，每格落回自己所属的库；
 /// - 图床浏览：`GET /playback/favorites/gallery`，灯箱里的心可取消收藏（`POST /playback/marks`）。
-/// 排序记在本机（同 Web localStorage 键）；进来时若上次滑得够深，底部弹「回到上次浏览的位置」。
+/// 排序记在本机（同 Web localStorage 键）；进来时若上次滑得够深，底部弹「回到上次浏览的位置」
+/// （两种形态共用一条记录，都按作品计 offset；图廊下点胶囊换图廊窗口）。
+/// 格子与单库墙同一个 `LibraryInventoryCell`（库存概况、补齐缺集 / 自动续订、缺失提示），同 Web InventoryCell。
+/// 从详情页返回只整窗对账（`refresh`），不清空窗口、不动滚动位置；换排序才回墙首。
 struct FavoritesView: View {
     @Environment(\.api) private var api
     @State private var pager = LibraryWallPager<API.FavoriteItemView>(pageSize: 60)
@@ -15,6 +18,9 @@ struct FavoritesView: View {
     @State private var firstVisible: Int = 0
     @State private var didOfferRecall = false
     @State private var scrollProxy: ScrollViewProxy?
+    /// 图廊窗口起点（「回到上次位置」在图廊下跳这里）
+    @State private var galleryStart = 0
+    @Environment(Router.self) private var router
 
     private static let sortKey = "movieclaw.favorites.wall-sort"
     private static let recallScope = "library:favorites"
@@ -54,6 +60,11 @@ struct FavoritesView: View {
                 if let recallOffset {
                     WallRecallPill {
                         self.recallOffset = nil
+                        if gallery {
+                            // 图廊按作品分页：窗口换成从那部作品开始
+                            galleryStart = recallOffset
+                            return
+                        }
                         Task {
                             await pager.jump(to: recallOffset)
                             if let first = pager.items?.first { proxy.scrollTo(first.id, anchor: .top) }
@@ -90,11 +101,16 @@ struct FavoritesView: View {
                 }
             }
         }
-        .task(id: sort) {
-            sort.save(Self.sortKey)
-            await reload()
+        // 首载与换排序分开：`.task` 每次重新出现都会重跑，放在里面的 reset 会让从详情页返回时整面墙清空、跳回墙首
+        .task {
+            if pager.items == nil { await reload() }
         }
-        .onAppear { Task { await pager.refresh() } }
+        .onChange(of: sort) {
+            sort.save(Self.sortKey)
+            galleryStart = 0
+            Task { await reload() }
+        }
+        .onAppear { if pager.items != nil { Task { await pager.refresh() } } }
         .refreshable { await pager.refresh() }
     }
 
@@ -123,9 +139,15 @@ struct FavoritesView: View {
         } else if pager.items == nil {
             ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
         } else if gallery {
-            LibraryGalleryWall(reloadKey: AnyHashable(sortKeyString)) { [api, effectiveSort, order] offset, limit in
-                try await api.playbackFavoritesGallery(limit: limit, offset: offset, sort: effectiveSort, order: order)
-            }
+            LibraryGalleryWall(
+                reloadKey: AnyHashable(sortKeyString),
+                startOffset: galleryStart,
+                fetch: { [api, effectiveSort, order] offset, limit in
+                    try await api.playbackFavoritesGallery(limit: limit, offset: offset, sort: effectiveSort, order: order)
+                },
+                onOpenItem: { router.push(.libraryItem(libraryId: $0.libraryId, itemId: $0.mediaItemId)) },
+                onFirstVisible: recordOffset
+            )
         } else if let items = pager.items, !items.isEmpty {
             WallLoadPreviousSentinel(start: pager.start) {
                 let anchor = pager.items?.first?.id
@@ -134,19 +156,9 @@ struct FavoritesView: View {
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 12, alignment: .top)], alignment: .leading, spacing: 20) {
                 ForEach(items) { item in
-                    NavigationLink(value: AppRoute.libraryItem(libraryId: item.libraryId, itemId: item.mediaItemId)) {
-                        let dead = item.fileCount > 0 && item.missingCount >= item.fileCount
-                        LibraryPosterCell(
-                            title: item.title, year: item.year,
-                            url: api.image(item.posterUrl, ImageVariant.card(aspect: item.primaryAspect)),
-                            imageAspect: item.primaryAspect, frameAspect: Theme.posterAspect,
-                            favorite: item.isFavorite, dead: dead,
-                            abnormal: dead ? "文件已全部缺失" : item.missingCount > 0 ? "\(item.missingCount) 个文件缺失" : nil,
-                            cornerLabel: favoriteLevelLabel(kind: item.kind, season: item.favoriteSeasonNumber, episode: item.favoriteEpisodeNumber)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .id(item.mediaItemId)
+                    // 与单库墙同一个格子（Web favorites-view → PosterWall → InventoryCell），每格落回自己所属的库；
+                    // 整面墙钉死 2:3（同 Web FAVORITES_FRAME_ASPECT），收藏层级不上墙
+                    LibraryInventoryCell(item: item.asLibraryItem, libraryId: item.libraryId, frameAspect: Theme.posterAspect)
                 }
             }
             .scrollTargetLayout()
@@ -175,13 +187,36 @@ struct FavoritesView: View {
 
     /// 记下第一格的位置；往下滑够一屏，「回到上次位置」胶囊自己让位
     private func trackVisible(_ ids: [Int]) {
-        guard let offsets = pager.items.map({ items in ids.compactMap { id in items.firstIndex { $0.mediaItemId == id } } }),
+        guard !gallery, let offsets = pager.items.map({ items in ids.compactMap { id in items.firstIndex { $0.mediaItemId == id } } }),
               let first = offsets.min() else { return }
-        let offset = pager.start + first
-        if recallOffset != nil, offset - pager.start >= 12 { recallOffset = nil }
+        recordOffset(pager.start + first, windowStart: pager.start)
+    }
+
+    /// 两种形态写同一条位置记录（都按作品计）
+    private func recordOffset(_ offset: Int) {
+        recordOffset(offset, windowStart: galleryStart)
+    }
+
+    private func recordOffset(_ offset: Int, windowStart: Int) {
+        if recallOffset != nil, offset - windowStart >= 12 { recallOffset = nil }
         if offset != firstVisible, recallOffset == nil {
             firstVisible = offset
             LibraryWallRecall.write(scope: Self.recallScope, view: recallView, offset: offset)
         }
+    }
+}
+
+extension API.FavoriteItemView {
+    /// 收藏条目与库存条目字段同构（多出的收藏层级不上墙）：转成库存条目以复用单库墙的格子
+    var asLibraryItem: API.LibraryItemView {
+        API.LibraryItemView(
+            mediaItemId: mediaItemId, kind: kind, libraryId: libraryId, source: source, tmdbId: tmdbId,
+            title: title, year: year, posterUrl: posterUrl, backdropUrl: backdropUrl, primaryAspect: primaryAspect,
+            releaseDate: releaseDate, rating: rating, posterBlur: posterBlur, primaryFileId: primaryFileId,
+            fileCount: fileCount, totalSizeBytes: totalSizeBytes, seasons: seasons, episodeCount: episodeCount,
+            resolutions: resolutions, missingCount: missingCount, airStatus: airStatus,
+            missingEpisodeCount: missingEpisodeCount, addedAt: addedAt, isFavorite: isFavorite,
+            recentAddition: recentAddition, inventorySummary: inventorySummary, probePendingCount: probePendingCount
+        )
     }
 }

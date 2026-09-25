@@ -20,6 +20,8 @@ enum EngineKind: String {
 enum EngineFailureCause {
     case starved
     case decode
+    /// 取流失败（断线、超时、token 过期、服务端中断）：这一档没毛病，同档原地重开，不降档
+    case network
 }
 
 /// 引擎 → 控制器的事件。时间类读数不走事件，由控制器按需读 `currentTime` 等属性。

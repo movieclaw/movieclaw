@@ -180,7 +180,8 @@ nonisolated extension APIClient {
     func librarySetMarks(mediaItemId: Int, season: Int? = nil, episode: Int? = nil, played: Bool? = nil, favorite: Bool? = nil) async throws -> API.PlaybackMarksView {
         try await playbackMarksSet(body: API.PlaybackMarksRequest(
             mediaItemId: mediaItemId, seasonNumber: season, episodeNumber: episode,
-            played: played, favorite: favorite, deviceId: nil
+            // 带上与播放器同一个设备 id（同 Web getPlayerDeviceId）：活动页与 Jellyfin 的设备归属一致
+            played: played, favorite: favorite, deviceId: PlayerPreferences.deviceId
         ))
     }
 }

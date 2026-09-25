@@ -7,8 +7,9 @@ import UIKit
 /// 为什么还要它（而不是全交给 MPV）：画中画、隔空播放（AirPlay 视频）、杜比视界与全景声透传
 /// 只有 AVPlayer 能做；这些是 iPhone 上看片的日常刚需。它吃不下的容器/编码由服务端转封装或转码。
 ///
-/// 字幕：AVPlayer 模式下由 SwiftUI 叠加层渲染（`SubtitleOverlay`），本引擎不碰字幕；
-/// 图形字幕（PGS）走服务端烧录（重开会话），与网页端同一套规则。
+/// 字幕：画面内由 SwiftUI 叠加层渲染（`SubtitleOverlay`，样式可调）；图形字幕（PGS）走服务端烧录。
+/// 叠加层进不了画中画小窗和隔空播放的电视，所以放 VOD 转码流时吃服务端的 master 列表（带 WEBVTT 字幕组），
+/// 进画中画 / 隔空播放时把当前字幕切成系统字幕轨由系统渲染，回到画面内再关掉（避免与叠加层双字幕）。
 @MainActor
 final class AVPlayerEngine: NSObject, PlayerEngine {
     let kind = EngineKind.avPlayer
@@ -20,19 +21,19 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     private var observations: [NSKeyValueObservation] = []
     private var timeObserver: Any?
     private var notificationTokens: [NSObjectProtocol] = []
-    private var watchdog: Timer?
 
     /// 起播目标（readyToPlay 之后才能 seek）
     private var pendingStart: Double = 0
     private var autoplay = true
     private var didPrepare = false
     private var ended = false
-    private var bufferingSince: Date?
     private var desiredRate: Float = 1
     private(set) var isPictureInPictureActive = false
-
-    /// 连续缓冲超过这个时长判为「供流中断」（交给控制器降档或按带宽重开）
-    private static let stallLimit: TimeInterval = 45
+    /// master 列表字幕组里对应当前字幕的下标（nil = 不选字幕 / 没有 master 字幕组）。
+    /// 只在画中画、隔空播放时真正选中，画面内交给叠加层
+    var systemSubtitleIndex: Int? {
+        didSet { applySystemSubtitle() }
+    }
 
     var view: UIView { layerView }
 
@@ -43,6 +44,8 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         player.allowsExternalPlayback = true
         player.usesExternalPlaybackWhileExternalScreenIsActive = true
         player.automaticallyWaitsToMinimizeStalling = true
+        // 字幕轨由我们按「画面内 / 画中画」显式挑，不让系统按辅助功能偏好自动选（否则画面内会出双字幕）
+        player.appliesMediaSelectionCriteriaAutomatically = false
         if AVPictureInPictureController.isPictureInPictureSupported() {
             let controller = AVPictureInPictureController(playerLayer: layerView.playerLayer)
             controller?.canStartPictureInPictureAutomaticallyFromInline = true
@@ -108,7 +111,8 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     var videoSize: CGSize { player.currentItem?.presentationSize ?? .zero }
 
     func stats() -> EngineStats {
-        let event = player.currentItem?.accessLog()?.events.last
+        let events = player.currentItem?.accessLog()?.events ?? []
+        let event = events.last
         let observed = event.map(\.observedBitrate).flatMap { $0 > 0 ? $0 : nil }
         let indicated = event.map(\.indicatedBitrate).flatMap { $0 > 0 ? $0 : nil }
             ?? event.map(\.averageVideoBitrate).flatMap { $0 > 0 ? $0 : nil }
@@ -119,13 +123,37 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
             engine: kind.rawValue,
             downlinkBps: observed,
             bitrateBps: indicated,
-            droppedFrames: event.map(\.numberOfDroppedVideoFrames).flatMap { $0 >= 0 ? $0 : nil },
-            totalFrames: nil,
+            droppedFrames: events.isEmpty ? nil : events.reduce(0) { $0 + max(0, $1.numberOfDroppedVideoFrames) },
+            totalFrames: estimatedTotalFrames(events),
             bufferedSeconds: max(0, (bufferedEnd ?? currentTime) - currentTime),
             currentTimeSeconds: currentTime,
             details: details
         )
     }
+
+    /// AVPlayer 没有「已解码帧数」计数：按各段访问日志的观看时长 × 当前帧率估算，
+    /// 供掉帧看门狗算窗口掉帧率（对应 Web 在 iOS 上用 webkitDecodedFrameCount 的做法）
+    private func estimatedTotalFrames(_ events: [AVPlayerItemAccessLogEvent]) -> Int? {
+        let fps = player.currentItem?.tracks.compactMap { $0.currentVideoFrameRate > 0 ? Double($0.currentVideoFrameRate) : nil }.first
+        guard let fps, !events.isEmpty else { return nil }
+        let watched = events.reduce(0.0) { $0 + max(0, $1.durationWatched) }
+        return Int(watched * fps)
+    }
+
+    /// 画中画 / 隔空播放时选中 master 字幕组里的当前字幕，画面内一律不选
+    private func applySystemSubtitle() {
+        guard let item = player.currentItem else { return }
+        let wantSystem = isPictureInPictureActive || player.isExternalPlaybackActive
+        Task { @MainActor [weak self, weak item] in
+            guard let item, let group = try? await item.asset.loadMediaSelectionGroup(for: .legible) else { return }
+            guard let self, self.player.currentItem === item else { return }
+            let option = wantSystem ? self.systemSubtitleIndex.flatMap { $0 < group.options.count ? group.options[$0] : nil } : nil
+            item.select(option, in: group)
+        }
+    }
+
+    /// 系统正在渲染字幕（隔空播放中）：叠加层此时画在一块黑的本机画面上，应当收起
+    var systemSubtitlesActive: Bool { player.isExternalPlaybackActive && systemSubtitleIndex != nil }
 
     // MARK: - 轨道与字幕（AVPlayer 模式下由控制器重开会话 / 叠加层渲染）
 
@@ -155,8 +183,6 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     }
 
     func destroy() {
-        watchdog?.invalidate()
-        watchdog = nil
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
         observations.removeAll()
@@ -177,10 +203,10 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
             let reason = player.reasonForWaitingToPlay
             Task { @MainActor in self?.timeControlChanged(status, reason: reason) }
         })
-        // 缓冲看门狗：连续缓冲太久判「供流中断」
-        watchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkStall() }
-        }
+        // 隔空播放进出：切换系统字幕轨（卡顿 / 缺粮由控制器的 StallWatch 统一判定）
+        observations.append(player.observe(\.isExternalPlaybackActive, options: [.new]) { @Sendable [weak self] _, _ in
+            Task { @MainActor in self?.applySystemSubtitle() }
+        })
     }
 
     private func observeItem(_ item: AVPlayerItem) {
@@ -201,7 +227,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
             center.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item, queue: .main) { [weak self] note in
                 let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
                 MainActor.assumeIsolated {
-                    self?.onEvent?(.failed(reason: Self.describe(error, fallback: "播放中断"), cause: .decode))
+                    self?.onEvent?(.failed(reason: Self.describe(error, fallback: "播放中断"), cause: Self.cause(of: error)))
                 }
             },
         ]
@@ -212,6 +238,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         case .readyToPlay:
             guard !didPrepare else { return }
             didPrepare = true
+            applySystemSubtitle()
             if pendingStart > 0.5 {
                 let target = CMTime(seconds: pendingStart, preferredTimescale: 600)
                 player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { @Sendable [weak self] _ in
@@ -221,7 +248,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
                 beginPlayback()
             }
         case .failed:
-            onEvent?(.failed(reason: Self.describe(error, fallback: "系统播放器无法播放这个流"), cause: .decode))
+            onEvent?(.failed(reason: Self.describe(error, fallback: "系统播放器无法播放这个流"), cause: Self.cause(of: error)))
         default:
             break
         }
@@ -235,24 +262,29 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     private func timeControlChanged(_ status: AVPlayer.TimeControlStatus, reason: AVPlayer.WaitingReason?) {
         switch status {
         case .playing:
-            bufferingSince = nil
             onEvent?(.playing)
         case .paused:
-            bufferingSince = nil
             if !ended { onEvent?(.paused) }
         case .waitingToPlayAtSpecifiedRate:
             if reason == .noItemToPlay { return }
-            if bufferingSince == nil { bufferingSince = Date() }
             onEvent?(.buffering)
         @unknown default:
             break
         }
     }
 
-    private func checkStall() {
-        guard let since = bufferingSince, Date().timeIntervalSince(since) > Self.stallLimit else { return }
-        bufferingSince = nil
-        onEvent?(.failed(reason: "供流中断：缓冲超过 \(Int(Self.stallLimit)) 秒没有进展", cause: .starved))
+    /// 取流失败归因（对应 Web 的 onNetworkDead）：连接断开、超时、服务端中断这类「这一档没毛病、只是线没通」
+    /// 的错误走同档原地重开（新会话 = 新 token），不降档；其余按「这一档放不了」降档
+    static func cause(of error: Error?) -> EngineFailureCause {
+        guard let error = error as NSError? else { return .decode }
+        let chain = [error] + [error.userInfo[NSUnderlyingErrorKey] as? NSError].compactMap { $0 }
+        for item in chain {
+            if item.domain == NSURLErrorDomain { return .network }
+            // -11863 资源不可用 / -11800 且底层是网络错误 / -12938 HTTP 4xx / -12660 HTTP 403
+            if item.domain == AVFoundationErrorDomain, [-11863, -11828].contains(item.code) { return .network }
+            if item.domain == "CoreMediaErrorDomain", [-12938, -12660, -12971, -12645, -12889].contains(item.code) { return .network }
+        }
+        return .decode
     }
 
     private static func describe(_ error: Error?, fallback: String) -> String {
@@ -263,6 +295,14 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
 }
 
 extension AVPlayerEngine: AVPictureInPictureControllerDelegate {
+    /// 进画中画之前就切好系统字幕轨，小窗一出来就带着字幕
+    nonisolated func pictureInPictureControllerWillStartPictureInPicture(_ controller: AVPictureInPictureController) {
+        Task { @MainActor in
+            self.isPictureInPictureActive = true
+            self.applySystemSubtitle()
+        }
+    }
+
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(_ controller: AVPictureInPictureController) {
         Task { @MainActor in
             self.isPictureInPictureActive = true
@@ -273,6 +313,7 @@ extension AVPlayerEngine: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(_ controller: AVPictureInPictureController) {
         Task { @MainActor in
             self.isPictureInPictureActive = false
+            self.applySystemSubtitle()
             self.onEvent?(.pictureInPicture(false))
         }
     }

@@ -99,6 +99,7 @@ private struct PlayerContent: View {
     @State private var menu: PlayerMenu = .none
     @State private var locked = false
     @State private var lockHint = false
+    @State private var lockHintTask: Task<Void, Never>?
     @State private var brightness = 1.0
     @State private var adjust: AdjustState?
     @State private var volumeUnsupported = false
@@ -140,6 +141,7 @@ private struct PlayerContent: View {
 
                 PlayerGestureLayer(
                     enabled: !isModal,
+                    canHold: controller.canHoldSpeed && !locked,
                     onTap: handleTap,
                     onScrub: handleScrub,
                     onAdjust: handleAdjust,
@@ -156,7 +158,7 @@ private struct PlayerContent: View {
                 if locked {
                     lockOverlay
                 } else {
-                    chrome(landscape: landscape)
+                    chrome(landscape: landscape, height: proxy.size.height)
                 }
 
                 if controller.phase.isBusy {
@@ -180,14 +182,22 @@ private struct PlayerContent: View {
                 if controller.phase == .consent, let decision = controller.pendingDecision {
                     PlayerConsentView(decision: decision, grant: controller.grantConsent, openRemoteSettings: openRemoteSettings, cancel: exit)
                 }
+                if let infoError = controller.infoError {
+                    // 条目信息都拿不到（无权访问、已删除）：同 Web player-page 整页换成原因 +「返回」
+                    PlayerInfoErrorView(message: infoError, exit: exit)
+                }
                 SystemVolumeHost().frame(width: 1, height: 1).allowsHitTesting(false)
             }
             .animation(.easeInOut(duration: 0.25), value: chromeVisible)
             .animation(.easeInOut(duration: 0.2), value: controller.notice)
         }
         .task(id: autoHideKey) {
-            // 控制条 4 秒无操作自动隐藏（暂停、菜单展开、拖动中、诊断打开时不隐藏）
-            guard chromeVisible, !controller.paused, menu == .none, scrubMs == nil, !controller.diagnosticsOpen else { return }
+            // 控制条 4 秒无操作自动隐藏；必须常显的情况（暂停、菜单、拖动、等用户拍板）直接钉住（同 Web chromeMustStayVisible）
+            if !locked, chromeMustStayVisible {
+                chromeVisible = true
+                return
+            }
+            guard chromeVisible, !controller.diagnosticsOpen else { return }
             try? await Task.sleep(for: .seconds(4))
             if !Task.isCancelled { chromeVisible = false }
         }
@@ -195,19 +205,27 @@ private struct PlayerContent: View {
 
     private var isModal: Bool { controller.phase == .error || controller.phase == .consent }
 
+    /// 控制条必须常显（对应 Web `lib/player/chrome.ts` chromeMustStayVisible）：
+    /// 暂停时用户在找播放键；菜单是从控制条里长出来的；按着进度条就是在用它；报错/同意弹窗在等用户拍板。
+    /// 这些情况下既不自动收起，轻点画面也收不起来。起播/缓冲转圈时的「暂停」是程序性的，不算
+    private var chromeMustStayVisible: Bool {
+        let userPaused = controller.paused && !controller.phase.isBusy && controller.session != nil
+        return userPaused || menu != .none || scrubMs != nil || isModal
+    }
+
     /// 暂停遮罩只跟「用户意图」走：缓冲饥饿、换流时的程序性暂停不压暗
     private var showPaused: Bool {
         controller.paused && !controller.wantsPlay && !controller.phase.isBusy && !isModal && controller.positionMs > 0
     }
 
     private var autoHideKey: String {
-        "\(chromeVisible)-\(controller.paused)-\(menu)-\(scrubMs == nil)-\(chromeActivity)"
+        "\(chromeVisible)-\(chromeMustStayVisible)-\(locked)-\(menu)-\(scrubMs == nil)-\(chromeActivity)"
     }
 
     // MARK: 控制层
 
     @ViewBuilder
-    private func chrome(landscape: Bool) -> some View {
+    private func chrome(landscape: Bool, height: CGFloat) -> some View {
         ZStack {
             if chromeVisible {
                 LinearGradient(colors: [.black.opacity(0.75), .clear], startPoint: .top, endPoint: .center)
@@ -216,6 +234,12 @@ private struct PlayerContent: View {
                 LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .center, endPoint: .bottom)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
+            }
+            // 中央三键：控制层可见、不在转圈、不在等用户拍板时一直在（菜单打开时也在，同 Web video-player）。
+            // 摆在顶栏/底栏（含菜单）之下：菜单压住的部分点到的是菜单
+            if chromeVisible, !controller.phase.isBusy, !isModal {
+                PlayerCenterControls(controller: controller)
+                    .transition(.opacity)
             }
             VStack(spacing: 0) {
                 if chromeVisible {
@@ -237,7 +261,8 @@ private struct PlayerContent: View {
                     .padding(.top, 8)
                 }
                 Spacer(minLength: 0)
-                if showPaused, menu == .none {
+                // 高度 ≤480 的横屏（手机横放）不显示片名大字，免得压住中央三键（同 Web）
+                if showPaused, menu == .none, !(landscape && height <= 480) {
                     PausedOverlay(title: controller.title, episodeLabel: controller.episodeLabel(controller.currentEpisode))
                         .padding(.horizontal, 20)
                         .padding(.bottom, 12)
@@ -269,10 +294,6 @@ private struct PlayerContent: View {
                     .padding(.bottom, 8)
                     .transition(.opacity)
                 }
-            }
-            if chromeVisible, !controller.phase.isBusy, !isModal, menu == .none {
-                PlayerCenterControls(controller: controller)
-                    .transition(.opacity)
             }
         }
         .onChange(of: menu) { chromeActivity += 1 }
@@ -306,11 +327,13 @@ private struct PlayerContent: View {
         .animation(.easeInOut(duration: 0.2), value: lockHint)
     }
 
+    /// 唤出解锁键，3 秒后收起；再点一下重新计时（旧的倒计时作废，否则会提前把刚唤出的键收掉）
     private func revealLock() {
         lockHint = true
-        Task {
+        lockHintTask?.cancel()
+        lockHintTask = Task {
             try? await Task.sleep(for: .seconds(3))
-            lockHint = false
+            if !Task.isCancelled { lockHint = false }
         }
     }
 
@@ -370,9 +393,13 @@ private struct PlayerContent: View {
             return
         }
         guard isDouble, controller.session != nil else {
-            // 第一下永远是控制层开关，不为等双击而延迟
+            // 第一下永远是控制层开关，不为等双击而延迟；必须常显时（暂停等）只能唤出、收不起来
             lastTapChromeState = chromeVisible
-            chromeVisible.toggle()
+            if chromeMustStayVisible {
+                chromeVisible = true
+            } else {
+                chromeVisible.toggle()
+            }
             chromeActivity += 1
             return
         }
@@ -383,7 +410,7 @@ private struct PlayerContent: View {
         } else if xRatio > 2 / 3 {
             chromeVisible = lastTapChromeState
             controller.seek(by: 10)
-        } else {
+        } else if !chromeMustStayVisible {
             chromeVisible.toggle()
         }
     }
@@ -397,7 +424,9 @@ private struct PlayerContent: View {
             scrubMs = scrubBase
             scrubbingByGesture = true
         case .changed:
-            scrubMs = min(max(0, scrubBase + Int(delta * 90_000)), duration)
+            let target = min(max(0, scrubBase + Int(delta * 90_000)), duration)
+            scrubMs = target
+            controller.scrubFollow(toFileMs: target)
         case .ended:
             if let scrubMs { controller.seek(toFileMs: scrubMs) }
             scrubMs = nil

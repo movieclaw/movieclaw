@@ -10,7 +10,9 @@ import SwiftUI
    重拉清单并回调 onChanged，让父页刷新待处理计数；
  - 「已忽略」不是待办，是**已处理**的归档：默认不打扰，只在有内容时露出页签，
    给识别器变强之后反悔的机会；
- - 未指定 initialTab 时的落点同 Web ⋯ 菜单：按页签顺序取第一个有内容的，都空了落在「待识别」。
+ - 未指定 initialTab 时的落点同 Web ⋯ 菜单：按页签顺序取第一个有内容的，都空了落在「待识别」；
+ - 刷新节奏跟父页（Web 抽屉直接吃父页的清单，随父页轮询：忙时 3 秒 / 入库或刷新中 10 秒 / 平时 30 秒），
+   父页把当前轮询间隔经 `pollInterval` 传进来；不传按 30 秒。
  */
 
 /// 以 .sheet 呈现，自带 NavigationStack 与关闭按钮
@@ -18,10 +20,13 @@ struct IssueDrawerView: View {
     let libraryId: Int
     var initialTab: String? = nil
     var onChanged: () -> Void = {}
+    /// 父页当前的轮询间隔（秒）
+    var pollInterval: Double = 30
 
-    init(libraryId: Int, initialTab: String? = nil, onChanged: @escaping () -> Void = {}) {
+    init(libraryId: Int, initialTab: String? = nil, pollInterval: Double = 30, onChanged: @escaping () -> Void = {}) {
         self.libraryId = libraryId
         self.initialTab = initialTab
+        self.pollInterval = pollInterval
         self.onChanged = onChanged
     }
 
@@ -58,7 +63,7 @@ struct IssueDrawerView: View {
         }
         .task { await load() }
         // 父页海报墙空闲时 30 秒一轮（清单 13 节），抽屉跟随同一节奏
-        .polling(every: 30) { await load() }
+        .polling(every: pollInterval) { await load() }
         // 切页签清空过滤词（同 Web）
         .onChange(of: tab) { query = "" }
     }

@@ -126,6 +126,17 @@ final class PlaybackController {
     private var directShortSamples = 0
     private var directHintShown = false
     private var qoe = QoE()
+    /// 卡顿归因 / 掉帧看门狗（每秒一个样本，见 PlaybackWatchdogs.swift）
+    private var stallWatch = StallWatch()
+    private var frameDrops = FrameDropTracker()
+    /// 已发出、还没落地的 seek：这段等待不算卡顿（QoE 口径同 Web qoe.ts），看门狗也不把它当停顿
+    private var seekStartedAt: Date?
+    private var backgrounded = false
+    /// 拖动跟随：上一次真的跟过去的时刻与排队中的后沿落地
+    private var lastScrubFollowAt = Date.distantPast
+    private var scrubFollowTask: Task<Void, Never>?
+    /// 本单元内因为选了特效/图形字幕，自动模式改用 MPV（MPV 用 libass 原样渲染）
+    private var preferMPVForSubtitles = false
     private var startTask: Task<Void, Never>?
     private var pingTask: Task<Void, Never>?
     private var progressTask: Task<Void, Never>?
@@ -176,8 +187,14 @@ final class PlaybackController {
             nowPlaying.update(controller: self)
         } catch is CancellationError {
         } catch {
-            // 条目信息只影响标题/海报；拿不到时不挡播放，但要让用户看到原因
+            // 条目信息拿不到几乎必然意味着会话也开不了（同一套可见性判据）：同 Web player-page，
+            // 整页换成原因 + 「返回」，停掉正在起的播放
             infoError = error.localizedDescription
+            attempt += 1
+            startTask?.cancel()
+            engine?.pause()
+            leaveUnit()
+            return
         }
         await loadEpisodes()
     }
@@ -220,6 +237,8 @@ final class PlaybackController {
         deadSession = false
         wantsPlay = true
         qoe = QoE()
+        preferMPVForSubtitles = false
+        resetWatchdogs()
         // `startSeconds` 只覆盖进入播放器的第一个单元；其余交给服务端按观看状态定起点
         var start: Int? = overrideConsumed ? nil : startMsOverride
         overrideConsumed = true
@@ -312,9 +331,15 @@ final class PlaybackController {
         }
     }
 
+    /// 进入播放器时的单元（`request.fileId` 只属于它）
+    private var initialUnit: PlaybackUnit {
+        PlaybackUnit(mediaItemId: request.mediaItemId, season: request.season ?? 0, episode: request.episode ?? 0)
+    }
+
     private func sessionBody(capability: API.ClientCapabilityIn, startMs: Int?, forMPV: Bool) -> API.PlaybackSessionRequest {
         API.PlaybackSessionRequest(
-            fileId: unit.mediaItemId == request.mediaItemId ? request.fileId : nil,
+            // 指定版本只对进入播放器的那个单元有效：切到别的集还带着它，会去请求上一集的文件
+            fileId: unit == initialUnit ? request.fileId : nil,
             mediaItemId: unit.mediaItemId,
             seasonNumber: unit.season,
             episodeNumber: unit.episode,
@@ -344,6 +369,9 @@ final class PlaybackController {
             case .auto:
                 if !mpvAvailable {
                     useMPV = false
+                } else if preferMPVForSubtitles {
+                    // 选中的是 ASS 特效 / PGS 图形字幕：叠加层只能画纯文本、PGS 要服务端烧录，MPV 用 libass 原样渲染
+                    useMPV = true
                 } else {
                     let probe = try await scope.decide(sessionBody(capability: PlayerCapability.avPlayer(), startMs: startMs, forMPV: false))
                     guard myAttempt == attempt else { return }
@@ -386,8 +414,15 @@ final class PlaybackController {
         switch decision.outcome {
         case "consent":
             if let requestedSubtitle, requestedSubtitle != "off" {
-                // 烧录撞上软件转码同意：自动退回旁挂渲染，不打断观看（同 Web）
+                // 烧录撞上软件转码同意：自动退回旁挂渲染，不打断观看（同 Web）。
+                // 图形字幕系统播放器画不了，菜单里不能还挂着选中态、画面上却什么都没有
+                let dropped = subtitles.options.first { $0.ref == requestedSubtitle }
                 self.requestedSubtitle = "off"
+                if dropped?.kind == "pgs" {
+                    selectedSubtitle = nil
+                    subtitleTouched = true
+                    flash("图形字幕需要服务端转码压制，当前未开启软件转码，已关闭字幕")
+                }
                 request(startMs: positionMs, phase: .sessionStarting)
                 return
             }
@@ -425,6 +460,10 @@ final class PlaybackController {
             original = true
             if let sid = session.sessionId { let scope = self.scope; Task { await scope.stop(sid) } }
             activeSessionId = nil
+        } else if !useMPV, session.timeline == "file", let master = session.masterUrl {
+            // AVPlayer 放 VOD：吃 master 列表，里面的 WEBVTT 字幕组让画中画 / 隔空播放时由系统渲染字幕
+            url = scope.streamURL(master)
+            activeSessionId = session.sessionId
         } else {
             url = scope.streamURL(session.streamUrl)
             activeSessionId = session.sessionId
@@ -450,6 +489,15 @@ final class PlaybackController {
             selectedSubtitle = subtitles.initialSelection(remembered: remembered)
         }
 
+        if !useMPV, shouldSwitchToMPVForSubtitles(selectedSubtitle) {
+            // 续播记忆 / 默认轨是特效或图形字幕：自动模式下直接换 MPV 原样渲染，不让用户先看到纯文本或等烧录
+            preferMPVForSubtitles = true
+            if let sid = session.sessionId { let scope = self.scope; Task { await scope.stop(sid) } }
+            activeSessionId = nil
+            request(startMs: positionMs, phase: .sessionStarting)
+            return
+        }
+
         // 5. 挂引擎
         let newEngine: any PlayerEngine
         if useMPV {
@@ -469,12 +517,14 @@ final class PlaybackController {
             self.handleEngineEvent(event)
         }
         newEngine.applySubtitleStyle(subtitleStyle)
+        resetWatchdogs()
         let startSeconds = Double(max(0, positionMs - originMs)) / 1000
         newEngine.load(url: url, start: startSeconds, autoplay: wantsPlay)
         if original, let index = decision.audio?.trackRef.flatMap({ AudioOption(ref: $0, label: "", isDefault: false).embeddedIndex }) {
             newEngine.selectAudio(embeddedIndex: index)
         }
         applySubtitleToEngine()
+        applySystemSubtitle()
         phase = .buffering
         deadSession = false
         bandwidthRestarted = false
@@ -544,6 +594,10 @@ final class PlaybackController {
         switch event {
         case .playing:
             paused = false
+            if let since = seekStartedAt {
+                qoe.lastSeekMs = Int(Date().timeIntervalSince(since) * 1000)
+                seekStartedAt = nil
+            }
             guard [.buffering, .playing, .ended].contains(phase) else { return }
             if phase == .buffering, qoe.bufferingSince != nil { qoe.endRebuffer() }
             phase = .playing
@@ -564,11 +618,13 @@ final class PlaybackController {
             }
         case .paused:
             paused = true
+            seekStartedAt = nil
             if reportedStart { sendProgress(paused: true) }
         case .buffering:
             if phase == .playing {
                 phase = .buffering
-                qoe.beginRebuffer()
+                // seek 造成的等待是「跳转耗时」，不是卡顿（同 Web qoe.ts 口径）
+                if seekStartedAt == nil { qoe.beginRebuffer() }
             }
             if holdSpeedActive, (engine?.bufferedEnd ?? 0) - (engine?.currentTime ?? 0) < 1 {
                 // 倍速吃光了前向缓冲：退回原速
@@ -604,6 +660,13 @@ final class PlaybackController {
                 return
             }
             mpvFallback(reason: reason)
+            return
+        }
+        if cause == .network {
+            // 取流持续失败（断线、token 过期、服务端中断）：同档原地重开（新会话 = 新 token），不降档；
+            // 真断网时重开请求本身会失败，落到错误页（同 Web onNetworkDead）
+            scope.clientLog("network-restart", ["reason": .string(reason)])
+            request(startMs: positionMs, phase: .sessionStarting)
             return
         }
         let stats = engine?.stats()
@@ -687,6 +750,7 @@ final class PlaybackController {
         var target = max(0, raw)
         if let durationMs, durationMs > 1000 { target = min(target, durationMs - 1000) }
         qoe.seekCount += 1
+        scrubFollowTask?.cancel()
         guard let engine, session != nil, phase != .sessionStarting, phase != .deciding, phase != .degrading else {
             // 会话正在重开的空档：改走换会话，新会话直接从目标位置起
             if phase.isBusy, session == nil, phase != .deciding || positionMs > 0 {
@@ -695,18 +759,61 @@ final class PlaybackController {
             }
             return
         }
-        if session?.timeline == "session", activeSessionId != nil {
-            // 旧式会话相对列表只能从起点往后转：拖出区间必须换会话
+        if session?.timeline == "session", activeSessionId != nil, !withinSessionBuffer(target) {
+            // 旧式会话相对列表只覆盖已转出的部分：落点在区间外才换会话，区间内原地跳（同 Web planSeek）
             positionMs = target
             request(startMs: target, phase: .sessionStarting)
             return
         }
         positionMs = target
         if phase == .ended { phase = .buffering }
+        seekStartedAt = Date()
+        stallWatch.reset()
+        frameDrops.reset()
         engine.seek(to: Double(target - originMs) / 1000, exact: exact)
     }
 
+    /// 落点是否在当前会话已转出的区间里（会话起点 ~ 已缓冲尾）
+    private func withinSessionBuffer(_ fileMs: Int) -> Bool {
+        guard let bufferedEndMs else { return false }
+        return fileMs >= originMs && fileMs <= bufferedEndMs
+    }
+
+    // MARK: 拖动跟随
+
+    /// 拖动进度条途中让画面跟着手指走（对应 Web scrub-follow.ts）：跳转便宜时（落点在缓冲里）10Hz 跟随，
+    /// 原文件直出拖出缓冲时只在手指停住后跟一次，其余情况松手才跳。跟随不计入 seek 次数，松手那次才算
+    func scrubFollow(toFileMs target: Int) {
+        guard let engine, session != nil, [.playing, .buffering, .ended].contains(phase) else { return }
+        let reachable = target >= originMs
+        let cheap = target >= positionMs - 1000 && target <= (bufferedEndMs ?? 0)
+        let now = Date()
+        let plan = ScrubFollow.plan(
+            nowMs: Int(now.timeIntervalSince1970 * 1000),
+            lastFollowMs: Int(lastScrubFollowAt.timeIntervalSince1970 * 1000),
+            cheap: cheap, reachable: reachable, settleOnly: playsOriginalFile
+        )
+        scrubFollowTask?.cancel()
+        switch plan {
+        case .skip:
+            return
+        case .follow:
+            lastScrubFollowAt = now
+            engine.seek(to: Double(target - originMs) / 1000, exact: false)
+        case let .deferred(ms):
+            scrubFollowTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(ms))
+                guard let self, !Task.isCancelled, let engine = self.engine else { return }
+                self.lastScrubFollowAt = Date()
+                engine.seek(to: Double(target - self.originMs) / 1000, exact: false)
+            }
+        }
+    }
+
     // MARK: 长按 2 倍速
+
+    /// 现在能不能起长按倍速（同 Web canHoldSpeed：暂停时不行，松手按轻点处理）
+    var canHoldSpeed: Bool { engine.map { !$0.isPaused } ?? false && phase == .playing }
 
     func beginHoldSpeed() -> Bool {
         guard let engine, !engine.isPaused, phase == .playing else { return false }
@@ -764,6 +871,16 @@ final class PlaybackController {
             if reportedStart { sendProgress(paused: paused) }
             return
         }
+        if shouldSwitchToMPVForSubtitles(ref) {
+            // 自动模式下选了特效/图形字幕：换 MPV 原样渲染（不再走「ASS 降级纯文本」或「PGS 服务端烧录」）
+            preferMPVForSubtitles = true
+            requestedSubtitle = ref
+            wantsPlay = true
+            request(startMs: positionMs, phase: .sessionStarting)
+            if reportedStart { sendProgress(paused: paused) }
+            return
+        }
+        applySystemSubtitle()
         let wantBurn = target?.kind == "pgs"
         if !wantBurn, burnedSubtitle == nil {
             // 纯文本切换，叠加层搞定
@@ -777,9 +894,31 @@ final class PlaybackController {
         request(startMs: positionMs, phase: .sessionStarting)
     }
 
-    /// 叠加层要渲染的文本字幕（AVPlayer 模式）：ASS 由服务端转成 VTT 纯文本
+    /// 自动模式下、当前是系统播放器、选中的是 ASS/PGS、MPV 可用 → 该换 MPV
+    private func shouldSwitchToMPVForSubtitles(_ ref: String?) -> Bool {
+        guard enginePreference == .auto, mpvAvailable, !preferMPVForSubtitles, engine?.kind != .mpv,
+              let ref, let option = subtitles.options.first(where: { $0.ref == ref }) else { return false }
+        return ["ass", "pgs"].contains(option.kind)
+    }
+
+    /// 把当前字幕对应到 master 字幕组的下标，交给 AVPlayer 在画中画 / 隔空播放时由系统渲染。
+    /// master 字幕组按会话字幕计划的顺序只收文本类（vtt/ass），与服务端 `_master_subtitle_tracks` 一致
+    private func applySystemSubtitle() {
+        guard let avPlayer = engine as? AVPlayerEngine else { return }
+        guard session?.masterUrl != nil, session?.timeline == "file", burnedSubtitle == nil, let ref = selectedSubtitle,
+              let plans = session?.decision.subtitles else {
+            avPlayer.systemSubtitleIndex = nil
+            return
+        }
+        let textPlans = plans.filter { ["vtt", "ass"].contains($0.kind) }
+        avPlayer.systemSubtitleIndex = textPlans.firstIndex { $0.trackRef == ref }
+    }
+
+    /// 叠加层要渲染的文本字幕（AVPlayer 模式）：ASS 由服务端转成 VTT 纯文本。
+    /// 隔空播放时字幕由系统画在电视上，本机叠加层收起
     var overlaySubtitleURL: URL? {
-        guard !engineRendersSubtitles, burnedSubtitle == nil, let ref = selectedSubtitle,
+        guard !engineRendersSubtitles, burnedSubtitle == nil, !((engine as? AVPlayerEngine)?.systemSubtitlesActive ?? false),
+              let ref = selectedSubtitle,
               let option = subtitles.options.first(where: { $0.ref == ref }), option.kind != "pgs" else { return nil }
         return scope.streamURL(option.path + "&format=vtt")
     }
@@ -824,6 +963,9 @@ final class PlaybackController {
     // MARK: - 前后台
 
     func setBackgrounded(_ background: Bool) {
+        backgrounded = background
+        // 后台时引擎主动丢帧 / 不出画，回来先清窗口，免得误判卡顿与掉帧
+        resetWatchdogs()
         engine?.setBackgrounded(background)
         if !background, let activeSessionId {
             // 回前台先探一次活：后台期间心跳可能被系统挂起、会话已被回收
@@ -943,7 +1085,43 @@ final class PlaybackController {
                 flash("线路速度低于片源码率，可在设置里选更低画质")
             }
         }
+        runWatchdogs(engine: engine, stats: stats)
         nowPlaying.updatePosition(controller: self)
+    }
+
+    private func resetWatchdogs() {
+        stallWatch.reset()
+        frameDrops.reset()
+    }
+
+    /// 每秒一次：卡顿归因（解码卡死 / 缺粮）与直通掉帧。命中就走既有的失败回路（降档 / 带宽重开 / MPV 回落）
+    private func runWatchdogs(engine: any PlayerEngine, stats: EngineStats) {
+        guard session != nil, [.buffering, .playing].contains(phase), !backgrounded else { return }
+        let starveLimit = playsOriginalFile ? StallWatch.directStarveSeconds : StallWatch.starveSeconds
+        let ahead = max(0, (engine.bufferedEnd ?? engine.currentTime) - engine.currentTime)
+        switch stallWatch.sample(time: engine.currentTime, bufferedAhead: ahead, paused: engine.isPaused,
+                                 ended: phase == .ended, seeking: seekStartedAt != nil, starveLimit: starveLimit) {
+        case .ok:
+            break
+        case .nudge:
+            scope.clientLog("stall-nudge", ["position_ms": .int(positionMs)])
+            engine.seek(to: engine.currentTime + StallWatch.nudgeStep, exact: true)
+            engine.play()
+        case .decodeStalled:
+            engineFailed(reason: StallWatch.reason(.decodeStalled, starveLimit: starveLimit), cause: .decode)
+            return
+        case .starved:
+            engineFailed(reason: StallWatch.reason(.starved, starveLimit: starveLimit), cause: .starved)
+            return
+        }
+        // 掉帧只在视频直通时判：转码档已经是 h264，再掉帧说明连转码产物都放不动，继续降档只会更糟
+        let copying = playsOriginalFile || session?.decision.video?.action == "copy"
+        guard copying, phase == .playing, !engine.isPaused, seekStartedAt == nil,
+              let dropped = stats.droppedFrames, let total = stats.totalFrames else { return }
+        if let ratio = frameDrops.sample(dropped: dropped, total: total), ratio >= FrameDropTracker.ratio {
+            frameDrops.reset()
+            engineFailed(reason: "直通播放持续掉帧（\(Int((ratio * 100).rounded()))%），正在换转码重试", cause: .decode)
+        }
     }
 
     /// bps → 「3.2 MB/s」（用户对下载速度的直觉来自下载器，一律 MB/s，进位 1024；同 Web formatBandwidth）
@@ -969,7 +1147,8 @@ final class PlaybackController {
                 if let snapshot = try? await self.scope.diagnostics(sessionId, token: token) {
                     self.serverDiagnostics = snapshot
                 }
-                try? await Task.sleep(for: .seconds(1))
+                // 2 秒一次（同 Web）：诊断是旁路信息，不值得更密地打 NAS
+                try? await Task.sleep(for: .seconds(2))
             }
         }
     }
@@ -988,6 +1167,12 @@ final class PlaybackController {
                 try? await Task.sleep(for: .seconds(30))
             }
         }
+    }
+
+    /// 诊断面板「传输」节的 QoE 行：上次跳转耗时、卡顿次数与累计时长（卡顿不含 seek 造成的等待）
+    var qoeLive: (lastSeekMs: Int?, rebufferCount: Int, rebufferMs: Int) {
+        let ongoing = qoe.bufferingSince.map { Int(Date().timeIntervalSince($0) * 1000) } ?? 0
+        return (qoe.lastSeekMs, qoe.rebufferCount, qoe.rebufferMs + ongoing)
     }
 
     // MARK: - 提示
@@ -1011,6 +1196,8 @@ final class PlaybackController {
 /// 一次播放的质量读数（对应 Web `lib/player/qoe.ts` 的归约结果）
 private struct QoE {
     var requestedAt: Date?
+    /// 最近一次 seek 从发出到重新出画的耗时（诊断面板「上次跳转 x 秒」）
+    var lastSeekMs: Int?
     var ttffMs: Int?
     var rebufferCount = 0
     var rebufferMs = 0

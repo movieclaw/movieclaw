@@ -36,6 +36,72 @@ final class PlayerUITests: XCTestCase {
         try runPlayback(item: item, engine: "mpv", expectEngine: "MPV（libmpv）", shotPrefix: "mpv")
     }
 
+    /// 中央三键（后退 10 秒 / 播放暂停 / 前进 10 秒）：在播且控制层可见时必须存在、可点（对等审计 P-1）。
+    /// 两种引擎各测一遍；不开诊断面板（与普通观看一致），开播到退出控制在 30 秒内。
+    @MainActor
+    func testCenterControlsWithSystemPlayer() throws {
+        let (item, duration) = try XCTUnwrap(try findMovie(container: "mp4"), "服务器上没有找到 MP4 电影")
+        startSeconds = duration / 10
+        try runCenterControls(item: item, engine: "system", shotPrefix: "center-avplayer")
+    }
+
+    /// MPV 在模拟器上走 OpenGL ES、主线程逐帧绘制，XCUITest 每步都慢到跨过控制层 4 秒自动收起，
+    /// 所以这一条打开诊断面板把控制层钉住（判别式不变：控制层可见时中央键必须在）。
+    /// 可用 MC_TEST_MPV_ITEM 指定一部码率低些的 MKV（片子由测试现找时取第一部单文件 MKV）
+    @MainActor
+    func testCenterControlsWithMPV() throws {
+        if let raw = env["MC_TEST_MPV_ITEM"], let item = Int(raw) {
+            startSeconds = 600
+            try runCenterControls(item: item, engine: "mpv", shotPrefix: "center-mpv", pinChrome: true)
+            return
+        }
+        let (item, duration) = try XCTUnwrap(try findMovie(container: "mkv"), "服务器上没有找到 MKV 电影")
+        startSeconds = duration / 10
+        try runCenterControls(item: item, engine: "mpv", shotPrefix: "center-mpv", pinChrome: true)
+    }
+
+    @MainActor
+    private func runCenterControls(item: Int, engine: String, shotPrefix: String, pinChrome: Bool = false) throws {
+        continueAfterFailure = false
+        let before = try resume(item)
+        // 用例中途失败也要恢复续播点（continueAfterFailure=false 时 defer 不一定执行）
+        addTeardownBlock { [self] in try? restoreResume(item, positionMs: before) }
+        let app = launch(item: item, engine: engine, diagnostics: pinChrome)
+        XCTAssertTrue(waitForPosition(app, atLeast: startSeconds + 1, timeout: 20), "进度没有前进（引擎 \(engine)）")
+
+        // 判别式：控制层可见（底栏时间在）时，中央三键必须同时在。
+        // 控制层 4 秒无操作会自己收起，所以用**一次快照**同时查时间与三键（query.count 只取一次界面树），
+        // 查到控制层收起了就点画面唤出再查
+        let playPause = app.buttons["player-play-pause"]
+        let chromeIds = ["player-time", "后退 10 秒", "player-play-pause", "前进 10 秒"]
+        let chromeQuery = app.descendants(matching: .any).matching(NSPredicate(format: "identifier IN %@", chromeIds))
+        var visibleCount = 0
+        for _ in 0 ..< 4 {
+            visibleCount = chromeQuery.count
+            if visibleCount > 0 { break }
+            tapEmptyArea(app, dx: 0.5, dy: 0.7)
+        }
+        XCTAssertEqual(visibleCount, chromeIds.count, "控制层可见、正在播放时，时间与中央三键应同时在（实际只找到 \(visibleCount) 个）")
+        shot(app, "\(shotPrefix)-playing")
+
+        // 点中央键暂停：先让控制层「刚刚唤出」，留满 4 秒再点（点击前 tapControl 断言 isHittable）
+        freshChrome(app)
+        tapControl(app, "player-play-pause")
+        wait(for: [expectation(for: NSPredicate(format: "label == %@", "播放"), evaluatedWith: playPause)], timeout: 5)
+        // 暂停时控制层钉住不自动收起（P-7），三键一直在且可点
+        sleep(5)
+        for identifier in ["后退 10 秒", "player-play-pause", "前进 10 秒"] {
+            let button = app.buttons[identifier]
+            XCTAssertTrue(button.exists && button.isHittable, "暂停 5 秒后中央键 \(identifier) 不在或被遮挡")
+        }
+        shot(app, "\(shotPrefix)-paused")
+        // 再点一次恢复播放
+        tapControl(app, "player-play-pause")
+        wait(for: [expectation(for: NSPredicate(format: "label == %@", "暂停"), evaluatedWith: playPause)], timeout: 5)
+        tapControl(app, "player-close")
+        XCTAssertTrue(app.descendants(matching: .any)["player-screen"].waitForNonExistence(timeout: 10), "播放器没有关闭")
+    }
+
     /// 横屏键 → 横屏布局与锁屏 → 解锁 → 左上角「退出横屏」回到竖屏
     @MainActor
     func testLandscapeAndLock() throws {
@@ -187,6 +253,17 @@ final class PlayerUITests: XCTestCase {
         _ = app.staticTexts["player-time"].waitForExistence(timeout: 3)
     }
 
+    /// 让控制层处在「刚唤出」的状态：可见就先点一下收起、再点一下唤出，自动收起的 4 秒倒计时从头算
+    @MainActor
+    private func freshChrome(_ app: XCUIApplication) {
+        if app.staticTexts["player-time"].exists {
+            tapEmptyArea(app, dx: 0.5, dy: 0.7)
+            _ = app.staticTexts["player-time"].waitForNonExistence(timeout: 3)
+        }
+        tapEmptyArea(app, dx: 0.5, dy: 0.7)
+        _ = app.staticTexts["player-time"].waitForExistence(timeout: 3)
+    }
+
     /// 点控制层上的按钮：控制条藏起来了就先点画面唤出（控制条 4 秒无操作自动隐藏）
     @MainActor
     private func tapControl(_ app: XCUIApplication, _ identifier: String) {
@@ -207,9 +284,16 @@ final class PlayerUITests: XCTestCase {
     @MainActor
     private func tapEmptyArea(_ app: XCUIApplication, dx: CGFloat, dy: CGFloat) {
         let point = app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy))
-        let covering = app.buttons.allElementsBoundByIndex.first { $0.isHittable && $0.frame.contains(point.screenPoint) }
+        // 只查播放器里的按钮，且用一次快照查完：全屏播放器盖住了下层页面（逐个查下层几十个按钮在主线程忙时
+        // 要好几分钟），控制层又会 4 秒自动收起（逐个取元素时按钮可能刚好消失，查询本身就失败）
+        let root = try? app.descendants(matching: .any)["player-screen"].snapshot()
+        let covering = root.flatMap { Self.buttons(in: $0).first { $0.frame.contains(point.screenPoint) } }
         XCTAssertNil(covering, "落点 (\(dx), \(dy)) 上有控件 \(covering?.identifier ?? "")，不能盲点")
         point.tap()
+    }
+
+    private static func buttons(in snapshot: XCUIElementSnapshot) -> [XCUIElementSnapshot] {
+        (snapshot.elementType == .button ? [snapshot] : []) + snapshot.children.flatMap { buttons(in: $0) }
     }
 
     /// 当前播放头（秒），读自底栏时间标签的可访问性值

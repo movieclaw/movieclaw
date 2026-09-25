@@ -15,13 +15,23 @@ import UIKit
 /// - 点照片开灯箱（缩放、拍摄信息、下载原图），见 `PhotoLightbox.swift` 的 `PhotoWallView.Lightbox`。
 ///
 /// **本视图是滚动内容，不自带 ScrollView**：调用方放进自己页面的 ScrollView。
-/// 数据通过 `fetch(offset, limit)` 自己分页加载；`reloadKey` 变化即从头重载。
+/// 数据通过 `fetch(offset, limit)` 自己分页加载；`reloadKey` 变化即从头重载；
+/// `refreshToken` 变化（宿主每轮轮询 / 下拉刷新）按已加载窗口整窗重拉，不动滚动位置——
+/// 扫描入库的新照片、删掉的照片跟着出现或消失（同 Web 墙轮询整窗重拉）。
+/// 「回到上次位置」：宿主改 `jumpRequest` 把窗口换到那张，`onFirstVisible` 回报视口第一张的位置。
 struct PhotoWallView: View {
     let libraryId: Int
     let reloadKey: AnyHashable
     let fetch: (_ offset: Int, _ limit: Int) async throws -> [API.LibraryItemView]
     /// 是否按月分段（默认分）；「最近添加」序传 false
     var grouped: Bool = true
+    var refreshToken: Int = 0
+    /// 跳到某个位置（「回到上次位置」）；每次请求带新的 id 以便重复跳同一处
+    var jumpRequest: PhotoWallJump?
+    /// 这一张正被后台处理的文案（整库刷新阶段 / 后台任务 / 正在读取规格），同 Web workingLabel
+    var working: (API.LibraryItemView) -> String? = { _ in nil }
+    /// 视口里第一张在整份排序里的位置
+    var onFirstVisible: (Int) -> Void = { _ in }
 
     /// 一页条目数（同 Web WALL_PAGE_SIZE）
     static let pageSize = 60
@@ -31,6 +41,8 @@ struct PhotoWallView: View {
     @State private var width: CGFloat = 0
     @State private var lightbox: PhotoLightboxSession?
     @State private var scroller = WallScroller()
+    /// 视口里的行（行下标 → 该行第一张的全局下标）
+    @State private var visibleRows: [Int: Int] = [:]
     private var density: GalleryDensity { GalleryPrefs.shared.density }
 
     var body: some View {
@@ -39,6 +51,11 @@ struct PhotoWallView: View {
             .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
             .background(alignment: .top) { WallScrollAnchor(scroller: scroller).frame(height: 1) }
             .task(id: ReloadToken(key: reloadKey, grouped: grouped)) { await reload() }
+            .onChange(of: refreshToken) { Task { await feed.refresh(fetch: fetch) } }
+            .onChange(of: jumpRequest) { _, request in
+                guard let request else { return }
+                Task { if await feed.jump(to: request.offset, fetch: fetch) { scroller.scrollToTop() } }
+            }
             .fullScreenCover(item: $lightbox) { session in
                 Lightbox(libraryId: libraryId, feed: feed, fetch: fetch, index: session.index)
             }
@@ -81,6 +98,9 @@ struct PhotoWallView: View {
                 rowView(row)
                     .onAppear {
                         if position >= rows.count - 4 { Task { await feed.loadMore(fetch: fetch) } }
+                    }
+                    .onScrollVisibilityChange(threshold: 0.2) { visible in
+                        trackVisible(position: position, row: row, visible: visible)
                     }
             }
             if feed.hasMore {
@@ -140,6 +160,14 @@ struct PhotoWallView: View {
         .buttonStyle(.glass)
     }
 
+    private func trackVisible(position: Int, row: PhotoRow, visible: Bool) {
+        var first: Int?
+        if case let .band(band, indices) = row.kind, let tile = band.tiles.min(by: { $0.id < $1.id }) { first = indices[tile.id] }
+        if visible, let first { visibleRows[position] = first } else { visibleRows[position] = nil }
+        guard let top = visibleRows.min(by: { $0.key < $1.key })?.value else { return }
+        onFirstVisible(feed.start + top)
+    }
+
     @ViewBuilder
     private func rowView(_ row: PhotoRow) -> some View {
         switch row.kind {
@@ -168,7 +196,7 @@ struct PhotoWallView: View {
             Button {
                 lightbox = PhotoLightboxSession(index: index)
             } label: {
-                PhotoTile(item: item, url: api.image(item.posterUrl, density.variant))
+                PhotoTile(item: item, url: api.image(item.posterUrl, density.variant), working: working(item))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("查看 \(item.title)")
@@ -212,6 +240,12 @@ struct PhotoWallView: View {
     }
 }
 
+/// 「回到上次位置」的一次跳转请求
+struct PhotoWallJump: Equatable {
+    let id = UUID()
+    var offset: Int
+}
+
 /// reloadKey 与分段开关任一变化都从头重载（分段决定要不要拉月份索引）
 private struct ReloadToken: Equatable {
     var key: AnyHashable
@@ -240,6 +274,7 @@ private struct PhotoRow: Identifiable {
 private struct PhotoTile: View {
     let item: API.LibraryItemView
     let url: URL?
+    var working: String?
 
     private var dead: Bool { item.fileCount > 0 && item.missingCount >= item.fileCount }
 
@@ -278,7 +313,18 @@ private struct PhotoTile: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if dead {
+            if let working {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini).tint(Theme.info)
+                    Text(working).lineLimit(1)
+                }
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(Theme.info)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color(red: 7 / 255, green: 12 / 255, blue: 20 / 255).opacity(0.92))
+            } else if dead {
                 Text("文件已缺失")
                     .font(.caption2)
                     .foregroundStyle(Theme.textMuted)
@@ -387,6 +433,29 @@ extension PhotoWallView {
                 start = offset
                 replace(with: Self.dedupe(page + items))
             } catch {}
+        }
+
+        /// 按已加载的窗口整窗重拉并整体替换（轮询 / 下拉刷新），窗口起点不变、失败保留旧窗口
+        func refresh(fetch: Fetch) async {
+            guard !loading, case .loaded = phase else { return }
+            let current = generation
+            let count = max(PhotoWallView.pageSize, items.count)
+            var rows: [API.LibraryItemView] = []
+            var offset = start
+            do {
+                while offset < start + count {
+                    let page = try await fetch(offset, PhotoWallView.pageSize)
+                    rows += page
+                    if page.count < PhotoWallView.pageSize { break }
+                    offset += PhotoWallView.pageSize
+                }
+            } catch {
+                return
+            }
+            guard current == generation, !loading else { return }
+            hasMore = rows.count >= count
+            let next = Self.dedupe(rows)
+            if next.map(\.mediaItemId) != items.map(\.mediaItemId) || next != items { replace(with: next) }
         }
 
         /// 把窗口换成从 offset 开始的一页；成功返回 true（调用方据此滚回墙顶）
