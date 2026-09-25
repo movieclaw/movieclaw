@@ -212,6 +212,7 @@ final class SubscriptionsUITests: XCTestCase {
         openManage(app, "暂停追踪")
         let pause = app.alerts.buttons["暂停追踪"]
         XCTAssertTrue(pause.waitForExistence(timeout: 10), "应先二次确认")
+        XCTAssertTrue(app.alerts.buttons["返回"].exists, "取消键应为「返回」（同 Web cancelLabel）")
         pause.tap()
         XCTAssertTrue(wait(status, contains: "已暂停"), "暂停后状态：\(status.label)")
         snapshot("暂停追踪")

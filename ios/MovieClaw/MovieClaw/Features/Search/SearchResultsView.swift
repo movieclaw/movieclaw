@@ -7,7 +7,8 @@ import SwiftUI
 /// 只有真正切到它才发起；切走后流式搜索照常进行、结果保留，切回来不重搜。
 ///
 /// 关键词为空 = 浏览模式：只逛站点资源的分类列表页（影视/媒体库没有「浏览」语义）。
-/// 快照（snapshot）属于打开它的那个垂直；另一个垂直一律实时搜索。
+/// 快照（snapshot）属于打开它的那个垂直；在快照态切到另一个垂直即丢掉快照、全部重来
+/// （同 Web：切垂直会去掉地址里的 snapshot，搜索身份变了整体重挂载），切回原垂直也是实时搜索。
 /// 路由的 `scope` 参数是 `SearchScope.encoded` 的查询串（label / cats / sites / poster / private）。
 struct SearchResultsView: View {
     let query: AppRoute.SearchQuery
@@ -36,7 +37,14 @@ struct SearchResultsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if access.ready, visibleVerticals.isEmpty {
-                EmptyState(systemImage: "magnifyingglass", title: "无法搜索", message: "当前账号没有可用的搜索入口，请联系管理员调整成员权限。")
+                // 同 Web：只有一行说明，不带标题与图标
+                Text("当前账号没有可用的搜索入口，请联系管理员调整成员权限。")
+                    .font(.body)
+                    .foregroundStyle(Theme.textMuted)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("search-no-access")
             } else {
                 selector
                 ZStack(alignment: .top) {
@@ -132,10 +140,16 @@ struct SearchResultsView: View {
         .padding(.bottom, 6)
     }
 
-    /// 切换垂直：只切显示，范围与已出的结果保留
+    /// 切换垂直：只切显示，范围与已出的结果保留；快照态例外——丢掉快照、各垂直重新挂载
     private func switchTo(_ target: SearchVertical) {
         guard target != vertical else { return }
         vertical = target
+        if torrentSnapshot != nil || mediaSnapshot != nil {
+            torrentSnapshot = nil
+            mediaSnapshot = nil
+            visited = []
+            rebuildTorrentModel()
+        }
         visited.insert(target)
     }
 
@@ -177,7 +191,7 @@ struct MediaSearchResultsView: View {
                     Text("“\(keyword)”").font(.title2.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
                     Spacer()
                     if let snapshotAt {
-                        Label("\(Formatters.relative(snapshotAt))的快照", systemImage: "clock")
+                        Label("\(SubsFormat.relative(snapshotAt))的快照", systemImage: "clock")
                             .font(.caption).foregroundStyle(Theme.textMuted)
                         Button("重新搜索", action: onResearch)
                             .font(.caption.weight(.semibold))
@@ -222,7 +236,7 @@ struct MediaSearchResultsView: View {
                 }
             }
             if items == nil, error == nil {
-                LazyVGrid(columns: DiscoverGrid.columns, spacing: 20) {
+                LazyVGrid(columns: DiscoverGrid.wideColumns, spacing: 28) {
                     ForEach(0 ..< 6, id: \.self) { _ in
                         DiscoverSkeletonBlock(cornerRadius: Theme.posterRadius).aspectRatio(2 / 3, contentMode: .fit)
                     }
@@ -235,7 +249,7 @@ struct MediaSearchResultsView: View {
                 if items.isEmpty {
                     Text("该来源没有找到相关条目").font(.subheadline).foregroundStyle(Theme.textMuted)
                 } else {
-                    LazyVGrid(columns: DiscoverGrid.columns, spacing: 20) {
+                    LazyVGrid(columns: DiscoverGrid.wideColumns, spacing: 28) {
                         ForEach(items) { DiscoverPosterCard(item: $0) }
                     }
                 }
@@ -291,7 +305,7 @@ struct LibrarySearchResultsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 Text("“\(keyword)”").font(.title2.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
                 if groups == nil, error == nil {
-                    LazyVGrid(columns: DiscoverGrid.columns, spacing: 20) {
+                    LazyVGrid(columns: DiscoverGrid.wideColumns, spacing: 28) {
                         ForEach(0 ..< 6, id: \.self) { _ in
                             DiscoverSkeletonBlock(cornerRadius: Theme.posterRadius).aspectRatio(2 / 3, contentMode: .fit)
                         }
@@ -318,7 +332,7 @@ struct LibrarySearchResultsView: View {
                             DiscoverTag(text: group.libraryName, foreground: Theme.accent, background: .black.opacity(0.3))
                             Text("共 \(group.items.count) 条结果").font(.subheadline).foregroundStyle(Theme.textMuted)
                         }
-                        LazyVGrid(columns: DiscoverGrid.columns, spacing: 20) {
+                        LazyVGrid(columns: DiscoverGrid.wideColumns, spacing: 28) {
                             ForEach(group.items, id: \.mediaItemId) { item in
                                 cell(item, libraryId: group.libraryId)
                             }
@@ -349,7 +363,6 @@ struct LibrarySearchResultsView: View {
             title: item.title,
             year: item.year,
             posterUrl: item.posterUrl,
-            favorite: item.isFavorite,
             aspect: CGFloat(item.primaryAspect)
         )
         var parts: [String] = []
@@ -366,7 +379,6 @@ struct LibrarySearchResultsView: View {
             item: visual,
             action: action,
             onOpen: { router.push(.libraryItem(libraryId: libraryId, itemId: item.mediaItemId)) },
-            showsSubscribedRibbon: false,
             footnote: parts.isEmpty ? nil : parts.joined(separator: " · ")
         )
     }

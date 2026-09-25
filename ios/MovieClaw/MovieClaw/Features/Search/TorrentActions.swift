@@ -20,6 +20,8 @@ final class TorrentActionsState {
     var downloadStates: [String: TorrentSubmitState] = [:]
     var grabStates: [String: TorrentSubmitState] = [:]
     let prefs = DownloadTargetPrefs()
+    /// 手动选种模式的目标订阅（结果页写入；灯箱里的「投给订阅」要用）
+    var grabTarget: (id: Int, title: String)?
 
     /// 先收起当前弹层，等退场动画结束再展示下一个
     private func presentAfterDismiss(_ present: @escaping () -> Void) {
@@ -123,24 +125,70 @@ final class TorrentActionsState {
         return ([hit.posterUrl].compactMap { $0 } + hit.imageUrls).filter { seen.insert($0).inserted }
     }
 
+    /// 图览灯箱（同 Web 图览卡片的 ZoomLightbox）：三级地址——缩略条 photo-tile、舞台 photo-screen、
+    /// 放大后才取图床原图；顶栏右侧放 详情 / 投给订阅 / 下载，看完截图当场就能下，不必退出灯箱再找
     func openImages(_ hit: API.TorrentHit, api: APIClient) {
         let urls = slides(for: hit, api: api)
         guard !urls.isEmpty else { return }
         let content = DiscoverLightboxContent(
             urls: urls.map { api.image($0, .photoScreen) },
             title: hit.title,
-            brokenHint: "图床可能已失效或拒绝外链访问"
+            brokenHint: "图床可能已失效或拒绝外链访问",
+            thumbnails: urls.map { api.image($0, .photoTile) },
+            originals: urls.map { api.image($0) },
+            accessory: AnyView(TorrentLightboxActions(hit: hit, actions: self))
         )
         presentAfterDismiss { self.lightbox = content }
     }
 }
 
+/// 图览灯箱顶栏的操作键（同 Web 图览灯箱 actions：详情 / 投给订阅 / 下载，条件与操作面板一致）。
+/// 点「下载」会先收起灯箱再弹保存位置弹窗或确认条（iOS 同一时刻只能展示一个弹层）。
+struct TorrentLightboxActions: View {
+    let hit: API.TorrentHit
+    let actions: TorrentActionsState
+
+    @Environment(\.api) private var api
+    @Environment(\.permissions) private var permissions
+    @Environment(Feedback.self) private var feedback
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let link = WebLink(hit.detailUrl) {
+                Button("详情") { openURL(link.url) }
+                    .buttonStyle(.glass)
+                    .accessibilityIdentifier("lightbox-torrent-detail")
+            }
+            if let target = actions.grabTarget, hit.downloadUrl != nil {
+                let state = actions.grabStates[hit.rowKey] ?? .idle
+                Button(state.grabLabel) { actions.grab(hit, target: target, api: api, feedback: feedback) }
+                    .buttonStyle(.glass)
+                    .tint(Theme.info)
+                    .disabled(state == .submitting || state == .done)
+                    .accessibilityIdentifier("lightbox-torrent-grab")
+            }
+            if permissions.canDirectDownload, hit.downloadUrl != nil {
+                let state = actions.downloadStates[hit.rowKey] ?? .idle
+                Button(state.downloadLabel) { actions.startDownload(hit) }
+                    .discoverProminentButton()
+                    .disabled(state == .submitting || state == .done || state == .exists)
+                    .accessibilityIdentifier("lightbox-torrent-download")
+            }
+        }
+        .font(.subheadline.weight(.medium))
+        .lineLimit(1)
+    }
+}
+
 /// 资源操作面板（对应 Web TorrentActionsSheet）：片名 / 原始名 / 站点·体积·做种·时间，
-/// 操作：浏览图片、查看详情（站点详情页）、投给订阅（手动选种模式）、下载（需「一键下载」权限）。
+/// 操作：浏览图片（仅图览卡片）、查看详情（站点详情页）、投给订阅（手动选种模式）、下载（需「一键下载」权限）。
 struct TorrentActionsSheet: View {
     let hit: API.TorrentHit
     let actions: TorrentActionsState
     let grabTarget: (id: Int, title: String)?
+    /// 从图览卡片打开时才给「浏览图片」（同 Web：只有图览卡片的抽屉传 onViewImages）
+    var showsImages = false
 
     @Environment(\.api) private var api
     @Environment(\.permissions) private var permissions
@@ -157,14 +205,14 @@ struct TorrentActionsSheet: View {
                 if let secondary {
                     Text(secondary).font(.caption).foregroundStyle(Theme.textMuted).lineLimit(3)
                 }
-                Text([hit.siteName, TorrentSearchLogic.sizeText(hit), "\(hit.seeders) 做种", hit.uploadTime.map(Formatters.relative)]
+                Text([hit.siteName, TorrentSearchLogic.sizeText(hit), "\(hit.seeders) 做种", hit.uploadTime.map { SubsFormat.relative($0) }]
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(Theme.textFaint)
             }
             VStack(spacing: 10) {
-                if !actions.slides(for: hit, api: api).isEmpty {
+                if showsImages, !actions.slides(for: hit, api: api).isEmpty {
                     actionButton("浏览图片", systemImage: "photo.on.rectangle", id: "torrent-action-images") {
                         actions.openImages(hit, api: api)
                     }

@@ -3,7 +3,7 @@ import SwiftUI
 /// 「站点资源」垂直（对应 Web `components/search-results.tsx` 的界面部分）。
 ///
 /// 自上而下：手动选种横幅（for_sub）→ 状态行（关键词 / 范围 / 计数 / 快照 / 站点状态）→
-/// 工具栏（排序、前三个分辨率、年份/季/压制组下拉、视图切换、筛选）→ 已应用条件回显 → 进度条 → 结果。
+/// 工具栏（排序、前两个分辨率、视图切换、筛选）→ 已应用条件回显 → 进度条 → 结果。
 /// 行点按打开资源操作面板（下载 / 投给订阅 / 浏览图片 / 站点详情页）。
 struct TorrentResultsView: View {
     @Bindable var model: TorrentSearchModel
@@ -59,7 +59,7 @@ struct TorrentResultsView: View {
             SiteStatusSheet(model: model, canRetry: model.snapshotAt == nil)
         }
         .sheet(item: $actions.sheetHit) { item in
-            TorrentActionsSheet(hit: item.hit, actions: actions, grabTarget: grabTarget)
+            TorrentActionsSheet(hit: item.hit, actions: actions, grabTarget: grabTarget, showsImages: item.fromGallery)
         }
         .sheet(item: $actions.dialogRequest) { request in
             DownloadTargetSheet(request: request, remembered: actions.prefs.byCategory[request.category]) { result in
@@ -80,7 +80,8 @@ struct TorrentResultsView: View {
                 }
             )
         }
-        .fullScreenCover(item: $actions.lightbox) { DiscoverLightbox(content: $0) }
+        .fullScreenCover(item: $actions.lightbox) { DiscoverLightbox(content: $0).sheetFeedback() }
+        .onChange(of: grabTarget?.id, initial: true) { actions.grabTarget = grabTarget }
         .environment(actions)
     }
 
@@ -123,7 +124,7 @@ struct TorrentResultsView: View {
                 switch model.phase {
                 case .streaming:
                     Circle().fill(Theme.accent).frame(width: 6, height: 6)
-                    Text("已找到 \(model.items.count) 条")
+                    Text(verbatim: "已找到 \(model.items.count) 条")
                 case .done:
                     Text(model.filters.isActive ? "筛选后 \(model.filtered.count) / 共 \(model.items.count) 条" : "共 \(model.items.count) 条结果")
                 default:
@@ -131,7 +132,7 @@ struct TorrentResultsView: View {
                 }
                 Spacer(minLength: 0)
                 if let snapshotAt = model.snapshotAt, model.phase == .done {
-                    Label("\(Formatters.relative(snapshotAt))的快照", systemImage: "clock")
+                    Label("\(SubsFormat.relative(snapshotAt))的快照", systemImage: "clock")
                         .font(.caption)
                         .foregroundStyle(Theme.textMuted)
                     if let onResearch {
@@ -180,10 +181,10 @@ struct TorrentResultsView: View {
     // MARK: 工具栏
 
     /// 第一行固定：排序 + 视图切换 + 筛选（常用操作不随横滚跑出屏幕）；
-    /// 第二行横滚：命中最多的前三个分辨率 + 年份 / 季 / 压制组下拉（可选值 ≥2 才出现）
+    /// 第二行：命中最多的前两个分辨率。同 Web 手机工具栏：第 3 个分辨率与年份 / 季 / 压制组下拉
+    /// 只在桌面宽度出现（`max-md:hidden`），手机上年份 / 季 / 压制组走「筛选」弹层
     private var toolbar: some View {
         let facets = model.facets
-        let dims = [TorrentFilterDim.year, .season, .group].filter { facets.values($0).count >= 2 }
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 sortMenu
@@ -206,21 +207,15 @@ struct TorrentResultsView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("torrent-filter")
             }
-            if !facets.values(.resolution).isEmpty || !dims.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(facets.values(.resolution).prefix(3), id: \.value) { facet in
-                            DiscoverChip(label: facet.value, count: facet.count, active: model.filters.values(.resolution).contains(facet.value)) {
-                                model.filters.toggle(.resolution, facet.value)
-                            }
-                        }
-                        ForEach(dims, id: \.self) { dim in
-                            facetMenu(dim, facets.values(dim))
+            if !facets.values(.resolution).isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(facets.values(.resolution).prefix(2), id: \.value) { facet in
+                        DiscoverChip(label: facet.value, count: facet.count, active: model.filters.values(.resolution).contains(facet.value)) {
+                            model.filters.toggle(.resolution, facet.value)
                         }
                     }
-                    .padding(.vertical, 2)
                 }
-                .scrollClipDisabled()
+                .padding(.vertical, 2)
             }
         }
     }
@@ -259,30 +254,6 @@ struct TorrentResultsView: View {
                 Text(key.label)
             }
         }
-    }
-
-    private func facetMenu(_ dim: TorrentFilterDim, _ values: [TorrentFacetValue]) -> some View {
-        let active = model.filters.values(dim)
-        return Menu {
-            ForEach(values, id: \.value) { facet in
-                Button {
-                    model.filters.toggle(dim, facet.value)
-                } label: {
-                    let label = "\(TorrentSearchLogic.facetLabel(dim, facet.value, siteName: model.siteName))  \(facet.count)"
-                    if active.contains(facet.value) { Label(label, systemImage: "checkmark") } else { Text(label) }
-                }
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Text(dim.title)
-                if !active.isEmpty {
-                    Text("\(active.count)").font(.caption2.bold()).padding(.horizontal, 5).background(Theme.accent.opacity(0.25), in: .capsule)
-                }
-                Image(systemName: "chevron.down").font(.caption2).opacity(0.7)
-            }
-            .chipLabel(active: !active.isEmpty)
-        }
-        .menuActionDismissBehavior(.disabled)
     }
 
     private var viewSwitcher: some View {
@@ -339,15 +310,21 @@ struct TorrentResultsView: View {
         }
     }
 
+    /// 站点数已知：按已结束站点比例推进（起步 6%）；未知（还在连接搜索服务）：来回扫光的不定进度（同 Web progress-sweep）
     private var progressBar: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.white.opacity(0.07))
-                Capsule()
-                    .fill(Theme.accent)
-                    .frame(width: proxy.size.width * (model.sites.isEmpty ? 0.4 : max(0.06, Double(model.settledCount) / Double(model.sites.count))))
-                    .animation(.easeOut, value: model.settledCount)
+                if model.sites.isEmpty {
+                    TorrentProgressSweep(width: proxy.size.width)
+                } else {
+                    Capsule()
+                        .fill(Theme.accent)
+                        .frame(width: proxy.size.width * max(0.06, Double(model.settledCount) / Double(model.sites.count)))
+                        .animation(.easeOut, value: model.settledCount)
+                }
             }
+            .clipShape(.capsule)
         }
         .frame(height: 2)
         .accessibilityLabel("搜索进度")
@@ -456,7 +433,14 @@ extension API.TorrentHit {
 /// `.sheet(item:)` 用的种子包装（不给生成模型追加协议一致性，避免与其它模块冲突）
 struct TorrentHitItem: Identifiable {
     let hit: API.TorrentHit
+    /// 从图览卡片打开：操作面板才给「浏览图片」（同 Web：列表行不传 onViewImages）
+    var fromGallery = false
     var id: String { hit.rowKey }
+
+    /// 有站点详情页或下载地址才有可做的操作；两者都没有时整行/文字区不可点（同 Web）
+    static func hasActions(_ hit: API.TorrentHit) -> Bool {
+        hit.detailUrl?.isEmpty == false || hit.downloadUrl?.isEmpty == false
+    }
 }
 
 private extension View {
@@ -578,7 +562,7 @@ enum TorrentSubmitState: Hashable {
 }
 
 /// 列表 / 分组里的一条种子：解析片名（或原始名）、副标题/站点分类、徽标（站点、全集、促销、属性）、
-/// 体积·做种/下载·发布时间；点按打开资源操作面板。
+/// 体积·做种/下载·发布时间；点按打开资源操作面板（没有详情页与下载地址时不可点）。
 struct TorrentRow: View {
     let hit: API.TorrentHit
     var grouped = false
@@ -643,8 +627,9 @@ struct TorrentRow: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .allowsHitTesting(TorrentHitItem.hasActions(hit))
         .accessibilityIdentifier("torrent-row")
-        .accessibilityLabel("打开「\(hit.title)」的资源操作")
+        .accessibilityLabel(TorrentHitItem.hasActions(hit) ? "打开「\(hit.title)」的资源操作" : hit.title)
     }
 
     private var metrics: some View {
@@ -653,17 +638,19 @@ struct TorrentRow: View {
             if !size.isEmpty { Text(size) }
             HStack(spacing: 2) {
                 Image(systemName: "arrow.up").font(.system(size: 9, weight: .bold))
-                Text("\(hit.seeders)")
+                Text(verbatim: "\(hit.seeders)")
             }
+            // 同 Web seederTone：0 红、<5 黄、≥100 加粗亮绿、其余绿
+            .fontWeight(hit.seeders >= 100 ? .semibold : nil)
             .foregroundStyle(seederTone(hit.seeders))
             HStack(spacing: 2) {
                 Image(systemName: "arrow.down").font(.system(size: 9, weight: .bold))
-                Text("\(hit.leechers)")
+                Text(verbatim: "\(hit.leechers)")
             }
             .foregroundStyle(Theme.textFaint)
-            if hit.snatched > 0 { Text("完成 \(hit.snatched)") }
+            if hit.snatched > 0 { Text(verbatim: "完成 \(hit.snatched)") }
             Spacer(minLength: 0)
-            if let time = hit.uploadTime { Text(Formatters.relative(time)) }
+            if let time = hit.uploadTime { Text(SubsFormat.relative(time)) }
         }
         .font(.caption)
         .monospacedDigit()
@@ -673,7 +660,24 @@ struct TorrentRow: View {
     private func seederTone(_ n: Int) -> Color {
         if n == 0 { return Color(red: 1, green: 0.6, blue: 0.6) }
         if n < 5 { return Theme.warning }
+        if n >= 100 { return Theme.success }
         return Color(red: 0.47, green: 0.82, blue: 0.58)
+    }
+}
+
+/// 不定进度的扫光条：40% 宽的亮条从左侧外滑到右侧外，1.1 秒一轮（同 Web `search-progress-sweep`）
+private struct TorrentProgressSweep: View {
+    let width: CGFloat
+    @State private var sweeping = false
+
+    var body: some View {
+        Capsule()
+            .fill(Theme.accent)
+            .frame(width: width * 0.4)
+            .offset(x: sweeping ? width : -width * 0.4)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: false)) { sweeping = true }
+            }
     }
 }
 
@@ -779,7 +783,7 @@ struct TorrentPosterCard: View {
             .accessibilityLabel("浏览「\(hit.title)」的 \(slides.count) 张图片")
 
             Button {
-                actions.sheetHit = TorrentHitItem(hit: hit)
+                actions.sheetHit = TorrentHitItem(hit: hit, fromGallery: true)
             } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     let name = TorrentSearchLogic.parsedName(hit)
@@ -792,10 +796,10 @@ struct TorrentPosterCard: View {
                         Text(spec.joined(separator: " · ")).font(.caption).foregroundStyle(Theme.textMuted).lineLimit(1)
                     }
                     HStack(spacing: 4) {
-                        Text(hit.siteName + (hit.uploadTime.map { " · \(Formatters.relative($0))" } ?? "")).lineLimit(1)
+                        Text(hit.siteName + (hit.uploadTime.map { " · \(SubsFormat.relative($0))" } ?? "")).lineLimit(1)
                         Spacer(minLength: 0)
-                        Text("↑\(hit.seeders)").foregroundStyle(Color(red: 0.65, green: 0.85, blue: 0.71))
-                        Text("↓\(hit.leechers)").foregroundStyle(Color(red: 0.88, green: 0.76, blue: 0.62))
+                        Text(verbatim: "↑\(hit.seeders)").foregroundStyle(Color(red: 0.65, green: 0.85, blue: 0.71))
+                        Text(verbatim: "↓\(hit.leechers)").foregroundStyle(Color(red: 0.88, green: 0.76, blue: 0.62))
                     }
                     .font(.caption2)
                     .monospacedDigit()
@@ -806,6 +810,7 @@ struct TorrentPosterCard: View {
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
+            .allowsHitTesting(TorrentHitItem.hasActions(hit))
             .accessibilityLabel("打开「\(hit.title)」的资源操作")
         }
         .accessibilityIdentifier("torrent-poster")

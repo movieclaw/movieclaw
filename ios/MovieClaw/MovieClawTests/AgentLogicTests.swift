@@ -1,4 +1,6 @@
 import Foundation
+import UIKit
+import UniformTypeIdentifiers
 import Testing
 @testable import MovieClaw
 
@@ -117,6 +119,33 @@ struct AgentLogicTests {
         #expect(blocks[4] == .code(language: "bash", text: "ls -la"))
         #expect(blocks[5] == .quote([.paragraph("引用")]))
         #expect(blocks[6] == .rule)
+    }
+
+    @Test func markdownImagesBecomeBlocks() {
+        let blocks = AgentMarkdownParser.parse("""
+        海报如下：![沙丘](https://image.tmdb.org/t/p/w500/a.jpg "标题") 请查看
+
+        ![](/images/assets/1.jpg)
+        """)
+        #expect(blocks == [
+            .paragraph("海报如下："),
+            .image(alt: "沙丘", url: "https://image.tmdb.org/t/p/w500/a.jpg"),
+            .paragraph("请查看"),
+            .image(alt: "", url: "/images/assets/1.jpg"),
+        ])
+        #expect(AgentMarkdownParser.parse("普通 [链接](https://a.b) 文本") == [.paragraph("普通 [链接](https://a.b) 文本")])
+    }
+
+    @Test func attachmentNamesFollowWeb() throws {
+        // 压缩/转码后换 .jpg，没有原名兜底「图片」（同 Web compressImage）
+        #expect(AgentImageCompressor.jpegName("IMG_0001.HEIC") == "IMG_0001.jpg")
+        #expect(AgentImageCompressor.jpegName("截图.png") == "截图.jpg")
+        #expect(AgentImageCompressor.jpegName(nil) == "图片.jpg")
+        // 小图原样上传保留原名
+        let png = try #require(UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image { _ in }.pngData())
+        #expect(try AgentImageCompressor.prepare(png, contentType: .png, filename: "a.png").filename == "a.png")
+        #expect(try AgentImageCompressor.prepare(png, contentType: .png).filename == "图片.png")
+        #expect(try AgentImageCompressor.prepare(png, contentType: .heic, filename: "IMG_1.HEIC").filename == "IMG_1.jpg")
     }
 
     @Test func mediaCardArgs() throws {

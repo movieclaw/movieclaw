@@ -10,6 +10,9 @@ import SwiftUI
 /// 顶栏：中间「电影 / 剧集」分段（Web 放在底栏附属位；原生不改 MainTabView，放顶栏）、
 /// 右侧数据源（TMDB / 豆瓣）与「筛选」（仅 TMDB）。
 /// 各视角（类型 × 数据源）的清单与片单结果缓存在 `DiscoverFeedStore` 里，来回切换即时恢复。
+///
+/// 筛选状态随视角走（同 Web：切类型、切数据源都跳到不带筛选的新地址）：电影与剧集的 TMDB
+/// 类型 ID 是两套（电影 28=动作，剧集 10759=动作冒险），带着旧筛选切过去只会查出错的结果。
 struct DiscoverView: View {
     let kind: String
 
@@ -45,10 +48,13 @@ struct DiscoverView: View {
             }
         }
         .appBackground()
-        // 站内链接 /discover/{movie|tv} 切到本标签时带来的类型
+        // 站内链接 /discover/{movie|tv}[?source=&genres=…] 切到本标签时带来的视角（同 Web 地址即状态）
         .onChange(of: router.rootParameter, initial: true) { _, parameter in
             guard let parameter, parameter.tab == .discover else { return }
-            mediaType = parameter.value == "tv" ? "tv" : "movie"
+            let viewpoint = DiscoverViewpoint(parameter: parameter.value)
+            mediaType = viewpoint.mediaType
+            source = viewpoint.source
+            filters = viewpoint.filters
             router.rootParameter = nil
         }
         .toolbar { toolbarContent }
@@ -122,7 +128,12 @@ struct DiscoverView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            Picker("内容类型", selection: Binding(get: { currentType }, set: { mediaType = $0 })) {
+            Picker("内容类型", selection: Binding(get: { currentType }, set: { next in
+                // 切类型保留数据源、清空筛选（同 Web `switchMediaType`）
+                guard next != currentType else { return }
+                mediaType = next
+                filters = .empty
+            })) {
                 Text("电影").tag("movie")
                 Text("剧集").tag("tv")
             }
@@ -132,7 +143,12 @@ struct DiscoverView: View {
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
             Menu {
-                Picker("数据源", selection: $source) {
+                Picker("数据源", selection: Binding(get: { source }, set: { next in
+                    // 切数据源保留类型、清空筛选（同 Web `switchSource`）
+                    guard next != source else { return }
+                    source = next
+                    filters = .empty
+                })) {
                     Text("TMDB").tag("tmdb")
                     Text("豆瓣").tag("douban")
                 }
@@ -198,6 +214,8 @@ final class DiscoverFeed {
     struct Failure {
         var message: String
         var unreachable: Bool
+        /// 后端给的下一步提示（不可达时的 `details[0].hint`），异步补上
+        var hint: String?
     }
 
     let mediaType: String
@@ -245,12 +263,13 @@ final class DiscoverFeed {
         } catch {
             failure = Failure(message: error.localizedDescription, unreachable: error.isUpstreamUnreachable)
             loaded = false
+            await fillHint(api: api, path: "/ui/discovery/\(mediaType)", query: [URLQueryItem(name: "provider", value: provider)])
             return
         }
         layout = page
         let heroRef = page.sections.first { $0.presentation == "hero" }?.collectionRef
         if heroRef == nil { hero = [] }
-        var firstError: Error?
+        var firstError: (ref: String, limit: Int?, error: Error)?
 
         await withTaskGroup(of: (String, Result<[DiscoverPosterItem], Error>).self) { group in
             for section in page.sections {
@@ -278,21 +297,32 @@ final class DiscoverFeed {
                     if error is CancellationError { continue }
                     if case .loaded = rows[ref] { continue }
                     rows[ref] = .failed
-                    firstError = firstError ?? error
+                    if firstError == nil {
+                        firstError = (ref, page.sections.first { $0.collectionRef == ref }?.previewLimit, error)
+                    }
                 }
             }
         }
         if allRowsFailed, let firstError {
-            failure = Failure(message: firstError.localizedDescription, unreachable: firstError.isUpstreamUnreachable)
+            failure = Failure(message: firstError.error.localizedDescription, unreachable: firstError.error.isUpstreamUnreachable)
             loaded = false
+            await fillHint(api: api, path: "/discover/collections/\(firstError.ref)/titles",
+                           query: firstError.limit.map { [URLQueryItem(name: "limit", value: "\($0)")] } ?? [])
         }
+    }
+
+    /// 不可达时补上后端的下一步提示（错误态先出原因，提示随后显示在原因下方）
+    private func fillHint(api: APIClient, path: String, query: [URLQueryItem]) async {
+        guard failure?.unreachable == true else { return }
+        let hint = await api.discoverUnreachableHint(path: path, query: query)
+        if let hint, failure?.unreachable == true { failure?.hint = hint }
     }
 }
 
 // MARK: - Hero
 
 /// Hero 大横幅：精选影片每 8 秒自动轮播，左右滑动手动切换（手动切换后重新计时），右下圆点指示。
-/// 整块点按进详情；订阅键与海报卡一致（已订阅切成状态键，点进订阅管理）。
+/// 整块点按进详情；订阅键与海报卡一致（已订阅切成状态键，打开订阅弹层的管理态）。
 struct DiscoverHero: View {
     let items: [DiscoverPosterItem]
     @State private var index = 0
@@ -374,11 +404,8 @@ private struct DiscoverHeroSlide: View {
                 }
                 if permissions.canSubscribe {
                     Button {
-                        if let sub {
-                            router.push(.subscription(id: sub.id))
-                        } else {
-                            router.present(.subscribe(SubscribeRequest(titleRef: item.resolvedTitleRef, title: item.title)))
-                        }
+                        // 已订阅也打开订阅弹层：弹层预检发现既有订阅后进入管理态（同 Web `openSubscribe`）
+                        router.present(.subscribe(SubscribeRequest(titleRef: item.resolvedTitleRef, title: item.title)))
                     } label: {
                         Label(sub == nil ? "订阅影片" : "已订阅", systemImage: sub == nil ? "plus" : "checkmark")
                             .font(.subheadline.weight(.semibold))
@@ -396,6 +423,7 @@ private struct DiscoverHeroSlide: View {
         }
         .contentShape(.rect)
         .onTapGesture {
+            DiscoverMediaSeed.remember(item)
             router.push(.mediaDetail(titleRef: item.resolvedTitleRef))
         }
         .accessibilityElement(children: .contain)
@@ -452,7 +480,8 @@ struct DiscoverHeroSkeleton: View {
 
 // MARK: - 错误态
 
-/// 加载失败：后端中文原因 + 重试；上游不可达（UPSTREAM_UNREACHABLE）额外给「前往网络设置」
+/// 加载失败：后端中文原因 + 重试；上游不可达（UPSTREAM_UNREACHABLE）额外给地球图标、
+/// 后端的下一步提示和「前往网络设置」（同 Web `DiscoverError`：普通失败不带图标，重试键为主按钮）
 struct DiscoverErrorView: View {
     let failure: DiscoverFeed.Failure
     let retry: () async -> Void
@@ -461,26 +490,44 @@ struct DiscoverErrorView: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label(failure.unreachable ? "无法连接数据源" : "发现页加载失败",
-                  systemImage: failure.unreachable ? "globe" : "exclamationmark.triangle")
+            if failure.unreachable {
+                Label("无法连接数据源", systemImage: "globe")
+            } else {
+                Text("发现页加载失败")
+            }
         } description: {
-            Text(failure.message)
+            VStack(spacing: 8) {
+                Text(failure.message)
+                if failure.unreachable, let hint = failure.hint {
+                    Text(hint)
+                        .font(.footnote)
+                        .foregroundStyle(Theme.textFaint)
+                        .accessibilityIdentifier("discover-error-hint")
+                }
+            }
         } actions: {
             if failure.unreachable {
                 Button("前往网络设置") { router.push(.settingsSection(.network)) }
                     .discoverProminentButton()
                     .accessibilityIdentifier("discover-network-settings")
             }
-            Button {
-                retrying = true
-                Task { await retry(); retrying = false }
-            } label: {
-                if retrying { ProgressView() } else { Text("重试") }
+            if failure.unreachable {
+                retryButton.buttonStyle(.glass)
+            } else {
+                retryButton.discoverProminentButton()
             }
-            .buttonStyle(.glass)
-            .disabled(retrying)
         }
         .accessibilityIdentifier("error-state")
+    }
+
+    private var retryButton: some View {
+        Button {
+            retrying = true
+            Task { await retry(); retrying = false }
+        } label: {
+            if retrying { ProgressView() } else { Text("重试") }
+        }
+        .disabled(retrying)
     }
 }
 

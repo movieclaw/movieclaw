@@ -10,7 +10,8 @@ import SwiftUI
 /// 报告段渲染后端体检快照，不落库、不轮询——后续进展看追踪明细的「洗版中」徽标。
 struct UpgradeRunSheet: View {
     let detail: API.SubscriptionDetailView
-    /// 一轮洗版已触发（报告看完关闭）后回调，父页面刷新
+    /// 一轮洗版已触发（报告看完关闭）后回调，父页面刷新。
+    /// 报告态下任何关闭方式（「完成」、左上关闭、下滑）都会回调，同 Web 报告态 Modal 的 onClose = onFinished
     let onFinished: () -> Void
 
     @Environment(\.api) private var api
@@ -66,10 +67,12 @@ struct UpgradeRunSheet: View {
             }
         }
         .task { await loadRules() }
+        .onDisappear {
+            if report != nil { onFinished() }
+        }
     }
 
     private func finish() {
-        onFinished()
         dismiss()
     }
 

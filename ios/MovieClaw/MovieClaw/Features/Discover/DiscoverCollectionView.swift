@@ -51,7 +51,7 @@ struct DiscoverCollectionView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 60)
                     } else {
-                        LazyVGrid(columns: DiscoverGrid.columns, spacing: 20) {
+                        LazyVGrid(columns: DiscoverGrid.wideColumns, spacing: 28) {
                             ForEach(filtered) { item in
                                 DiscoverPosterCard(item: item)
                                     .onAppear {
@@ -82,7 +82,7 @@ struct DiscoverCollectionView: View {
                     ErrorState(message: error) { await loadFirstPage() }
                         .padding(.top, 40)
                 } else {
-                    LazyVGrid(columns: DiscoverGrid.columns, spacing: 20) {
+                    LazyVGrid(columns: DiscoverGrid.wideColumns, spacing: 28) {
                         ForEach(0 ..< 12, id: \.self) { _ in
                             DiscoverSkeletonBlock(cornerRadius: Theme.posterRadius).aspectRatio(2 / 3, contentMode: .fit)
                         }

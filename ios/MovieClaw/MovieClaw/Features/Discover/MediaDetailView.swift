@@ -8,7 +8,10 @@ import SwiftUI
 /// 演职员 → 预告片 → 剧照与海报（灯箱可「设为背景」）→ 系列 → 相似推荐 → 相关链接。
 ///
 /// 按钮规则同 Web：已在库的电影收起「订阅」与「搜索资源」（已订阅时仍显示订阅状态键）；
-/// 订阅键未订阅时打开订阅弹层，已订阅时显示「已订阅 · 状态」并进入订阅管理。
+/// 订阅键未订阅时打开订阅弹层，已订阅时显示「已订阅 · 状态」、点它同样打开订阅弹层（由弹层管理态接手）。
+///
+/// 首屏预存（同 Web `getMediaSeed`）：站内点卡片进来时先用列表字段（标题、海报、简介…）渲染，
+/// 详情接口返回后原位替换；有预存时接口失败也不打断页面，只有直达（无预存）才进失败页。
 struct MediaDetailView: View {
     let titleRef: String
 
@@ -16,23 +19,47 @@ struct MediaDetailView: View {
     @Environment(\.permissions) private var permissions
     @Environment(Router.self) private var router
     @Environment(\.openURL) private var openURL
+    @Environment(\.displayScale) private var displayScale
 
     @State private var state: Loadable<API.DiscoveredTitleDetailsView> = .loading
+    /// 列表字段拼出的半份详情（没有预存为 nil）
+    @State private var seed: API.DiscoveredTitleDetailsView?
     @State private var titleVisible = false
     @State private var overviewExpanded = false
+    /// 简介完整排版高度与 4 行截断后的高度：前者更高才给「展开全文」（同 Web scrollHeight > clientHeight）
+    @State private var overviewFullHeight: CGFloat = 0
+    @State private var overviewShownHeight: CGFloat = 0
     @State private var trailer: WebLink?
+    /// 正在探测 YouTube 可达性的预告片
+    @State private var probingTrailer: String?
+    /// 本机连不上 YouTube 时的说明（带「在 YouTube 打开」）
+    @State private var blockedTrailer: API.MediaVideo?
     /// 顶部安全区高度：沉浸剧照用等量负边距顶到屏幕物理顶边
     @State private var topInset: CGFloat = 0
+    /// 页面宽度（逻辑点）：判断沉浸大图是否值得取原图
+    @State private var pageWidth: CGFloat = 0
+
+    init(titleRef: String) {
+        self.titleRef = titleRef
+        _seed = State(initialValue: DiscoverMediaSeed.item(for: titleRef).map(API.DiscoveredTitleDetailsView.init(seed:)))
+    }
 
     var body: some View {
         Group {
             switch state {
             case .loading:
-                VStack(spacing: 12) {
-                    ProgressView().controlSize(.large)
-                    Text("正在加载详情…").font(.subheadline).foregroundStyle(Theme.textMuted)
+                if let seed {
+                    content(seed)
+                } else {
+                    VStack(spacing: 12) {
+                        ProgressView().controlSize(.large)
+                        Text("正在加载详情…").font(.subheadline).foregroundStyle(Theme.textMuted)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .failed where seed != nil:
+                // 有预存时详情拉取失败不打断页面：列表字段仍可完整展示
+                content(seed!)
             case let .failed(message):
                 ContentUnavailableView {
                     Label("未能加载该影片详情", systemImage: "film")
@@ -51,7 +78,7 @@ struct MediaDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Text(state.value?.title.title ?? "")
+                Text(state.value?.title.title ?? seed?.title.title ?? "")
                     .font(.headline)
                     .lineLimit(1)
                     .opacity(titleVisible ? 1 : 0)
@@ -63,6 +90,14 @@ struct MediaDetailView: View {
         .sheet(item: $trailer) { link in
             SafariView(url: link.url)
                 .ignoresSafeArea()
+        }
+        .alert("当前设备无法直连 YouTube", isPresented: Binding(get: { blockedTrailer != nil }, set: { if !$0 { blockedTrailer = nil } }), presenting: blockedTrailer) { video in
+            if let url = WebLink(video.watchUrl)?.url {
+                Button("在 YouTube 打开 ↗") { openURL(url) }
+            }
+            Button("好的", role: .cancel) {}
+        } message: { _ in
+            Text("预告片由 YouTube 提供，播放需要本机能访问它。服务端在「设置 → 网络」配的代理只作用于服务端自己抓数据，不经过播放器；给本机挂上代理后即可正常播放。")
         }
     }
 
@@ -128,13 +163,17 @@ struct MediaDetailView: View {
         }
         .scrollEdgeEffectHidden(heroURL != nil && !titleVisible, for: .top)
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { topInset = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
         .refreshable { await load() }
         .accessibilityIdentifier("media-detail")
     }
 
-    /// 沉浸大图：优先后端给的主剧照原图，其次列表的剧照/海报；豆瓣条目没有横版剧照，用海报兜底
+    /// 沉浸大图：剧照（w1280），没有剧照时用海报兜底（豆瓣条目没有横版剧照）。
+    /// 只有物理宽度超过 1280 像素的屏幕才换后端给的原图（同 Web `useWantsOriginalImage`：
+    /// 手机 393pt × 3 = 1179 像素，w1280 已 1:1 覆盖，原图只是白白多下 1–3 MB）。
     private func heroImage(_ detail: API.DiscoveredTitleDetailsView) -> URL? {
-        if detail.title.provider != "douban", let original = detail.backdropOriginalUrl {
+        let wantsOriginal = pageWidth * displayScale > 1280
+        if wantsOriginal, detail.title.provider != "douban", let original = detail.backdropOriginalUrl {
             return api.image(original)
         }
         let fallback = detail.title.backdropUrl ?? (detail.title.posterUrl.isEmpty ? nil : detail.title.posterUrl)
@@ -202,7 +241,8 @@ struct MediaDetailView: View {
                     if showSubscribe {
                         if let sub {
                             Button {
-                                router.push(.subscription(id: sub.id))
+                                // 已订阅也打开订阅弹层，由弹层管理态接手（同 Web `openSubscribe`）
+                                router.present(.subscribe(SubscribeRequest(titleRef: item.titleRef, title: item.title)))
                             } label: {
                                 Label {
                                     Text("已订阅 · \(SubscriptionStatusMeta.label(sub.status))")
@@ -276,8 +316,23 @@ struct MediaDetailView: View {
                 .lineSpacing(4)
                 .foregroundStyle(.white.opacity(0.78))
                 .lineLimit(overviewExpanded ? nil : 4)
-            // 粗估是否超过 4 行（约 22 个汉字一行）；短简介不出「展开」
-            if overviewExpanded || text.count > 88 {
+                // 实测是否溢出：同宽度下完整排版的高度超过 4 行截断后的高度才给「展开全文」
+                .background(alignment: .topLeading) {
+                    if !overviewExpanded {
+                        Text(text)
+                            .font(.subheadline)
+                            .lineSpacing(4)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .hidden()
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight in
+                                overviewFullHeight = fullHeight
+                            }
+                    }
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { shownHeight in
+                    overviewShownHeight = shownHeight
+                }
+            if overviewExpanded || overviewFullHeight > overviewShownHeight + 1 {
                 Button {
                     withAnimation { overviewExpanded.toggle() }
                 } label: {
@@ -318,18 +373,23 @@ struct MediaDetailView: View {
                 LazyHStack(alignment: .top, spacing: 12) {
                     ForEach(detail.videos, id: \.key) { video in
                         Button {
-                            trailer = WebLink(video.watchUrl)
+                            playTrailer(video)
                         } label: {
                             VStack(alignment: .leading, spacing: 6) {
                                 Color.clear
                                     .aspectRatio(16 / 9, contentMode: .fit)
                                     .overlay { RemoteImage(url: api.image(video.thumbnailUrl)) }
                                     .overlay {
-                                        Image(systemName: "play.fill")
-                                            .font(.title3)
-                                            .foregroundStyle(.white)
-                                            .frame(width: 44, height: 44)
-                                            .background(.black.opacity(0.55), in: .circle)
+                                        Group {
+                                            if probingTrailer == video.key {
+                                                ProgressView().tint(.white)
+                                            } else {
+                                                Image(systemName: "play.fill").font(.title3)
+                                            }
+                                        }
+                                        .foregroundStyle(.white)
+                                        .frame(width: 44, height: 44)
+                                        .background(.black.opacity(0.55), in: .circle)
                                     }
                                     .overlay(alignment: .topLeading) {
                                         Text(video.kind)
@@ -350,12 +410,25 @@ struct MediaDetailView: View {
                 }
                 .padding(.horizontal, Theme.pagePadding)
             }
-            Text("预告片由 YouTube 提供，需要本机能访问 YouTube 才能播放。")
-                .font(.caption)
-                .foregroundStyle(Theme.textFaint)
-                .padding(.horizontal, Theme.pagePadding)
         }
         .discoverContainer("detail-trailers")
+    }
+
+    /// 点预告片：先探测本机能否直连 YouTube（同 Web `useYoutubeReachable`），
+    /// 能连就在应用内 Safari 播放，连不上改为说明原因并给「在 YouTube 打开」，
+    /// 而不是留给用户一个永远转圈的页面
+    private func playTrailer(_ video: API.MediaVideo) {
+        guard probingTrailer == nil else { return }
+        probingTrailer = video.key
+        Task {
+            let reachable = await DiscoverYouTubeProbe.reachable(videoKey: video.key)
+            probingTrailer = nil
+            if reachable, let link = WebLink(video.watchUrl) {
+                trailer = link
+            } else {
+                blockedTrailer = video
+            }
+        }
     }
 
     @ViewBuilder
@@ -374,6 +447,25 @@ struct MediaDetailView: View {
             .padding(.top, 8)
             .discoverContainer("detail-links")
         }
+    }
+}
+
+/// 本机能否直连 YouTube：取一张 YouTube 图床的小图作探针，6 秒无响应按不可达算。
+///
+/// 探针刻意不走后端图片代理：要测的正是「本机自己」的可达性——服务端在「设置 → 网络」配的代理
+/// 只作用于服务端抓数据，帮不到播放器；走了代理就变成在测服务端，结论会反过来骗人。
+enum DiscoverYouTubeProbe {
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 6
+        config.timeoutIntervalForResource = 6
+        return URLSession(configuration: config)
+    }()
+
+    static func reachable(videoKey: String) async -> Bool {
+        guard let url = URL(string: "https://i.ytimg.com/vi/\(videoKey)/default.jpg") else { return false }
+        guard let (_, response) = try? await session.data(from: url) else { return false }
+        return (response as? HTTPURLResponse).map { (200 ..< 300).contains($0.statusCode) } ?? false
     }
 }
 
@@ -498,7 +590,7 @@ struct DetailPhotoWall: View {
                 .padding(.horizontal, Theme.pagePadding)
             }
         }
-        .fullScreenCover(item: $lightbox) { DiscoverLightbox(content: $0) }
+        .fullScreenCover(item: $lightbox) { DiscoverLightbox(content: $0).sheetFeedback() }
         .discoverContainer("detail-photos")
     }
 
@@ -515,7 +607,9 @@ struct DetailPhotoWall: View {
             urls: images.map { api.image($0.fullUrl) },
             initialIndex: index,
             title: "\(title) · \(active.label)",
-            action: action
+            action: action,
+            thumbnails: images.map { api.image($0.previewUrl) },
+            thumbAspect: active.id == "backdrops" ? 16.0 / 9.0 : 2.0 / 3.0
         )
     }
 }
@@ -531,4 +625,42 @@ struct SafariView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
+}
+
+// MARK: - 首屏预存
+
+extension API.DiscoveredTitleDetailsView {
+    /// 列表字段拼出的半份详情（同 Web 详情页 `detail?.item ?? listItem`）：只有标题区可用，
+    /// 演职员、预告片、剧照、推荐等分区为空不渲染，等详情接口返回后整体替换。
+    init(seed item: DiscoverPosterItem) {
+        self.init(
+            title: API.DiscoveredTitleView(
+                titleRef: item.resolvedTitleRef,
+                provider: item.source,
+                externalId: item.externalId,
+                mediaType: item.mediaType,
+                title: item.title,
+                originalTitle: item.originalTitle,
+                releaseYear: item.year,
+                providerRating: item.rating,
+                genres: item.genres,
+                extentLabel: item.extent,
+                overview: item.overview,
+                posterUrl: item.posterUrl ?? "",
+                backdropUrl: item.backdropUrl,
+                libraryStatus: item.libraryStatus
+            ),
+            metadata: API.DiscoveredTitleMetadata(
+                directors: [], directorCredits: [], cast: [], country: "", language: "", released: "",
+                network: nil, aliases: [], sourceUrl: nil
+            ),
+            backdropOriginalUrl: nil,
+            videos: [],
+            backdrops: [],
+            posters: [],
+            collection: nil,
+            recommendations: [],
+            libraryLinks: []
+        )
+    }
 }

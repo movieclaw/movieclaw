@@ -126,7 +126,7 @@ struct DiscoverFilteredGrid: View {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 if !items.isEmpty {
-                    LazyVGrid(columns: DiscoverGrid.columns, spacing: 20) {
+                    LazyVGrid(columns: DiscoverGrid.wideColumns, spacing: 28) {
                         ForEach(items) { item in
                             DiscoverPosterCard(item: item)
                                 .onAppear {
@@ -136,7 +136,7 @@ struct DiscoverFilteredGrid: View {
                     }
                 }
                 if loading, items.isEmpty {
-                    LazyVGrid(columns: DiscoverGrid.columns, spacing: 20) {
+                    LazyVGrid(columns: DiscoverGrid.wideColumns, spacing: 28) {
                         ForEach(0 ..< 9, id: \.self) { _ in
                             DiscoverSkeletonBlock(cornerRadius: Theme.posterRadius).aspectRatio(2 / 3, contentMode: .fit)
                         }

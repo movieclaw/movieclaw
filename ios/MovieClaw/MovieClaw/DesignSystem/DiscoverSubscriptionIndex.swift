@@ -64,6 +64,8 @@ final class SubscriptionIndex {
 
     /// 查找某部作品已存在的订阅；未订阅或尚未加载返回 nil
     func subscription(source: String?, externalId: String, mediaType: String?) -> API.SubscriptionView? {
+        // 查表本身不参与观察：先读一次可观察的 subscriptions，让调用它的视图在索引到达/刷新后重绘
+        _ = subscriptions
         if (source ?? "tmdb") == "douban" { return byDouban[externalId] }
         if let mediaType, mediaType == "movie" || mediaType == "tv" {
             return byTmdbTyped["\(externalId):\(mediaType)"]
@@ -159,7 +161,9 @@ struct SubscriptionIndexTracker: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .task {
+            // 以「权限 + 账号」为任务标识：冷启动直达（深链、通知）时页面可能先于登录态/权限就绪出现，
+            // 只跑一次会被权限守卫挡掉、整页都当成「未订阅」
+            .task(id: "\(permissions.canSubscribe)|\(model.session?.username ?? "")") {
                 guard permissions.canSubscribe else { return }
                 await SubscriptionIndex.shared.ensureLoaded(api: api, owner: model.session?.username)
             }

@@ -1,3 +1,4 @@
+import NukeUI
 import SwiftUI
 
 // AI 回复正文的 Markdown 渲染器（对应 Web `components/markdown.tsx` + globals.css 的 `.markdown` 排版）。
@@ -7,9 +8,11 @@ import SwiftUI
 //   覆盖 LLM 回复里实际出现的全部结构（系统解析器的 full 模式不给表格，也无法定制代码块/列表版式）；
 // - 行内：粗体、斜体、删除线、行内代码、链接交给系统解析（inlineOnlyPreservingWhitespace），
 //   再按 Web 的样式改写行内代码底色与链接颜色；
+// - 图片：`![说明](地址)` 拆成独立的图片块（同 react-markdown 默认渲染 `<img>`），远程图经后端缓存代理；
 // - 版式取 Web 移动端档：正文 17pt、行高约 28pt，标题 1.25/1.15/1.05em，代码块右上角常驻复制键
-//   （手指划选代码是移动端最难用的操作之一）。
-// 也负责工具调用参数的轻量高亮（bash / json，配色取 Shiki github-dark），见 `AgentCodeText`。
+//   （手指划选代码是移动端最难用的操作之一）。正文代码块不着色（同 Web 正文的默认 `<pre>`）。
+// 也负责工具调用参数的轻量高亮（bash / json，配色取 Shiki github-dark），见 `AgentCodeText`——
+// 只用于工具参数，与 Web 只在工具参数上接 Shiki 一致。
 
 // MARK: - 块级结构
 
@@ -21,6 +24,7 @@ indirect enum AgentMarkdownBlock: Equatable {
     case quote([AgentMarkdownBlock])
     case rule
     case table(header: [String], rows: [[String]])
+    case image(alt: String, url: String)
 }
 
 struct AgentMarkdownListItem: Equatable {
@@ -30,6 +34,28 @@ struct AgentMarkdownListItem: Equatable {
 }
 
 enum AgentMarkdownParser {
+    /// `![说明](地址 "可选标题")`
+    private static let imagePattern = try? NSRegularExpression(pattern: #"!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)"#)
+
+    /// 段落里的图片拆成独立的图片块，前后文字仍是段落（系统行内解析不渲染图片）
+    static func splitImages(_ text: String) -> [AgentMarkdownBlock] {
+        guard text.contains("!["), let regex = imagePattern else { return [.paragraph(text)] }
+        let ns = text as NSString
+        var blocks: [AgentMarkdownBlock] = []
+        var cursor = 0
+        func appendText(_ range: NSRange) {
+            let piece = ns.substring(with: range).trimmingCharacters(in: .whitespaces)
+            if !piece.isEmpty { blocks.append(.paragraph(piece)) }
+        }
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            appendText(NSRange(location: cursor, length: match.range.location - cursor))
+            blocks.append(.image(alt: ns.substring(with: match.range(at: 1)), url: ns.substring(with: match.range(at: 2))))
+            cursor = match.range.location + match.range.length
+        }
+        appendText(NSRange(location: cursor, length: ns.length - cursor))
+        return blocks.isEmpty ? [.paragraph(text)] : blocks
+    }
+
     static func parse(_ text: String) -> [AgentMarkdownBlock] {
         let lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         return parse(lines: lines[...])
@@ -51,7 +77,7 @@ enum AgentMarkdownParser {
                 text += content
                 if i < paragraph.count - 1 { text += hard ? "\n" : " " }
             }
-            blocks.append(.paragraph(text))
+            blocks += splitImages(text)
             paragraph.removeAll()
         }
 
@@ -352,8 +378,10 @@ struct AgentMarkdownBlocks: View {
                 .textSelection(.enabled)
         case let .paragraph(text):
             AgentMarkdownText(text: text, size: size)
-        case let .code(language, text):
-            AgentCodeBlock(code: text, language: language, size: size)
+        case let .code(_, text):
+            AgentCodeBlock(code: text, size: size)
+        case let .image(alt, url):
+            AgentMarkdownImage(alt: alt, url: url)
         case let .list(ordered, start, items):
             VStack(alignment: .leading, spacing: size * 0.3) {
                 ForEach(items.indices, id: \.self) { i in
@@ -471,16 +499,42 @@ struct AgentCapWidth: Layout {
     }
 }
 
-/// 围栏代码块：横向滚动 + 右上角复制
+/// 正文里的图片（同 react-markdown 的 `<img>`）：按原比例铺满正文宽度、限高，加载前占位；
+/// 远程图经后端缓存代理（本机直连图床常失败）
+struct AgentMarkdownImage: View {
+    let alt: String
+    let url: String
+    @Environment(\.api) private var api
+
+    var body: some View {
+        LazyImage(url: api.image(url)) { state in
+            if let image = state.image {
+                image.resizable().scaledToFit()
+            } else if state.error != nil {
+                Label(alt.isEmpty ? "图片加载失败" : alt, systemImage: "photo")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.textFaint)
+                    .frame(maxWidth: .infinity, minHeight: 60)
+                    .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 10))
+            } else {
+                Color.white.opacity(0.04).frame(height: 160)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: 420, alignment: .leading)
+        .clipShape(.rect(cornerRadius: 10))
+        .accessibilityLabel(alt.isEmpty ? "图片" : alt)
+    }
+}
+
+/// 围栏代码块：横向滚动 + 右上角复制；不着色（同 Web 正文代码块）
 struct AgentCodeBlock: View {
     let code: String
-    var language: String = ""
     var size: CGFloat = 17
     @State private var copied = false
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            AgentCodeText(code: code, language: AgentCodeLanguage(tag: language), size: size * 0.82)
+            AgentCodeText(code: code, language: .plain, size: size * 0.82)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .padding(.trailing, 28)

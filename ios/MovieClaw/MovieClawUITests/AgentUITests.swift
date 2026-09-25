@@ -176,7 +176,8 @@ final class AgentUITests: XCTestCase {
 
         // 「+」菜单：上传图片 + 使用技能
         safeTap(app, element(app, "agent-composer-plus"), "加号菜单")
-        XCTAssertTrue(app.buttons["agent-pick-image"].waitForExistence(timeout: 5), "加号菜单缺少「上传图片」")
+        XCTAssertTrue(app.buttons["agent-pick-image"].waitForExistence(timeout: 5), "加号菜单缺少「照片图库」")
+        XCTAssertTrue(app.buttons["agent-pick-file"].exists, "加号菜单缺少「选取文件」（同 Web 系统选择器的三种来源）")
         XCTAssertTrue(app.staticTexts["使用技能"].exists, "加号菜单缺少「使用技能」")
         let skill = app.buttons.matching(NSPredicate(format: "label BEGINSWITH '⚡'")).firstMatch
         var pickedSkill = false
