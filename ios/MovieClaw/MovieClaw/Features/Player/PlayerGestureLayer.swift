@@ -1,0 +1,126 @@
+import SwiftUI
+import UIKit
+
+/// 播放画面上的触摸手势（对应 Web `lib/player/tap.ts`、`touch-adjust.ts`、`hold-speed.ts`）。
+///
+/// 用 UIKit 的原始触摸而不是 SwiftUI 手势组合：这里要在**同一根手指**上区分五种意图——
+/// 单击、双击、横滑拖进度、竖滑调亮度/音量、长按倍速——而且单击必须**立即**生效
+/// （不为等双击延迟 300 毫秒：点一下唤出控制条是最高频的交互）。SwiftUI 的手势优先级
+/// 做不到「先按单击处理、第二下再改判双击」。
+///
+/// 判定规则：
+/// - 手指移动不到 12pt 就抬起 = 轻点；距上次轻点 ≤ 300ms 且落在左右三分之一 = 双击跳转；
+/// - 移动超过 12pt：横向为主 → 拖进度；纵向为主 → 左半屏亮度、右半屏音量；
+/// - 按住 500ms 不动 = 长按 2 倍速（抬手恢复）；已进入倍速后的移动不再改判。
+/// - 从屏幕上下边缘 32pt 内起手的触摸交给系统（控制中心/主屏幕手势），不当成播放器手势。
+struct PlayerGestureLayer: UIViewRepresentable {
+    var enabled: Bool
+    var onTap: (_ xRatio: CGFloat, _ isDouble: Bool) -> Void
+    var onScrub: (_ phase: GesturePhase, _ deltaRatio: CGFloat) -> Void
+    var onAdjust: (_ phase: GesturePhase, _ side: AdjustSide, _ deltaRatio: CGFloat) -> Void
+    var onHold: (_ began: Bool) -> Void
+
+    enum GesturePhase { case began, changed, ended, cancelled }
+    enum AdjustSide { case brightness, volume }
+
+    func makeUIView(context: Context) -> GestureView {
+        let view = GestureView()
+        view.isMultipleTouchEnabled = false
+        view.backgroundColor = .clear
+        view.accessibilityIdentifier = "player-gesture-layer"
+        return view
+    }
+
+    func updateUIView(_ view: GestureView, context: Context) {
+        view.config = self
+    }
+
+    final class GestureView: UIView {
+        var config: PlayerGestureLayer?
+
+        private enum Intent { case undecided, scrub, adjust(AdjustSide), hold }
+        private var start: CGPoint = .zero
+        private var intent: Intent = .undecided
+        private var holdTimer: Timer?
+        private var lastTap: Date?
+        private var tracking = false
+
+        private static let activatePx: CGFloat = 12
+        private static let edgeGuard: CGFloat = 32
+        private static let doubleTapWindow: TimeInterval = 0.3
+        private static let holdDelay: TimeInterval = 0.5
+
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let config, config.enabled, let touch = touches.first, event?.allTouches?.count ?? 1 == 1 else { return }
+            let point = touch.location(in: self)
+            guard point.y > Self.edgeGuard, point.y < bounds.height - Self.edgeGuard else { return }
+            tracking = true
+            start = point
+            intent = .undecided
+            holdTimer?.invalidate()
+            holdTimer = Timer.scheduledTimer(withTimeInterval: Self.holdDelay, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.tracking, case .undecided = self.intent else { return }
+                    self.intent = .hold
+                    self.config?.onHold(true)
+                }
+            }
+        }
+
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard tracking, let config, let touch = touches.first else { return }
+            let point = touch.location(in: self)
+            let dx = point.x - start.x, dy = point.y - start.y
+            switch intent {
+            case .undecided:
+                guard max(abs(dx), abs(dy)) > Self.activatePx else { return }
+                holdTimer?.invalidate()
+                if abs(dx) >= abs(dy) {
+                    intent = .scrub
+                    config.onScrub(.began, 0)
+                } else {
+                    let side: AdjustSide = start.x < bounds.width / 2 ? .brightness : .volume
+                    intent = .adjust(side)
+                    config.onAdjust(.began, side, 0)
+                }
+            case .scrub:
+                config.onScrub(.changed, dx / max(1, bounds.width))
+            case let .adjust(side):
+                // 上滑为增：屏幕坐标 y 向下，取负
+                config.onAdjust(.changed, side, -dy / max(1, bounds.height))
+            case .hold:
+                break
+            }
+        }
+
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+            finish(cancelled: false, touch: touches.first)
+        }
+
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+            finish(cancelled: true, touch: touches.first)
+        }
+
+        private func finish(cancelled: Bool, touch: UITouch?) {
+            holdTimer?.invalidate()
+            guard tracking, let config else { return }
+            tracking = false
+            switch intent {
+            case .undecided:
+                guard !cancelled else { return }
+                let x = (touch?.location(in: self).x ?? start.x) / max(1, bounds.width)
+                let now = Date()
+                let isDouble = lastTap.map { now.timeIntervalSince($0) <= Self.doubleTapWindow } ?? false
+                lastTap = isDouble ? nil : now
+                config.onTap(x, isDouble)
+            case .scrub:
+                config.onScrub(cancelled ? .cancelled : .ended, 0)
+            case let .adjust(side):
+                config.onAdjust(.ended, side, 0)
+            case .hold:
+                config.onHold(false)
+            }
+            intent = .undecided
+        }
+    }
+}
