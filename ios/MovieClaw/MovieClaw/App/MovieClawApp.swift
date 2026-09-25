@@ -4,6 +4,10 @@ import SwiftUI
 struct MovieClawApp: App {
     @State private var model = AppModel()
 
+    init() {
+        ImagePipelineSetup.configure()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

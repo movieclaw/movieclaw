@@ -59,6 +59,15 @@ final class AppModel {
 
     /// 冷启动：有服务器就尝试恢复会话，否则进入连接页。
     func restore() async {
+        #if DEBUG
+        if let raw = DebugLaunch.server, let address = try? ServerAddress(parsing: raw) {
+            try? await connect(to: address)
+            if case .ready = phase {} else if let user = DebugLaunch.username, let pass = DebugLaunch.password {
+                try? await login(username: user, password: pass, remember: true)
+            }
+            if phase != .launching { return }
+        }
+        #endif
         guard let api else {
             phase = .needsServer
             return

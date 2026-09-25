@@ -7,6 +7,8 @@ struct LoginView: View {
         case login
         /// 服务器全新：创建超级管理员（全生命周期仅一次）
         case setup
+        /// 已登录状态下添加另一个账号（Web /login?add=1），成功后切换过去
+        case addAccount
     }
 
     let mode: Mode
@@ -15,6 +17,7 @@ struct LoginView: View {
     private static let autofill = !ProcessInfo.processInfo.arguments.contains("--ui-testing")
 
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
     @State private var username = ""
     @State private var password = ""
     @State private var confirm = ""
@@ -25,7 +28,7 @@ struct LoginView: View {
     var body: some View {
         NavigationStack {
             Form {
-                if let launchError = model.launchError {
+                if mode != .addAccount, let launchError = model.launchError {
                     Section {
                         Label(launchError, systemImage: "wifi.exclamationmark")
                             .foregroundStyle(.orange)
@@ -46,14 +49,14 @@ struct LoginView: View {
                             .textContentType(Self.autofill ? .newPassword : nil)
                     }
                 } header: {
-                    Text(mode == .setup ? "创建管理员账号" : "使用你的 MovieClaw 账号进入")
+                    Text(mode == .setup ? "创建管理员账号" : mode == .addAccount ? "登录另一个账号；之后可在「切换账号」里一键切换，不用再输密码。" : "使用你的 MovieClaw 账号进入")
                 } footer: {
                     if mode == .setup {
                         Text("这台服务器还没有初始化。创建的账号将成为超级管理员。")
                     }
                 }
 
-                if mode == .login {
+                if mode != .setup {
                     Toggle("30 天内记住我", isOn: $remember)
                 }
 
@@ -70,7 +73,7 @@ struct LoginView: View {
                         HStack {
                             Spacer()
                             if busy { ProgressView() }
-                            Text(busy ? (mode == .setup ? "创建中…" : "登录中…") : (mode == .setup ? "创建并进入" : "登录"))
+                            Text(buttonTitle)
                             Spacer()
                         }
                     }
@@ -78,15 +81,29 @@ struct LoginView: View {
                     .accessibilityIdentifier("login-submit")
                 }
 
-                Section {
-                    Button("更换服务器") { model.changeServer() }
-                } footer: {
-                    if let server = model.server {
-                        Text("当前服务器：\(server.displayString)")
+                if mode == .addAccount {
+                    Section {
+                        Button("取消，回到当前账号") { dismiss() }
+                    }
+                } else {
+                    Section {
+                        Button("更换服务器") { model.changeServer() }
+                    } footer: {
+                        if let server = model.server {
+                            Text("当前服务器：\(server.displayString)")
+                        }
                     }
                 }
             }
-            .navigationTitle(mode == .setup ? "初始化" : "登录")
+            .navigationTitle(mode == .setup ? "初始化" : mode == .addAccount ? "添加账号" : "登录")
+        }
+    }
+
+    private var buttonTitle: String {
+        switch mode {
+        case .setup: busy ? "创建中…" : "创建并进入"
+        case .login: busy ? "登录中…" : "登录"
+        case .addAccount: busy ? "登录中…" : "添加并切换"
         }
     }
 
@@ -105,7 +122,7 @@ struct LoginView: View {
             defer { busy = false }
             do {
                 switch mode {
-                case .login: try await model.login(username: name, password: password, remember: remember)
+                case .login, .addAccount: try await model.login(username: name, password: password, remember: remember)
                 case .setup: try await model.createAdmin(username: name, password: password)
                 }
             } catch {

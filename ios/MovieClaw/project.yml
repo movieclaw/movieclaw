@@ -10,6 +10,11 @@ options:
   deploymentTarget:
     iOS: "26.0"
   createIntermediateGroups: true
+packages:
+  # 图片加载与缓存（MIT）：海报墙的解码降采样、内存/磁盘缓存、预取
+  Nuke:
+    url: https://github.com/kean/Nuke
+    from: "13.0.0"
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -26,6 +31,12 @@ targets:
     platform: iOS
     sources:
       - path: MovieClaw
+        type: syncedFolder
+    dependencies:
+      - package: Nuke
+        product: Nuke
+      - package: Nuke
+        product: NukeUI
     info:
       path: MovieClaw/Info.plist
       properties:
@@ -63,6 +74,7 @@ targets:
     platform: iOS
     sources:
       - path: MovieClawTests
+        type: syncedFolder
     dependencies:
       - target: MovieClaw
     settings:
@@ -73,6 +85,7 @@ targets:
     platform: iOS
     sources:
       - path: MovieClawUITests
+        type: syncedFolder
     dependencies:
       - target: MovieClaw
     settings:
