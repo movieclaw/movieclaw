@@ -5104,6 +5104,10 @@ nonisolated extension API {
         var maxThinkingTokens: Int?
         var thinkingControl: API.ThinkingControl?
         var modalities: [String]
+        /// 本模型的思考档位菜单（服务端推导，前端不必理解方言）。
+        /// 空列表 = 无菜单，UI 隐藏选择器。budget 制未声明预算上限时退化为
+        /// 仅开关（没有预算可分段）。
+        var thinkingLevels: [String]
 
         enum CodingKeys: String, CodingKey {
             case id
@@ -5116,6 +5120,7 @@ nonisolated extension API {
             case maxThinkingTokens = "max_thinking_tokens"
             case thinkingControl = "thinking_control"
             case modalities
+            case thinkingLevels = "thinking_levels"
         }
     }
 

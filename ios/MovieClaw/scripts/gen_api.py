@@ -333,17 +333,22 @@ def main() -> int:
     )
     req_map, req_top = TypeAdapter.json_schemas(req_inputs, ref_template="#/$defs/{model}")
     defs = dict(resp_top.get("$defs", {}))
-    # @computed_field 只出现在序列化口径里：补进响应模型（同样视为必有）
-    _, ser_top = TypeAdapter.json_schemas(
-        [(k, "serialization", a) for k, _, a in resp_inputs], ref_template="#/$defs/{model}"
-    )
-    for name, ser in ser_top.get("$defs", {}).items():
-        target = defs.get(name)
-        if not target or "properties" not in target:
+    # @computed_field 只出现在序列化口径里，而部分父模型自定义了序列化器、序列化口径下整棵 schema
+    # 没有类型，按 $defs 合并会漏掉。这里直接遍历所有 Pydantic 模型类，把计算字段补进同名定义（视为必有）。
+    def all_models(cls):
+        for sub in cls.__subclasses__():
+            yield sub
+            yield from all_models(sub)
+
+    for cls in set(all_models(BaseModel)):
+        computed = getattr(cls, "model_computed_fields", None) or {}
+        target = defs.get(cls.__name__)
+        if not computed or not target or "properties" not in target:
             continue
-        for prop, prop_schema in (ser.get("properties") or {}).items():
-            if prop not in target["properties"] and prop_schema.get("readOnly"):
-                target["properties"][prop] = prop_schema
+        ser_props = cls.model_json_schema(mode="serialization").get("properties", {})
+        for prop in computed:
+            if prop in ser_props and prop not in target["properties"]:
+                target["properties"][prop] = ser_props[prop]
                 target.setdefault("required", []).append(prop)
     req_defs = req_top.get("$defs", {})
     # 同名模型两种口径不一致（请求体里带默认值的字段是可选的）→ 请求侧改名 XxxInput
