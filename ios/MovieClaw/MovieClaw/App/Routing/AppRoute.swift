@@ -227,8 +227,12 @@ extension AppRoute {
                 }
             }
         case "search":
+            // 网页把搜索范围拆成 label/cats/sites/poster/private/browse 多个参数，折叠成一个 scope 串
+            let scopeKeys: Set<String> = ["label", "cats", "sites", "poster", "private", "browse"]
+            let scopeParams = query.filter { scopeKeys.contains($0.key) }
             self = .search(.init(
-                q: query["q"] ?? "", tab: query["tab"], scope: query["scope"],
+                q: query["q"] ?? "", tab: query["tab"],
+                scope: query["scope"] ?? (scopeParams.isEmpty ? nil : SearchScope.encode(fromWebQuery: scopeParams)),
                 snapshot: int(query["snapshot"]), forSubscription: int(query["for_sub"])
             ))
         case "subscriptions":

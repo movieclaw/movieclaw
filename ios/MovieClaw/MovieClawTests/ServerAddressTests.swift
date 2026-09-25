@@ -34,3 +34,27 @@ struct ServerAddressTests {
         #expect(url.absoluteString == "http://nas:3000/api/v1/libraries/1/items?page=2&sort=added")
     }
 }
+
+struct AppRouteParsingTests {
+    @Test(arguments: [
+        ("/library/19/item/1019?season=10&episode=1", AppRoute.libraryItem(libraryId: 19, itemId: 1019, season: 10, episode: 1)),
+        ("/media/movie/550", AppRoute.mediaDetail(titleRef: "tmdb:movie:550")),
+        ("/subscriptions/12?upgrade-run=1", AppRoute.subscription(id: 12, upgradeRun: true)),
+        ("/tasks?view=history", AppRoute.activity(view: "history")),
+        ("/settings/about", AppRoute.settingsSection(.app)),
+        ("/settings/app?tab=remote", AppRoute.settingsSection(.playback)),
+        ("/discover/movie/top250", AppRoute.discoverCollection(kind: "movie", provider: "douban", collectionId: "movie_top250")),
+        ("/library/c/7", AppRoute.collection(libraryId: nil, collectionId: 7)),
+    ])
+    func parses(path: String, expected: AppRoute) {
+        #expect(AppRoute(webPath: path) == expected)
+    }
+
+    @Test func searchFoldsScopeParams() throws {
+        guard case let .search(query)? = AppRoute(webPath: "/search?q=%E5%A5%A5%E6%9C%AC&cats=movie&sites=1,2") else {
+            Issue.record("未解析为搜索路由"); return
+        }
+        #expect(query.q == "奥本")
+        #expect(query.scope != nil)
+    }
+}
