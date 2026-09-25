@@ -178,7 +178,8 @@ private struct AgentTitleCard: View {
             switch state {
             case .loading: AgentCardPlaceholder(aspect: 2 / 3, failed: false)
             case .failed: AgentCardPlaceholder(aspect: 2 / 3, failed: true)
-            case let .ready(item): DiscoverPosterCard(item: item, action: .subscribe)
+            // 同 Web TitlePosterCardBody：未入库但已订阅时打「已订阅」蓝斜标
+            case let .ready(item): DiscoverPosterCard(item: item, action: .subscribe, showsSubscribedRibbon: true)
             }
         }
         .frame(width: 126)
@@ -510,7 +511,7 @@ private struct AgentSubscriptionCard: View {
         // 点击进订阅详情（追踪明细 + 活动时间线）而非影片详情；已是订阅，不再给订阅键
         return DiscoverPosterCard(item: item, action: .none, onOpen: {
             router.push(.subscription(id: sub.id))
-        }, showsSubscribedRibbon: false)
+        })
         .overlay(alignment: .top) {
             if let meta {
                 // 海报内部底栏：「第 2 季 · ● 3 / 10」

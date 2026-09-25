@@ -61,10 +61,58 @@ final class DiscoverUITests: XCTestCase {
         XCTAssertFalse(app.buttons["discover-filter"].exists, "豆瓣视角不支持筛选")
         snapshot("发现-剧集-豆瓣")
 
-        // 点海报进详情
-        app.buttons["poster-card"].firstMatch.tap()
-        XCTAssertTrue(app.scrollViews["media-detail"].waitForExistence(timeout: 30), "点海报应进入影片详情")
+        // 点海报：有订阅权限时首点只展开信息层，再点才进详情（同 Web 触屏）
+        let card = app.buttons["poster-card"].firstMatch
+        XCTAssertTrue(card.isHittable)
+        card.tap()
+        XCTAssertTrue(app.buttons["poster-card-subscribe"].waitForExistence(timeout: 5), "首点应展开信息层（含订阅键）")
+        snapshot("海报信息层")
+        XCTAssertFalse(app.scrollViews["media-detail"].exists, "首点不应直接进详情")
+        card.tap()
+        XCTAssertTrue(app.scrollViews["media-detail"].waitForExistence(timeout: 30), "再点海报应进入影片详情")
         snapshot("详情-豆瓣")
+    }
+
+    /// 切电影/剧集要清空筛选（两套类型 ID），回到该类型的发现首页（同 Web switchMediaType）
+    @MainActor
+    func testSwitchTypeClearsFilters() throws {
+        let app = try launch()
+        let filter = app.buttons["discover-filter"]
+        XCTAssertTrue(filter.waitForExistence(timeout: 30))
+        filter.tap()
+        let genre = app.buttons["动作"]
+        XCTAssertTrue(genre.waitForExistence(timeout: 20))
+        genre.tap()
+        app.buttons["filter-apply"].tap()
+        XCTAssertTrue(app.staticTexts["筛选结果"].waitForExistence(timeout: 20))
+        let tv = app.segmentedControls["discover-type"].buttons["剧集"]
+        XCTAssertTrue(tv.isHittable)
+        tv.tap()
+        XCTAssertTrue(app.otherElements["discover-hero"].waitForExistence(timeout: 30), "切到剧集应回到发现首页")
+        XCTAssertFalse(app.staticTexts["筛选结果"].exists, "筛选应已清空")
+        XCTAssertTrue(app.buttons["筛选影片"].exists, "筛选键不应再带角标")
+        snapshot("切类型后")
+    }
+
+    /// 已订阅的条目点「已订阅」：打开订阅弹层的管理态（同 Web openSubscribe），不跳订阅详情
+    @MainActor
+    func testSubscribedButtonOpensManageSheet() throws {
+        let titleRoute = env["MC_TEST_SUBSCRIBED_MEDIA"] ?? "/media/movie/1003596"
+        let app = try launch(route: titleRoute)
+        let subscribed = app.buttons["detail-subscribed"]
+        guard subscribed.waitForExistence(timeout: 30) else {
+            throw XCTSkip("\(titleRoute) 不是已订阅条目，跳过")
+        }
+        XCTAssertTrue(subscribed.isHittable)
+        subscribed.tap()
+        XCTAssertTrue(app.staticTexts["subscribe-existing"].waitForExistence(timeout: 20) || app.otherElements["subscribe-existing"].exists, "应进入订阅弹层管理态")
+        snapshot("订阅管理态")
+        // 只点「好的」关闭，绝不点「取消订阅」
+        let ok = app.buttons["subscribe-ok"]
+        XCTAssertTrue(ok.isHittable)
+        ok.tap()
+        XCTAssertFalse(app.buttons["subscribe-ok"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.otherElements["subscription-detail"].exists, "不应跳到订阅详情")
     }
 
     @MainActor
@@ -113,6 +161,7 @@ final class DiscoverUITests: XCTestCase {
         if photos.exists {
             photos.buttons.element(boundBy: photos.buttons.count > 2 ? 2 : 0).tap()
             XCTAssertTrue(app.buttons["lightbox-action"].waitForExistence(timeout: 10), "剧照灯箱应有「设为背景」")
+            XCTAssertTrue(app.scrollViews["lightbox-thumbnails"].exists || app.otherElements["lightbox-thumbnails"].exists, "灯箱底部应有缩略图条")
             snapshot("剧照灯箱")
             app.buttons["lightbox-close"].tap()
         }

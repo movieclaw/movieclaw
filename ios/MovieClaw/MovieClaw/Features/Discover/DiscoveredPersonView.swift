@@ -48,7 +48,8 @@ struct DiscoveredPersonView: View {
                                 }
                                 LazyVGrid(columns: DiscoverGrid.columns, spacing: 20) {
                                     ForEach(person.titles.map(DiscoverPosterItem.init)) { item in
-                                        DiscoverPosterCard(item: item, action: .none)
+                                        // 同 Web：影人作品页显式给未入库但已订阅的作品打「已订阅」斜标
+                                        DiscoverPosterCard(item: item, action: .none, showsSubscribedRibbon: true)
                                     }
                                 }
                             }

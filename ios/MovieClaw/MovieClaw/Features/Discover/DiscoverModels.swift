@@ -53,6 +53,50 @@ struct DiscoveryFilters: Hashable {
     }
 }
 
+extension DiscoveryFilters {
+    /// 从站内链接的查询参数恢复筛选（同 Web `parseDiscoveryFilters`）：
+    /// 无效或过期的值安全忽略，不让分享链接破坏页面。
+    init(query: [String: String]) {
+        self.init()
+        if let sort = query["sort"], Self.sorts.contains(where: { $0.value == sort }) { self.sort = sort }
+        var seen = Set<Int>()
+        genreIds = (query["genres"] ?? "").split(separator: ",").compactMap { Int($0) }.filter { $0 > 0 && seen.insert($0).inserted }
+        if let country = query["country"]?.uppercased(), country.count == 2, country.allSatisfy({ $0.isASCII && $0.isLetter }) {
+            originCountry = country
+        }
+        func number(_ key: String, _ range: ClosedRange<Double>) -> Double? {
+            guard let raw = query[key], let value = Double(raw), value.isFinite, range.contains(value) else { return nil }
+            return value
+        }
+        if let year = number("year", 1874 ... 2100), year == year.rounded() { self.year = Int(year) }
+        ratingGte = number("rating", 0 ... 10)
+        if let runtime = number("runtime", 1 ... 600), runtime == runtime.rounded() { runtimeLte = Int(runtime) }
+    }
+}
+
+/// 发现页视角：类型 × 数据源 × 筛选，与 Web 地址 `/discover/{type}?source=&genres=…` 一一对应。
+///
+/// Web 上地址是视角的唯一状态源：切类型、切数据源都跳到不带筛选的新地址（筛选随之清空），
+/// 站内链接也能完整恢复视角。原生没有地址栏，由路由切到发现标签时把参数交给 `DiscoverView`：
+/// 参数可以只是类型（`tv`），也可以带上查询串（`tv?source=douban&genres=18`）。
+struct DiscoverViewpoint: Equatable {
+    var mediaType: String
+    var source: String
+    var filters: DiscoveryFilters
+
+    init(parameter: String) {
+        let parts = parameter.split(separator: "?", maxSplits: 1).map(String.init)
+        mediaType = parts.first == "tv" ? "tv" : "movie"
+        var query: [String: String] = [:]
+        if parts.count > 1 {
+            for item in URLComponents(string: "?\(parts[1])")?.queryItems ?? [] { query[item.name] = item.value ?? "" }
+        }
+        // 未知数据源安全回退到默认 TMDB 视角；筛选只对 TMDB 生效
+        source = query["source"] == "douban" ? "douban" : "tmdb"
+        filters = source == "tmdb" ? DiscoveryFilters(query: query) : .empty
+    }
+}
+
 /// 院线地区（ISO 3166-1，与后端 TMDB region 参数一致）
 enum DiscoverRegions {
     static let all: [(code: String, name: String)] = [
