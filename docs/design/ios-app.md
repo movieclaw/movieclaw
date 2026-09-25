@@ -52,6 +52,8 @@ ios/MovieClaw/
 - SSE：`for try await event in api.events("/jobs/stream") { … }` 放在 `.task` 里，离开页面自动断开。
 - **弹层**：所有 `.sheet` / `.fullScreenCover` 的内容必须调用 `.sheetFeedback()`——根部的确认框/输入框被 sheet 盖住时弹不出，
   它给弹层配独立的反馈中心，关窗时未消失的 Toast 转交回根部（全局弹层已自动挂上）。
+- **命名**：同一个 App target 里 `private` 类型也会和别处的同名类型冲突，模块内新类型一律带模块前缀
+  （如 `PlayerUpNextCard`、`LibraryWallCell`），通用名（`UpNextCard`、`Row`、`Header`）禁止使用。
 - **模型一致性**：给 `API.*` 模型加 `Identifiable` 等协议一律写在 `Core/API/ModelConformances.swift`（先 grep，别在模块里重复声明）。
 - 反馈：`@Environment(Feedback.self)`：`feedback.success/error`、`await feedback.confirm(…)`、`await feedback.prompt(…)`，
   文案照搬 Web。
