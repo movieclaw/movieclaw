@@ -24,6 +24,7 @@ struct PlayerScreen: View {
         }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("player-screen")
         .onAppear {
             guard controller == nil else { return }
@@ -228,7 +229,7 @@ private struct PlayerContent: View {
                     .padding(.top, 8)
                 }
                 Spacer(minLength: 0)
-                if showPaused {
+                if showPaused, menu == .none {
                     PausedOverlay(title: controller.title, episodeLabel: controller.episodeLabel(controller.currentEpisode))
                         .padding(.horizontal, 20)
                         .padding(.bottom, 12)
@@ -246,20 +247,22 @@ private struct PlayerContent: View {
                     .padding(.bottom, 12)
                 }
                 if chromeVisible {
-                    ZStack(alignment: .bottomLeading) {
-                        PlayerBottomBar(
-                            controller: controller, trickplay: trickplay, menu: $menu, scrubMs: $scrubMs,
-                            landscape: landscape, onToggleLandscape: { PlayerOrientation.request(landscape: !landscape) }
-                        )
+                    PlayerBottomBar(
+                        controller: controller, trickplay: trickplay, menu: $menu, scrubMs: $scrubMs,
+                        landscape: landscape, onToggleLandscape: { PlayerOrientation.request(landscape: !landscape) }
+                    )
+                    // 菜单用 overlay 挂在底栏上：不参与布局（否则高菜单会把底栏挤扁），
+                    // 底边落在时间行上方、不压住进度条（同 Web 的 bottom-full 定位）
+                    .overlay(alignment: .bottomLeading) {
                         menuPanel
-                            .padding(.bottom, 64)
+                            .padding(.bottom, 112)
                     }
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
                     .transition(.opacity)
                 }
             }
-            if chromeVisible, !controller.phase.isBusy, !isModal {
+            if chromeVisible, !controller.phase.isBusy, !isModal, menu == .none {
                 PlayerCenterControls(controller: controller)
                     .transition(.opacity)
             }

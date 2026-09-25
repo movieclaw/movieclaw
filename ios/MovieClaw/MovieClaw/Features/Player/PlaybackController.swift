@@ -72,6 +72,8 @@ final class PlaybackController {
     private(set) var originMs = 0
     /// 本单元内 MPV 已失败过：不再尝试，直接走系统播放器
     private var mpvFailed = false
+    /// 本单元内 MPV 直出原文件失败过（例如多剪辑原盘没有单一原文件）：下次让 MPV 放服务端 HLS
+    private var mpvDirectFailed = false
     /// 已因线路不够降到转码档（自动模式下这时交给 AVPlayer 放 HLS）
     private var bandwidthDegraded = false
     private var bandwidthRestarted = false
@@ -210,6 +212,7 @@ final class PlaybackController {
         bufferedEndMs = nil
         nextDismissed = false
         mpvFailed = false
+        mpvDirectFailed = false
         bandwidthDegraded = false
         failedTiers = []
         failureCount = 0
@@ -410,7 +413,7 @@ final class PlaybackController {
         let videoCopy = decision.video?.action == "copy" && decision.video?.burnSubtitle == nil
         var url: URL?
         var original = false
-        if useMPV, videoCopy, let token = PlaybackAPI.token(in: session.streamUrl) {
+        if useMPV, videoCopy, !mpvDirectFailed, let token = PlaybackAPI.token(in: session.streamUrl) {
             // MPV 直出原文件：服务端为 remux/音频转码起的会话用不上，立刻释放
             url = scope.streamURL("/api/v1/playback/files/\(fileId)/stream?token=\(token)")
             original = true
@@ -573,6 +576,13 @@ final class PlaybackController {
             "tier": session.decision.tier.map { .int($0) } ?? .null,
         ])
         if engine?.kind == .mpv {
+            if playsOriginalFile, session.sessionId != nil || session.decision.tier != 0, !mpvDirectFailed {
+                // 原文件拉不下来（原盘多剪辑、网盘直链失效……）：先让 MPV 改放服务端 HLS 再试一次
+                mpvDirectFailed = true
+                scope.clientLog("engine-fallback", ["from": .string("mpv-direct"), "reason": .string(reason)])
+                request(startMs: positionMs, phase: .sessionStarting)
+                return
+            }
             mpvFallback(reason: reason)
             return
         }

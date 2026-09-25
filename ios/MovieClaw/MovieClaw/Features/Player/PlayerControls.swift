@@ -136,7 +136,7 @@ struct PlayerBottomBar: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.85))
                     .accessibilityIdentifier("player-time")
-                    .accessibilityValue("\(controller.positionMs / 1000)")
+                    .accessibilityValue(String(controller.positionMs / 1000))
                 Spacer()
             }
             PlayerProgressBar(controller: controller, trickplay: trickplay, scrubMs: $scrubMs)

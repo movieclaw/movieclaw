@@ -5,6 +5,10 @@ import SwiftUI
 struct PlayerMenuPanel<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @State private var contentHeight: CGFloat = 0
+
+    private var maxRowsHeight: CGFloat { verticalSizeClass == .compact ? 200 : 360 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -14,17 +18,21 @@ struct PlayerMenuPanel<Content: View>: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 10)
                 .padding(.bottom, 4)
+            // 内容短就贴合内容高度，超出上限才滚动（横屏矮，上限更低）
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) { content }
-                    .padding(.bottom, 8)
+                rows.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
             .scrollBounceBehavior(.basedOnSize)
+            .frame(height: min(max(contentHeight, 1), maxRowsHeight))
         }
         .frame(width: 280)
-        .frame(maxHeight: 360)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(.black.opacity(0.85), in: .rect(cornerRadius: 14))
+        .background(.black.opacity(0.88), in: .rect(cornerRadius: 14))
         .shadow(color: .black.opacity(0.5), radius: 22, y: 10)
+    }
+
+    private var rows: some View {
+        VStack(alignment: .leading, spacing: 0) { content }
+            .padding(.bottom, 8)
     }
 }
 

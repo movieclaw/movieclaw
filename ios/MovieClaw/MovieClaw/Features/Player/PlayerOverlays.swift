@@ -44,7 +44,7 @@ struct PlayerErrorView: View {
                 }
                 HStack(spacing: 12) {
                     Button("重试", action: retry)
-                        .buttonStyle(.glassProminent)
+                        .buttonStyle(PlayerPrimaryButtonStyle())
                         .accessibilityIdentifier("player-retry")
                     Button("返回", action: exit)
                         .buttonStyle(.glass)
@@ -121,7 +121,7 @@ struct PlayerConsentView: View {
                         } label: {
                             Text(saving ? "正在开启…" : "开启并播放")
                         }
-                        .buttonStyle(.glassProminent)
+                        .buttonStyle(PlayerPrimaryButtonStyle())
                         .disabled(saving)
                         .accessibilityIdentifier("consent-enable")
                     }
@@ -172,9 +172,14 @@ struct UpNextCard: View {
                 Button("关闭", action: dismiss)
                     .buttonStyle(.glass)
                 Button(action: play) {
-                    Text("立即播放").frame(maxWidth: .infinity)
+                    Text("立即播放")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(.white, in: .capsule)
                 }
-                .buttonStyle(.glassProminent)
+                .buttonStyle(.plain)
                 .accessibilityIdentifier("upnext-play")
             }
             .padding(.top, 8)
@@ -244,5 +249,17 @@ struct LevelBar: View {
             .frame(width: 96, height: 4)
             Text("\(Int((value * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
         }
+    }
+}
+
+/// 播放器里的主按钮：白底黑字胶囊（同 Web 的 player-accent 按钮；系统 glassProminent 在纯黑背景上白字白底看不清）
+struct PlayerPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.black)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background(.white.opacity(configuration.isPressed ? 0.75 : 1), in: .capsule)
     }
 }
