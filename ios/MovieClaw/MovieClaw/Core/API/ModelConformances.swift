@@ -13,3 +13,5 @@ extension API.LibraryItemView: Identifiable {
 extension API.FavoriteItemView: Identifiable {
     var id: Int { mediaItemId }
 }
+
+extension API.MemberView: Identifiable {}
