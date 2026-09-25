@@ -40,7 +40,7 @@ struct MorePage: View {
             }
 
             Section("常用") {
-                NavigationLink(value: AppRoute.settingsSection(.profile)) {
+                MoreRouteRow(route: .settingsSection(.profile)) {
                     Label("个人信息", systemImage: "person.crop.circle")
                 }
                 if permissions.isAdmin, !notices.isEmpty {
@@ -58,12 +58,12 @@ struct MorePage: View {
                         }
                     }
                 }
-                NavigationLink(value: AppRoute.settings) {
+                MoreRouteRow(route: .settings) {
                     Label("设置", systemImage: "gearshape")
                 }
                 .accessibilityIdentifier("more-settings")
                 if permissions.isAdmin, badges.updatePending {
-                    NavigationLink(value: AppRoute.settingsSection(.app)) {
+                    MoreRouteRow(route: .settingsSection(.app)) {
                         Label {
                             Text("有可用更新")
                         } icon: {
@@ -123,7 +123,7 @@ struct MorePage: View {
 
     @ViewBuilder
     private func sessionRow(_ item: API.SessionSummary) -> some View {
-        NavigationLink(value: AppRoute.session(id: item.id)) {
+        MoreRouteRow(route: .session(id: item.id)) {
             HStack {
                 if item.running {
                     Circle().fill(Theme.success).frame(width: 7, height: 7)
@@ -192,5 +192,29 @@ struct MorePage: View {
         } catch {
             feedback.error(error)
         }
+    }
+}
+
+/// 更多页的跳转行：先关掉「更多」弹层，再在主导航里打开目标页
+/// （弹层自带的导航栈里打开会话页时隐藏不了标签栏，页内跳转也会压错栈）。
+private struct MoreRouteRow<Content: View>: View {
+    let route: AppRoute
+    @ViewBuilder let label: () -> Content
+    @Environment(Router.self) private var router
+
+    var body: some View {
+        Button {
+            router.open(route)
+        } label: {
+            HStack {
+                label()
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Theme.textFaint)
+            }
+            .contentShape(Rectangle())
+        }
+        .foregroundStyle(Theme.text)
     }
 }

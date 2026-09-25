@@ -269,14 +269,15 @@ extension AppRoute {
     }
 
     /// 该路由归属的标签页（切标签定位用）
-    var tab: MainTab {
+    /// nil = 不属于任何标签（设置、AI 会话、分享等），在当前标签打开
+    var tab: MainTab? {
         switch self {
         case .discover, .discoverCollection, .mediaDetail, .person, .discoveredPerson: .discover
         case .libraryHome, .libraryCustomize, .favorites, .allCollections, .collection, .library, .libraryItem, .libraryManage: .library
         case .subscriptions, .subscription: .subscriptions
         case .activity: .activity
         case .search: .search
-        case .newSession, .session, .my, .settings, .settingsSection, .share: .library
+        case .newSession, .session, .my, .settings, .settingsSection, .share: nil
         }
     }
 }

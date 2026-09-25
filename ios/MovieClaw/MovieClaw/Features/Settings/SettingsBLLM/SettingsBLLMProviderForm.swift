@@ -474,6 +474,7 @@ struct SettingsBLLMProviderForm: View {
                 _ = try await api.llmProvidersUpdate(providerId: provider.id, body: payload)
             } else {
                 _ = try await api.llmProvidersCreate(body: payload)
+                LLMCapabilityProbe.shared.invalidate()
             }
             onSaved()
             dismiss()

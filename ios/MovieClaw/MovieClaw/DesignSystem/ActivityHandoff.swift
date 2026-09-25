@@ -18,6 +18,11 @@ final class LLMCapabilityProbe {
     /// 入口是否该显示：已接入，或探测失败（放行）
     var allowsHandoff: Bool { state == .configured || state == .unavailable }
 
+    /// 接入/删除模型后调用：丢掉缓存，下次 `ensure` 立即重新探测
+    func invalidate() {
+        checkedAt = nil
+    }
+
     func ensure(api: APIClient) async {
         if let checkedAt, Date.now.timeIntervalSince(checkedAt) < 300 { return }
         guard !inFlight else { return }

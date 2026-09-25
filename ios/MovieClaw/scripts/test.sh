@@ -14,7 +14,7 @@ set -u
 cd "$(dirname "$0")/.."
 SIM="${MC_SIM:-iPhone 17}"
 DERIVED="${MC_DERIVED:-build}"
-LOG="$(mktemp -t mc-test).log"
+LOG="$(mktemp -t mc-test-$(basename "$(cd ../.. && pwd)")).log"
 
 [[ -d MovieClaw.xcodeproj ]] || xcodegen generate >/dev/null
 
@@ -24,14 +24,24 @@ TEST_RUNNER_MC_LIVE="${MC_LIVE:-0}" TEST_RUNNER_MC_TEST_SERVER="${MC_TEST_SERVER
   >"$LOG" 2>&1 &
 PID=$!
 
-done_at=0
+# 结束判定：优先等 xcodebuild 自己的「** TEST SUCCEEDED/FAILED **」；
+# 它迟迟不出时，要求 XCTest 汇总与 Swift Testing 汇总（Test run with …）都已出现，
+# 或 XCTest 汇总后 180 秒 Swift Testing 仍无动静（本次没有 Swift Testing 用例），再留 15 秒收尾。
+xct_at=0
 while kill -0 $PID 2>/dev/null; do
-  if (( done_at == 0 )) && grep -qE "\*\* TEST (SUCCEEDED|FAILED)|Test Suite '(All|Selected) tests' (passed|failed)|Testing cancelled" "$LOG"; then
-    done_at=$SECONDS
+  if grep -qE "\*\* TEST (SUCCEEDED|FAILED)|Testing cancelled" "$LOG"; then
+    sleep 3; kill $PID 2>/dev/null; break
   fi
-  if (( done_at > 0 && SECONDS - done_at > 15 )); then
-    kill $PID 2>/dev/null
-    break
+  if (( xct_at == 0 )) && grep -qE "Test Suite '(All|Selected) tests' (passed|failed)" "$LOG"; then
+    xct_at=$SECONDS
+  fi
+  if (( xct_at > 0 )); then
+    if grep -qE "Test run with [0-9]+ tests? " "$LOG" && (( SECONDS - xct_at > 15 )); then
+      kill $PID 2>/dev/null; break
+    fi
+    if (( SECONDS - xct_at > 180 )); then
+      kill $PID 2>/dev/null; break
+    fi
   fi
   sleep 2
 done

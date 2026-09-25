@@ -111,8 +111,7 @@ final class Router {
         }
         showsMore = false
         // 切到路由归属的标签（该标签对当前账号不可见时——例如成员没有订阅页——留在当前标签）
-        let target = route.tab
-        if availableTabs.contains(target) { selectedTab = target }
+        if let target = route.tab, availableTabs.contains(target) { selectedTab = target }
         paths[selectedTab, default: []].append(route)
     }
 

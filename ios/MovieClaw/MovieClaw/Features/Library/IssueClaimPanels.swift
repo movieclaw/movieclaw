@@ -228,7 +228,7 @@ struct IssueClaimConfirmPanel: View {
                 Button("取消", action: onCancel)
                     .buttonStyle(.glass)
                 Button(fileCount > 1 ? "认领全部 \(fileCount) 个文件" : "认领", action: onConfirm)
-                    .buttonStyle(.glassProminent)
+                    .discoverProminentButton()
                     .fontWeight(.semibold)
             }
             .controlSize(.small)
@@ -335,7 +335,7 @@ struct IssueClaimSearchPanel: View {
                     Button("查看该 ID") {
                         if let id = Int(trimmed) { onPick(IssueClaimSeed(tmdbId: id, title: "TMDB #\(trimmed)")) }
                     }
-                    .buttonStyle(.glassProminent)
+                    .discoverProminentButton()
                     .fontWeight(.semibold)
                 } else {
                     Button(searching ? "搜索中…" : "搜索") { Task { await search() } }

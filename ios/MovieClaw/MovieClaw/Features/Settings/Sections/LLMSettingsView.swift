@@ -176,6 +176,7 @@ struct LLMSettingsView: View {
         defer { busy = false }
         do {
             _ = try await api.llmProvidersDelete(providerId: provider.id)
+            LLMCapabilityProbe.shared.invalidate()
             await load()
         } catch {
             self.error = error.localizedDescription

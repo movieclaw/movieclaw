@@ -204,7 +204,14 @@ def gen_struct(name: str, schema: dict, defs: dict) -> list[str]:
         typ, nullable = swift_type(prop, defs)
         optional = nullable or json_key not in required
         lines += doc_lines(prop.get("description"), "        ")
-        lines.append(f"        var {ident(swift_name)}: {typ}{'?' if optional else ''}")
+        if prop.get("readOnly") and not optional:
+            # 计算字段由服务端推导：解码时照常必有，本地构造时不必填（数组给空、其余可选）
+            if typ.startswith("["):
+                lines.append(f"        var {ident(swift_name)}: {typ} = []")
+            else:
+                lines.append(f"        var {ident(swift_name)}: {typ}?")
+        else:
+            lines.append(f"        var {ident(swift_name)}: {typ}{'?' if optional else ''}")
         keys.append((swift_name, json_key))
     lines.append("")
     lines.append("        enum CodingKeys: String, CodingKey {")
