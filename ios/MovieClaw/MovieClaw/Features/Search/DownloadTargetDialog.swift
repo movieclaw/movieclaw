@@ -271,7 +271,7 @@ struct DownloadTargetSheet: View {
 
     @ViewBuilder
     private var smartSection: some View {
-        if let identity = request.identity {
+        if request.identity != nil {
             if loadingTarget {
                 HStack(spacing: 10) {
                     ProgressView()
@@ -305,7 +305,6 @@ struct DownloadTargetSheet: View {
             } else {
                 notice("自动识别暂不可用；为避免投错库请手选保存目录后再下载。", tone: Theme.warning)
             }
-            let _ = identity
         }
     }
 

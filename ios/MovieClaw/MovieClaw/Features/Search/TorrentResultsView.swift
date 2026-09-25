@@ -15,7 +15,6 @@ struct TorrentResultsView: View {
     @Environment(\.permissions) private var permissions
     @Environment(Router.self) private var router
     @Environment(Feedback.self) private var feedback
-    @Environment(\.openURL) private var openURL
 
     @State private var actions = TorrentActionsState()
     @State private var showsFilter = false
@@ -122,7 +121,7 @@ struct TorrentResultsView: View {
             }
             HStack(spacing: 8) {
                 switch model.phase {
-                case .streaming, .connecting:
+                case .streaming:
                     Circle().fill(Theme.accent).frame(width: 6, height: 6)
                     Text("已找到 \(model.items.count) 条")
                 case .done:

@@ -169,4 +169,19 @@ struct TorrentSearchLogicTests {
         guard case .done = try APIClient.parseTorrentEvent(done) else { Issue.record("应解析为 done"); return }
         #expect(try APIClient.parseTorrentEvent(ServerEvent(id: nil, event: "ping", data: "{}")) == nil)
     }
+
+    @Test func sseLineParserHandlesCRLFCommentsAndMultilineData() {
+        var parser = SSELineParser()
+        let lines = [": ping", "event: site_error\r", "data: {\"a\":", "data: 1}", ""]
+        var events: [ServerEvent] = []
+        for line in lines {
+            if let event = parser.feed(Data(line.utf8)) { events.append(event) }
+        }
+        #expect(events.count == 1)
+        #expect(events.first?.event == "site_error")
+        #expect(events.first?.data == "{\"a\":\n1}")
+        // 标题里的 U+2028 不影响：只按 LF 切行
+        #expect(parser.feed(Data("data: {\"t\":\"a\u{2028}b\"}".utf8)) == nil)
+        #expect(parser.feed(Data())?.data == "{\"t\":\"a\u{2028}b\"}")
+    }
 }

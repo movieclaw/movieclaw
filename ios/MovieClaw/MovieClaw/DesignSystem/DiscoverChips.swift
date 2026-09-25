@@ -9,7 +9,7 @@ struct DiscoverFlowLayout: Layout {
         let rows = arrange(width: proposal.width ?? .infinity, subviews: subviews)
         let height = rows.reduce(0) { $0 + $1.height } + CGFloat(max(rows.count - 1, 0)) * lineSpacing
         let width = rows.map(\.width).max() ?? 0
-        return CGSize(width: proposal.width ?? width, height: height)
+        return CGSize(width: min(width, proposal.width ?? width), height: height)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
