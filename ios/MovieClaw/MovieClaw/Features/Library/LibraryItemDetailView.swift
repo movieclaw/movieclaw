@@ -503,6 +503,7 @@ struct LibraryItemDetailView: View {
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.04)))
         }
         .padding(.horizontal, Theme.pagePadding)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("item-files")
     }
 
@@ -1027,6 +1028,7 @@ struct LibraryFileRow: View {
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("file-row-\(file.id)")
                 .contextMenu {
                     Button { UIPasteboard.general.string = file.filePath } label: { Label("拷贝路径", systemImage: "doc.on.doc") }
                 }

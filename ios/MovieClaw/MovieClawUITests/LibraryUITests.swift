@@ -114,6 +114,46 @@ final class LibraryUITests: XCTestCase {
         }
     }
 
+    /// 条目详情的各区块：媒体轨道、播放键、演职员、文件区（点开看规格）、外部词条
+    @MainActor
+    func testItemDetailSections() {
+        let app = launch(route: "/library")
+        _ = openFirstItem(app)
+        XCTAssertTrue(app.buttons["item-play"].waitForExistence(timeout: 15), "有在位文件时应有播放键")
+        snapshot("详情首屏")
+        let files = app.descendants(matching: .any)["item-files"]
+        for _ in 0 ..< 8 where !files.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(files.exists, "应有文件区")
+        XCTAssertTrue(app.staticTexts["演职员"].exists || app.staticTexts["相关链接"].exists)
+        snapshot("详情下半屏")
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'file-row-'")).firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["保存目录"].waitForExistence(timeout: 5), "文件行点开应列出规格")
+        snapshot("文件规格")
+        Thread.sleep(forTimeInterval: 3)
+    }
+
+    /// 管理员 ⋯ 菜单 → 待处理抽屉：四个页签可切换（只看不动）
+    @MainActor
+    func testPendingDrawerOpens() {
+        let app = launch(route: "/library")
+        let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'library-card-'")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 20))
+        card.tap()
+        let menu = app.buttons["library-actions"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 20))
+        menu.tap()
+        let pending = app.buttons.matching(NSPredicate(format: "label BEGINSWITH '待处理'")).firstMatch
+        XCTAssertTrue(pending.waitForExistence(timeout: 5), "管理员菜单应有「待处理」")
+        XCTAssertTrue(app.buttons["扫描库"].exists || app.buttons.matching(NSPredicate(format: "label BEGINSWITH '停止扫描'")).firstMatch.exists)
+        snapshot("单库 ⋯ 菜单")
+        pending.tap()
+        XCTAssertTrue(app.navigationBars["待处理"].waitForExistence(timeout: 10), "应打开待处理抽屉")
+        Thread.sleep(forTimeInterval: 2)
+        snapshot("待处理抽屉")
+    }
+
     /// 加入合集：新建一个测试合集并把当前作品放进去，后端核对后删除
     @MainActor
     func testAddToNewCollection() {
