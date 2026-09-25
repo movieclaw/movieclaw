@@ -43,7 +43,8 @@ final class PlayerUITests: XCTestCase {
         startSeconds = duration / 10
         let before = try resume(item)
         defer { try? restoreResume(item, positionMs: before) }
-        let app = launch(item: item, engine: "system", diagnostics: false)
+        // 打开诊断面板：面板开着时控制条不自动隐藏，免得「刚确认按钮在、点下去时已隐藏」的竞态
+        let app = launch(item: item, engine: "system", diagnostics: true)
         XCTAssertTrue(waitForPosition(app, atLeast: startSeconds + 2, timeout: 90), "进度没有前进")
 
         tapControl(app, "player-横屏")
