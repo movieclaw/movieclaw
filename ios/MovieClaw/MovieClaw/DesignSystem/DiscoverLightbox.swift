@@ -1,0 +1,168 @@
+import SwiftUI
+
+/// 全屏看图灯箱（对应 Web `ImageLightbox` / `ZoomLightbox`）：左右滑动翻页、双指/双击缩放、
+/// 顶部标题与序号，底部可挂一个针对当前图的动作（详情页剧照的「设为背景」、种子图集的下载等）。
+///
+/// 用法：`.fullScreenCover(item: $lightbox) { DiscoverLightbox(content: $0) }`
+struct DiscoverLightboxContent: Identifiable {
+    let id = UUID()
+    /// 已解析好的图片地址（通常是 `api.image(fullUrl)` 原图）
+    var urls: [URL?]
+    var initialIndex: Int = 0
+    var title: String
+    var action: LightboxAction?
+    /// 图片加载失败时的补充说明（种子图床常失效）
+    var brokenHint: String?
+}
+
+/// 灯箱里对当前图执行的动作：常态 / 执行中 / 成功三种文案（同 Web LightboxAction）
+struct LightboxAction {
+    var label: String
+    var busyLabel: String
+    var doneLabel: String
+    var systemImage: String
+    var run: (Int) async throws -> Void
+}
+
+struct DiscoverLightbox: View {
+    let content: DiscoverLightboxContent
+    @Environment(\.dismiss) private var dismiss
+    @State private var index = 0
+    /// 按图片下标记录动作状态：换一张图可以再执行一次
+    @State private var actionState: [Int: ActionState] = [:]
+
+    enum ActionState: Equatable { case busy, done, failed(String) }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            TabView(selection: $index) {
+                ForEach(content.urls.indices, id: \.self) { i in
+                    ZoomableImage(url: content.urls[i], brokenHint: content.brokenHint)
+                        .tag(i)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .ignoresSafeArea()
+        }
+        .overlay(alignment: .top) {
+            HStack(spacing: 12) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark").font(.body.weight(.semibold)).frame(width: 36, height: 36)
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("关闭")
+                .accessibilityIdentifier("lightbox-close")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(content.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Text("\(index + 1) / \(content.urls.count)").font(.caption).monospacedDigit().foregroundStyle(.white.opacity(0.7))
+                }
+                Spacer()
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+        }
+        .overlay(alignment: .bottom) {
+            if let action = content.action {
+                actionButton(action)
+                    .padding(.bottom, 24)
+            }
+        }
+        .onAppear { index = min(max(content.initialIndex, 0), max(content.urls.count - 1, 0)) }
+        .preferredColorScheme(.dark)
+        .statusBarHidden()
+    }
+
+    @ViewBuilder
+    private func actionButton(_ action: LightboxAction) -> some View {
+        let state = actionState[index]
+        VStack(spacing: 8) {
+            if case let .failed(message) = state {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(Theme.danger)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(.black.opacity(0.6), in: .capsule)
+            }
+            Button {
+                let current = index
+                actionState[current] = .busy
+                Task {
+                    do {
+                        try await action.run(current)
+                        actionState[current] = .done
+                    } catch {
+                        actionState[current] = .failed(error.localizedDescription)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    switch state {
+                    case .busy: ProgressView().controlSize(.small)
+                    case .done: Image(systemName: "checkmark")
+                    default: Image(systemName: action.systemImage)
+                    }
+                    Text(state == .busy ? action.busyLabel : state == .done ? action.doneLabel : action.label)
+                }
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.glass)
+            .disabled(state == .busy || state == .done)
+            .accessibilityIdentifier("lightbox-action")
+        }
+    }
+}
+
+/// 可缩放的单张图：双指缩放、放大后拖动、双击在 1× / 2.5× 之间切换
+private struct ZoomableImage: View {
+    let url: URL?
+    var brokenHint: String?
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    var body: some View {
+        RemoteImage(url: url, contentMode: .fit, placeholderSymbol: "photo")
+            .scaleEffect(scale)
+            .offset(offset)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .bottom) {
+                if url == nil, let brokenHint {
+                    Text(brokenHint).font(.caption).foregroundStyle(.white.opacity(0.7)).padding(.bottom, 80)
+                }
+            }
+            .contentShape(.rect)
+            .gesture(
+                MagnifyGesture()
+                    .onChanged { value in scale = max(1, min(lastScale * value.magnification, 5)) }
+                    .onEnded { _ in
+                        lastScale = scale
+                        if scale <= 1 { withAnimation { offset = .zero; lastOffset = .zero } }
+                    }
+            )
+            .simultaneousGesture(
+                DragGesture()
+                    .onChanged { value in
+                        guard scale > 1 else { return }
+                        offset = CGSize(width: lastOffset.width + value.translation.width, height: lastOffset.height + value.translation.height)
+                    }
+                    .onEnded { _ in lastOffset = offset },
+                including: scale > 1 ? .all : .subviews
+            )
+            .onTapGesture(count: 2) {
+                withAnimation(.spring(duration: 0.3)) {
+                    if scale > 1 {
+                        scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero
+                    } else {
+                        scale = 2.5; lastScale = 2.5
+                    }
+                }
+            }
+    }
+}
