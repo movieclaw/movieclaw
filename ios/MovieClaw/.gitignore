@@ -1,0 +1,6 @@
+# 工程文件由 project.yml 经 XcodeGen 生成，不入库
+MovieClaw.xcodeproj/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
