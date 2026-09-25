@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+
 import { useConfirm, useToast } from "@/components/feedback";
+import { MoreIcon } from "@/components/icons";
 import {
   genreOptionsFor,
   regionLabels,
@@ -119,10 +122,11 @@ export function RuleSetsPanel() {
         </button>
       </div>
       <p className="mb-4 text-sub leading-6 text-[var(--text-muted)]">
-        规则组定义「什么样的资源可接受」——硬性条件（分辨率、编码、体积、免费等）
-        与偏好顺序。给规则组设置「适用范围」（电影/剧集、区域、类型）后，订阅时会自动
-        选中匹配的组：多个组都匹配时条件更多的优先，都不匹配时用标「默认」的组。
-        修改只影响之后的资源评估，已下载的内容不受影响。
+        {/* 中文不能在 JSX 里折行：折行处会渲染成一个多余的空格 */}
+        {"规则组定义「什么样的资源可接受」——硬性条件（分辨率、编码、体积、免费等）与偏好顺序。" +
+          "给规则组设置「适用范围」（电影/剧集、区域、类型）后，订阅时会自动选中匹配的组：" +
+          "多个组都匹配时条件更多的优先，都不匹配时用标「默认」的组。" +
+          "修改只影响之后的资源评估，已下载的内容不受影响。"}
       </p>
 
       {error && (
@@ -136,101 +140,27 @@ export function RuleSetsPanel() {
           正在加载…
         </p>
       ) : (
-        <div className="space-y-1.5">
-          {ruleSets.map((rs) => {
-            const chips = specSummary(rs.spec);
-            const scope = scopeSummary(rs.match_rules, routingOptions);
-            const deleteBlock = rs.is_default
-              ? "默认规则组不可删除"
-              : rs.reference_count > 0
-                ? `正被 ${rs.reference_count} 个订阅使用，先把它们改到其他规则组`
-                : null;
-            return (
-              <div
-                key={rs.id}
-                className="flex items-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2.5"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="flex items-center gap-2">
-                    <span className="truncate text-ui font-medium text-white/90">{rs.name}</span>
-                    {rs.is_default && (
-                      <span className="shrink-0 rounded-full border border-white/[0.14] bg-white/[0.1] px-2 py-0.5 text-micro font-semibold text-white/80">
-                        默认
-                      </span>
-                    )}
-                    {scope && (
-                      <span
-                        title="新订阅的作品符合这些条件时自动选用本组"
-                        className="truncate rounded-full border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-0.5 text-micro font-semibold text-white/85"
-                      >
-                        适用：{scope}
-                      </span>
-                    )}
-                    {rs.reference_count > 0 && (
-                      <span className="tnum shrink-0 text-caption text-[var(--text-faint)]">
-                        {rs.reference_count} 个订阅使用中
-                      </span>
-                    )}
-                  </p>
-                  <p className="mt-1 flex flex-wrap gap-1.5">
-                    {chips.length === 0 ? (
-                      <span className="text-caption text-[var(--text-faint)]">
-                        全不限：任何识别为本条目的资源都可接受
-                      </span>
-                    ) : (
-                      chips.map((chip) => (
-                        <span
-                          key={chip}
-                          className="rounded-md bg-white/[0.07] px-1.5 py-0.5 text-caption text-white/75"
-                        >
-                          {chip}
-                        </span>
-                      ))
-                    )}
-                  </p>
-                </div>
-                {!rs.is_default && (
-                  <button
-                    type="button"
-                    title="新订阅不匹配任何组的适用范围时使用本组（不改已有订阅）"
-                    onClick={() => void makeDefault(rs)}
-                    className="btn-glass shrink-0 px-3 py-1.5 text-sub font-medium"
-                  >
-                    设为默认
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setEditing({ ruleSet: rs, template: null })}
-                  className="btn-glass shrink-0 px-3 py-1.5 text-sub font-medium"
-                >
-                  编辑
-                </button>
-                <button
-                  type="button"
-                  title="以本组条件为底新建一个规则组"
-                  onClick={() =>
-                    setEditing({
-                      ruleSet: null,
-                      template: { name: `${rs.name} 副本`, spec: rs.spec },
-                    })
-                  }
-                  className="btn-glass shrink-0 px-3 py-1.5 text-sub font-medium"
-                >
-                  复制
-                </button>
-                <button
-                  type="button"
-                  disabled={deleteBlock !== null}
-                  title={deleteBlock ?? undefined}
-                  onClick={() => void remove(rs)}
-                  className="shrink-0 rounded-full border border-red-400/25 bg-red-500/[0.08] px-3 py-1.5 text-sub font-medium text-red-200/90 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-35"
-                >
-                  删除
-                </button>
-              </div>
-            );
-          })}
+        <div
+          role="list"
+          aria-label="规则组列表"
+          className="divide-y divide-white/[0.06] overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02]"
+        >
+          {ruleSets.map((rs) => (
+            <RuleSetRow
+              key={rs.id}
+              ruleSet={rs}
+              scope={scopeSummary(rs.match_rules, routingOptions)}
+              onEdit={() => setEditing({ ruleSet: rs, template: null })}
+              onCopy={() =>
+                setEditing({
+                  ruleSet: null,
+                  template: { name: `${rs.name} 副本`, spec: rs.spec },
+                })
+              }
+              onSetDefault={() => void makeDefault(rs)}
+              onDelete={() => void remove(rs)}
+            />
+          ))}
         </div>
       )}
 
@@ -246,6 +176,150 @@ export function RuleSetsPanel() {
         />
       )}
     </section>
+  );
+}
+
+/** 组名旁的小标签（与媒体库管理行的「默认」标同一套样式）。 */
+const BADGE =
+  "inline-flex shrink-0 items-center rounded-full border border-white/[0.14] bg-white/[0.08] px-1.5 py-px text-micro font-semibold text-white/75";
+
+/**
+ * 规则组清单的一行：与媒体库管理行（library-manage-row.tsx）同一套版式——
+ * 桌面与手机共用一个结构，不靠断点切两套布局。
+ *
+ * 此前一行里横排四个按钮，手机上按钮吃掉了大半宽度，组名被挤没、「适用」徽标
+ * 截成一个字、摘要芯片竖着折成一列。现在：
+ * - 第一行只放组名（点它即编辑）与「默认」标，右侧一个 ··· 菜单收纳全部操作；
+ * - 第二行小字：适用范围 · 使用中的订阅数——范围改成小字而非徽标，长了就换行，
+ *   不再截断；
+ * - 第三行摘要芯片占满整行宽度自由换行。
+ * 不能删除的原因直接写在菜单项里（禁用项不可悬停，title 在手机上也看不到）。
+ */
+function RuleSetRow({
+  ruleSet: rs,
+  scope,
+  onEdit,
+  onCopy,
+  onSetDefault,
+  onDelete,
+}: {
+  ruleSet: RuleSet;
+  /** 适用范围一句话摘要；null = 未声明 */
+  scope: string | null;
+  onEdit: () => void;
+  onCopy: () => void;
+  onSetDefault: () => void;
+  onDelete: () => void;
+}) {
+  const chips = specSummary(rs.spec);
+  const deleteBlock = rs.is_default
+    ? "默认组不可删"
+    : rs.reference_count > 0
+      ? `${rs.reference_count} 个订阅在用`
+      : null;
+  const itemClass =
+    "glass-row nav-item cursor-pointer px-3 py-2 text-ui font-medium outline-none " +
+    "data-[highlighted]:!bg-[var(--glass-fill-hover)] data-[highlighted]:!text-[var(--text)] " +
+    "data-[disabled]:pointer-events-none data-[disabled]:opacity-40";
+
+  return (
+    <div role="listitem" className="grid grid-cols-[minmax(0,1fr)_32px] gap-x-3 px-4 py-3">
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onEdit}
+            className="truncate text-left text-ui font-semibold text-white hover:underline"
+          >
+            {rs.name}
+          </button>
+          {rs.is_default && <span className={BADGE}>默认</span>}
+        </div>
+        <p className="mt-0.5 text-caption leading-5 text-[var(--text-faint)]">
+          <span title="新订阅的作品符合这些条件时自动选用本组">
+            {scope ? (
+              <>
+                适用 <span className="text-[var(--text-muted)]">{scope}</span>
+              </>
+            ) : rs.is_default ? (
+              "其他组都不适用时兜底"
+            ) : (
+              "未设适用范围，仅手动选用"
+            )}
+          </span>
+          {rs.reference_count > 0 && (
+            <span className="tnum"> · {rs.reference_count} 个订阅使用中</span>
+          )}
+        </p>
+      </div>
+
+      <div className="flex justify-end">
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <button
+              type="button"
+              aria-label={`「${rs.name}」的操作`}
+              className="grid size-8 place-items-center rounded-full border border-white/[0.09] bg-white/[0.04] text-white/80 transition hover:bg-white/[0.1] hover:text-white data-[state=open]:bg-white/[0.14] data-[state=open]:text-white"
+            >
+              <MoreIcon className="size-[18px]" />
+            </button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              align="end"
+              sideOffset={6}
+              collisionPadding={12}
+              className="menu-surface z-50 min-w-[12rem] p-1"
+            >
+              <DropdownMenu.Item onSelect={onEdit} className={itemClass}>
+                编辑
+              </DropdownMenu.Item>
+              <DropdownMenu.Item onSelect={onCopy} className={itemClass}>
+                复制为新组
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                onSelect={onSetDefault}
+                disabled={rs.is_default}
+                className={itemClass}
+              >
+                {rs.is_default ? "已是默认组" : "设为默认组"}
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
+              <DropdownMenu.Item
+                onSelect={onDelete}
+                disabled={deleteBlock !== null}
+                className={`${itemClass} !text-[var(--danger)] data-[highlighted]:!bg-[rgba(255,107,107,0.12)]`}
+              >
+                删除
+                {deleteBlock && (
+                  <span className="ml-auto pl-3 text-caption text-[var(--text-faint)]">
+                    {deleteBlock}
+                  </span>
+                )}
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+      </div>
+
+      {/* 摘要芯片跨满整行（含菜单列下方），手机上也能横向铺开 */}
+      <div className="col-span-2 mt-2 flex flex-wrap gap-1.5">
+        {chips.length === 0 ? (
+          <span className="text-caption text-[var(--text-faint)]">
+            全不限：任何识别为本条目的资源都可接受
+          </span>
+        ) : (
+          chips.map((chip) => (
+            <span
+              key={chip}
+              className="rounded-md bg-white/[0.07] px-1.5 py-0.5 text-caption text-white/75"
+            >
+              {chip}
+            </span>
+          ))
+        )}
+      </div>
+    </div>
   );
 }
 
