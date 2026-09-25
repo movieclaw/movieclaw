@@ -104,31 +104,14 @@ struct TaskCenterPanel: View {
                 identifier: { "task-view-\($0.rawValue)" },
                 onSelect: { view = $0 }
             )
+            // 刷新时刻行（「x 前更新」）Web 手机端隐藏（max-md:hidden），App 同样不显示；
+            // 实时通道状态只作为分隔线的无障碍值留给 UI 测试核对（live-事件数 / poll-事件数）
             Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
-            freshness
+                .accessibilityElement()
+                .accessibilityIdentifier("task-freshness")
+                .accessibilityValue("\(store.streamConnected ? "live" : "poll")-\(store.streamEventCount)")
         }
         .padding(.top, 18)
-    }
-
-    /// 刷新时刻与实时通道状态（Web 桌面端的「x 前更新」，手机上放到选项卡下方一行）
-    private var freshness: some View {
-        TimelineView(.periodic(from: .now, by: 5)) { _ in
-            HStack(spacing: 6) {
-                ActivityStatusDot(color: store.streamConnected ? Theme.success : Color.white.opacity(0.3), size: 6)
-                Text(store.streamConnected ? "实时" : "定时刷新")
-                Text("·")
-                if let at = store.downloadsRefreshedAt {
-                    Text("\(ActivityFormat.relative(at))更新")
-                } else {
-                    Text(store.downloadsLoading ? "正在读取下载器" : "等待刷新")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(Theme.textFaint)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("task-freshness")
-        .accessibilityValue("\(store.streamConnected ? "live" : "poll")-\(store.streamEventCount)")
     }
 
     // MARK: 分区

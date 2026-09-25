@@ -953,14 +953,10 @@ enum ActivityFormat {
         return "\(c.year ?? 0)年\(c.month ?? 0)月\(c.day ?? 0)日"
     }
 
-    /// 相对时间「几秒前」「3 分钟前」（同 dayjs zh-cn：45 秒内都是「几秒前」，未来时刻按现在算）
+    /// 相对时间「几秒前」「3 分钟前」（Web formatRelativeTime，算法统一在 Formatters.fromNow）
     static func relative(_ raw: String?) -> String {
         guard let date = Formatters.date(raw) else { return raw == nil ? "从未" : "" }
-        return relative(date)
-    }
-
-    static func relative(_ date: Date) -> String {
-        Formatters.fromNow(date)
+        return Formatters.fromNow(date)
     }
 
     /// 绝对时间「2026/09/25 18:05」

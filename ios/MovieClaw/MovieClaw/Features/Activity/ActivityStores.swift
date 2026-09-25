@@ -21,7 +21,6 @@ final class TaskActivityStore {
     private(set) var activity = TaskCenter.Activity()
     private(set) var downloadsLoading = true
     private(set) var downloadsError: String?
-    private(set) var downloadsRefreshedAt: Date?
     private(set) var jobsLoaded = false
     /// SSE 实时通道是否在线、收到的事件数（任务页右上角的「实时」指示与验收用）
     private(set) var streamConnected = false
@@ -33,6 +32,9 @@ final class TaskActivityStore {
     @ObservationIgnored private var jobsGeneration = 0
     @ObservationIgnored private var debounce: Task<Void, Never>?
     @ObservationIgnored private var downloadsInFlight = false
+    /// 请求在途时又被要求刷新：结束后再补拉一次（同 Web download-tasks 的 queued 循环），
+    /// 删种 / 换种后撞上轮询在途也不会让刚删的任务多挂一轮
+    @ObservationIgnored private var downloadsQueued = false
 
     static let fallbackPoll: Duration = .seconds(15)
     static let downloadsPoll: Duration = .seconds(10)
@@ -79,7 +81,9 @@ final class TaskActivityStore {
                     setJobs(Array(merged.values))
                     jobsLoaded = true
                 } catch {
-                    // 瞬时断线保留最近快照；SSE 重连或下一轮兜底轮询会自动校准
+                    // 瞬时断线保留最近快照；SSE 重连或下一轮兜底轮询会自动校准。
+                    // 首轮就失败也算「已加载」：任务视角不再无限转圈，按下载快照落到内容或空态（同 Web 只看下载 loading）
+                    jobsLoaded = true
                 }
             }
         }
@@ -87,20 +91,24 @@ final class TaskActivityStore {
 
     /// 立即重新读取下载器快照
     func refreshDownloads() {
+        downloadsQueued = true
         guard !downloadsInFlight, let api else { return }
         downloadsInFlight = true
         Task {
             defer { downloadsInFlight = false; downloadsLoading = false }
-            do {
-                let snapshot = try await api.dlTasks()
-                downloads = snapshot.items
-                sources = snapshot.sources
-                downloadsError = nil
-                downloadsRefreshedAt = .now
-                rebuild()
-            } catch is CancellationError {
-            } catch {
-                downloadsError = error.localizedDescription.isEmpty ? "下载任务加载失败" : error.localizedDescription
+            while downloadsQueued {
+                downloadsQueued = false
+                do {
+                    let snapshot = try await api.dlTasks()
+                    downloads = snapshot.items
+                    sources = snapshot.sources
+                    downloadsError = nil
+                    rebuild()
+                } catch is CancellationError {
+                    break
+                } catch {
+                    downloadsError = error.localizedDescription.isEmpty ? "下载任务加载失败" : error.localizedDescription
+                }
             }
         }
     }
