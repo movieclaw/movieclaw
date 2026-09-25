@@ -132,7 +132,7 @@ struct ManageSharesTab: View {
         if share.collectionId != nil {
             parts.append("合集 · \(share.itemCount ?? 0) 部")
         } else if let kind = share.kind {
-            parts.append(LibraryKindMeta.label(kind))
+            parts.append(ManageKind.label(kind))
         }
         if let year = share.year { parts.append(String(year)) }
         parts.append("\(ShareLinkKit.expiryHint(share.expiresAt))（\(Formatters.dateTime(share.expiresAt))）")

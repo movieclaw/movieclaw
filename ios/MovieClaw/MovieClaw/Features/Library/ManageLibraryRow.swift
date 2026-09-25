@@ -49,7 +49,7 @@ struct ManageLibraryRow: View {
                         }
                     }
                     // 第二行小字：类型 · 库存 · 需要留意的配置
-                    Text(([LibraryKindMeta.label(library.kind), ManageLibraryRules.inventory(library).primary]
+                    Text(([ManageKind.label(library.kind), ManageLibraryRules.inventory(library).primary]
                         + ManageLibraryRules.configNotes(library)).joined(separator: " · "))
                         .font(.caption)
                         .foregroundStyle(Theme.textFaint)

@@ -270,3 +270,19 @@ enum ManageConfirmText {
         "不会移动、修改或删除你的视频文件",
     ]) + "\n\n选「已有的章节也重新生成」会按当前章节与合成策略全部重新生成，你手动选定的图不会被覆盖。"
 }
+
+/// 库类型的展示名（Web `LIBRARY_KIND_LABELS`）。媒体库模块的 `LibraryKindMeta.label` 把 photo 叫「照片」，
+/// Web 叫「图片」；管理页与表单按 Web 口径用这里的
+enum ManageKind {
+    static let all = ["movie", "tv", "video", "photo"]
+
+    static func label(_ kind: String) -> String {
+        switch kind {
+        case "movie": "电影"
+        case "tv": "剧集"
+        case "video": "其他"
+        case "photo": "图片"
+        default: kind
+        }
+    }
+}

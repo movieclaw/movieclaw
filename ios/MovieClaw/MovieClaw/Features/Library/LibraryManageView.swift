@@ -285,7 +285,7 @@ struct LibraryManageView: View {
                 ForEach(ManageLibraryRules.kindOrder, id: \.self) { kind in
                     let count = libraries.filter { $0.kind == kind }.count
                     if count > 0 {
-                        ManageFilterChip(active: filter.kind == kind, title: "\(LibraryKindMeta.label(kind)) \(count)") {
+                        ManageFilterChip(active: filter.kind == kind, title: "\(ManageKind.label(kind)) \(count)") {
                             filter.kind = filter.kind == kind ? nil : kind
                         }
                     }
