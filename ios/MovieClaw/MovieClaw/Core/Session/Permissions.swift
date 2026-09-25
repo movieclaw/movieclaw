@@ -30,7 +30,7 @@ struct Permissions: Equatable {
         case .newSession, .session, .activity: isAdmin
         case .subscriptions, .subscription: canSubscribe
         case .search: canSearch
-        case let .settingsSection(section): isAdmin || section.memberVisible
+        case let .settingsSection(section, _): isAdmin || section.memberVisible
         case .libraryManage: isAdmin
         default: true
         }

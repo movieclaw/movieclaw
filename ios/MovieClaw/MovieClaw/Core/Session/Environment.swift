@@ -20,3 +20,15 @@ extension APIClient {
         server.imageURL(raw, variant: variant)
     }
 }
+
+private struct RouteQueryKey: EnvironmentKey {
+    static let defaultValue: [String: String] = [:]
+}
+
+extension EnvironmentValues {
+    /// 站内链接携带的查询参数（目前用于设置分区的预填与直达，如 `?tab=storage`）
+    var routeQuery: [String: String] {
+        get { self[RouteQueryKey.self] }
+        set { self[RouteQueryKey.self] = newValue }
+    }
+}

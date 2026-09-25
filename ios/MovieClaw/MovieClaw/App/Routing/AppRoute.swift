@@ -30,12 +30,12 @@ enum AppRoute: Hashable {
     case allCollections
     /// /library/{id}/c/{cid} 或 /library/c/{cid}
     case collection(libraryId: Int?, collectionId: Int)
-    /// /library/{id}
-    case library(id: Int)
+    /// /library/{id}?view=collections&pending=1：view 为合集视图，pending 为进页即开待处理抽屉
+    case library(id: Int, view: String? = nil, pending: Bool = false)
     /// /library/{id}/item/{mediaItemId}?season=&episode=
     case libraryItem(libraryId: Int, itemId: Int, season: Int? = nil, episode: Int? = nil)
-    /// /library/manage?create=1
-    case libraryManage(create: Bool = false, tab: String? = nil)
+    /// /library/manage?create=1&tab=duplicates&item={mediaItemId}
+    case libraryManage(create: Bool = false, tab: String? = nil, item: Int? = nil)
 
     // MARK: 搜索
     /// /search?q=&tab=&scope=&snapshot=&for_sub=
@@ -58,7 +58,9 @@ enum AppRoute: Hashable {
     // MARK: 我的 / 设置
     case my
     case settings
-    case settingsSection(SettingsSection)
+    /// /settings/{section}?…：query 原样透传给分区页（如 /settings/app?tab=storage、
+    /// /settings/downloaders?limits=… 的预填与直达），分区页经 `@Environment(\.routeQuery)` 读取
+    case settingsSection(SettingsSection, query: [String: String] = [:])
 
     // MARK: 分享（访客页）
     case share(slug: String)
@@ -198,7 +200,13 @@ extension AppRoute {
             } else if parts.count == 3, parts[1] == "movie", parts[2] == "high-score" {
                 self = .discoverCollection(kind: "movie", provider: "douban", collectionId: "movie_high_score")
             } else {
-                self = .discover(kind: parts.count > 1 ? parts[1] : "movie")
+                let kind = parts.count > 1 ? parts[1] : "movie"
+                // 筛选/数据源参数随类型一起带过去（「地址即状态」，见 DiscoverViewpoint）
+                if let q = components.percentEncodedQuery, !q.isEmpty {
+                    self = .discover(kind: "\(kind)?\(q)")
+                } else {
+                    self = .discover(kind: kind)
+                }
             }
         case "media":
             guard parts.count >= 3 else { return nil }
@@ -212,7 +220,7 @@ extension AppRoute {
             case "customize": self = .libraryCustomize
             case "favorites": self = .favorites
             case "collections": self = .allCollections
-            case "manage": self = .libraryManage(create: query["create"] == "1", tab: query["tab"])
+            case "manage": self = .libraryManage(create: query["create"] == "1", tab: query["tab"], item: int(query["item"]))
             case "c":
                 guard parts.count >= 3, let cid = int(parts[2]) else { return nil }
                 self = .collection(libraryId: nil, collectionId: cid)
@@ -223,7 +231,7 @@ extension AppRoute {
                 } else if parts.count >= 4, parts[2] == "c", let cid = int(parts[3]) {
                     self = .collection(libraryId: lib, collectionId: cid)
                 } else {
-                    self = .library(id: lib)
+                    self = .library(id: lib, view: query["view"], pending: query["pending"] == "1")
                 }
             }
         case "search":
@@ -258,7 +266,7 @@ extension AppRoute {
             case "app" where query["tab"] == "remote": self = .settingsSection(.playback)
             default:
                 guard let section = SettingsSection(rawValue: parts[1]) else { self = .settings; return }
-                self = .settingsSection(section)
+                self = .settingsSection(section, query: query)
             }
         case "s":
             guard parts.count >= 2 else { return nil }

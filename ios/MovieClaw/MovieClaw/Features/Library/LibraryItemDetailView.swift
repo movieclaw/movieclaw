@@ -277,7 +277,7 @@ struct LibraryItemDetailView: View {
                     }
                     if detail.collections.count > 3 {
                         Text(" · ").foregroundStyle(.white.opacity(0.3))
-                        NavigationLink("还有 \(detail.collections.count - 3) 个", value: AppRoute.library(id: libraryId))
+                        NavigationLink("还有 \(detail.collections.count - 3) 个", value: AppRoute.library(id: libraryId, view: "collections"))
                     }
                 }
             }
@@ -518,7 +518,7 @@ struct LibraryItemDetailView: View {
                 Text("文件").font(.subheadline.weight(.medium)).foregroundStyle(Theme.textMuted)
                 Text("\(files.count)").font(.caption).monospacedDigit().foregroundStyle(Theme.textFaint)
                 if manage, let duplicateLabel {
-                    Button("\(duplicateLabel) · 处理重复") { router.push(.libraryManage(tab: "duplicates")) }
+                    Button("\(duplicateLabel) · 处理重复") { router.push(.libraryManage(tab: "duplicates", item: itemId)) }
                         .font(.caption)
                         .foregroundStyle(Theme.warning)
                 }

@@ -21,10 +21,11 @@ extension AppRoute {
         case .favorites: FavoritesView()
         case .allCollections: AllCollectionsView()
         case let .collection(libraryId, collectionId): CollectionDetailView(libraryId: libraryId, collectionId: collectionId)
-        case let .library(id): LibraryDetailView(libraryId: id)
+        case let .library(id, view, pending):
+            LibraryDetailView(libraryId: id, initialView: view.flatMap(LibraryDetailView.WallView.init(rawValue:)) ?? .items, openPending: pending)
         case let .libraryItem(libraryId, itemId, season, episode):
             LibraryItemDetailView(libraryId: libraryId, itemId: itemId, season: season, episode: episode)
-        case let .libraryManage(create, tab): LibraryManageView(openCreate: create, initialTab: tab)
+        case let .libraryManage(create, tab, item): LibraryManageView(openCreate: create, initialTab: tab, initialItemId: item)
         // 搜索
         case let .search(query): SearchResultsView(query: query)
         // 订阅
@@ -38,7 +39,7 @@ extension AppRoute {
         // 我的 / 设置
         case .my: MorePage()
         case .settings: SettingsIndexView()
-        case let .settingsSection(section): SettingsSectionView(section: section)
+        case let .settingsSection(section, query): SettingsSectionView(section: section).environment(\.routeQuery, query)
         // 分享
         case let .share(slug): SharePageView(slug: slug)
         }

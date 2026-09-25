@@ -45,6 +45,10 @@ struct AppRouteParsingTests {
         ("/settings/app?tab=remote", AppRoute.settingsSection(.playback)),
         ("/discover/movie/top250", AppRoute.discoverCollection(kind: "movie", provider: "douban", collectionId: "movie_top250")),
         ("/library/c/7", AppRoute.collection(libraryId: nil, collectionId: 7)),
+        ("/library/19?view=collections&pending=1", AppRoute.library(id: 19, view: "collections", pending: true)),
+        ("/library/manage?tab=duplicates&item=6434", AppRoute.libraryManage(create: false, tab: "duplicates", item: 6434)),
+        ("/settings/app?tab=storage", AppRoute.settingsSection(.app, query: ["tab": "storage"])),
+        ("/discover/tv?source=douban", AppRoute.discover(kind: "tv?source=douban")),
     ])
     func parses(path: String, expected: AppRoute) {
         #expect(AppRoute(webPath: path) == expected)
