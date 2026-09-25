@@ -15,6 +15,11 @@ packages:
   Nuke:
     url: https://github.com/kean/Nuke
     from: "13.0.0"
+  # libmpv 播放引擎（LGPL 构建）：MKV/HEVC/TrueHD/DTS 直出、ASS/PGS 由 libass 渲染。
+  # 只能用 `MPVKit` 产品，绝不能用 `MPVKit-GPL`（GPL 会传染整个 App 的许可）。
+  MPVKit:
+    url: https://github.com/mpvkit/MPVKit
+    from: "1.0.0"
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -37,6 +42,8 @@ targets:
         product: Nuke
       - package: Nuke
         product: NukeUI
+      # libmpv 经 MPVCore 动态框架间接引入（LGPL 合规，见下方 MPVCore 目标的说明）
+      - target: MPVCore
     info:
       path: MovieClaw/Info.plist
       properties:
@@ -69,6 +76,26 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
+  # libmpv / FFmpeg 的动态框架边界。
+  # MPVKit 发布的是静态 xcframework，直接链进 App 等于把 LGPL 库静态链接进主程序；
+  # 收进这个动态框架后，用户可以用自行编译的同名框架替换（LGPL 2.1 §6）。
+  # App 只 import MPVCore，不得直接依赖 MPVKit。
+  MPVCore:
+    type: framework
+    platform: iOS
+    sources:
+      - path: MPVCore
+        type: syncedFolder
+    dependencies:
+      - package: MPVKit
+        product: MPVKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.movieclaw.mpvcore
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+        # OpenGL ES / GLKit 在 iOS 上已标记废弃，但仍是模拟器上唯一可用的 mpv 渲染路径
+        GCC_WARN_ABOUT_DEPRECATED_FUNCTIONS: NO
   MovieClawTests:
     type: bundle.unit-test
     platform: iOS
