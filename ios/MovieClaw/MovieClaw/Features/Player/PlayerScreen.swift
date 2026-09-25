@@ -245,7 +245,7 @@ private struct PlayerContent: View {
                 if controller.showsUpNext, let next = controller.nextEpisode {
                     HStack {
                         Spacer()
-                        UpNextCard(
+                        PlayerUpNextCard(
                             label: controller.episodeLabel(next) ?? "",
                             dismiss: { controller.nextDismissed = true },
                             play: controller.playNext

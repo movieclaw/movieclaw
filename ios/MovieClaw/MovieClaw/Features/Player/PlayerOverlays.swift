@@ -155,7 +155,7 @@ struct PlayerConsentView: View {
 }
 
 /// 片尾「即将播放」卡片：常驻到用户点它或关掉，不自动倒计时（倒计时会在片尾没看完时抢走画面）
-struct UpNextCard: View {
+struct PlayerUpNextCard: View {
     let label: String
     let dismiss: () -> Void
     let play: () -> Void

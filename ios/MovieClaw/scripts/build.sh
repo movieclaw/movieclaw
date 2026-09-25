@@ -10,5 +10,5 @@ SIM="${MC_SIM:-iPhone 17}"
 xcodebuild -project MovieClaw.xcodeproj -scheme MovieClaw \
   -destination "platform=iOS Simulator,name=$SIM" \
   -derivedDataPath "${MC_DERIVED:-build}" \
-  -clonedSourcePackagesDirPath "${MC_SPM:-$HOME/workspace/.mc-ios-spm}" \
+  -clonedSourcePackagesDirPath "${MC_SPM:-$HOME/workspace/.mc-ios-spm}" -packageAuthorizationProvider netrc \
   build 2>&1 | grep -E ' error:|warning: .*(deprecated|never|unused)|BUILD (SUCCEEDED|FAILED)' | sort -u
