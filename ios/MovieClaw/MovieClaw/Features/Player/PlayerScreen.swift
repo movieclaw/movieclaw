@@ -33,6 +33,14 @@ struct PlayerScreen: View {
             #if DEBUG
             // 开发期：-mcPlayerDiagnostics YES 起播即打开诊断面板（截图核对用）
             if UserDefaults.standard.bool(forKey: "mcPlayerDiagnostics") { created.diagnosticsOpen = true }
+            // -mcAutoNextAfter 秒数：到点自动切下一集（排查切集问题用）
+            let autoNext = UserDefaults.standard.double(forKey: "mcAutoNextAfter")
+            if autoNext > 0 {
+                Task {
+                    try? await Task.sleep(for: .seconds(autoNext))
+                    created.playNext()
+                }
+            }
             #endif
             created.start()
             UIApplication.shared.isIdleTimerDisabled = true

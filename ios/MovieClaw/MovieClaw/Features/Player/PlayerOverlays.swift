@@ -54,6 +54,7 @@ struct PlayerErrorView: View {
             .frame(maxWidth: 480)
             .padding(24)
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("player-error")
     }
 }
@@ -141,6 +142,7 @@ struct PlayerConsentView: View {
             .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(0.1)))
             .padding(20)
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("player-consent")
     }
 
@@ -187,6 +189,7 @@ struct UpNextCard: View {
         .padding(16)
         .frame(width: 260)
         .glassEffect(.regular, in: .rect(cornerRadius: 18))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("player-upnext")
     }
 }
@@ -216,6 +219,7 @@ struct PausedOverlay: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .allowsHitTesting(false)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("player-paused")
     }
 }

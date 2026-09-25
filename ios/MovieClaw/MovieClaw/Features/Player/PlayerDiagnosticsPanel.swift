@@ -59,6 +59,7 @@ struct PlayerDiagnosticsPanel: View {
         .frame(height: height)
         .background(.black.opacity(0.7), in: .rect(cornerRadius: 14))
         .clipShape(.rect(cornerRadius: 14))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("player-diagnostics")
     }
 

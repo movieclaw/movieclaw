@@ -68,6 +68,46 @@ final class PlayerUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["player-screen"].waitForNonExistence(timeout: 10), "播放器没有关闭")
     }
 
+    /// 剧集片尾 40 秒内出现「即将播放」卡片 → 点「立即播放」→ 换到下一集并开始播放
+    @MainActor
+    func testUpNextPlaysNextEpisode() throws {
+        let (show, current, next, durationMs) = try XCTUnwrap(try findEpisodePair(), "服务器上没有找到同季相邻两集都在位的剧集")
+        let beforeCurrent = try resumeState(show, 1, current)
+        let beforeNext = try resumeState(show, 1, next)
+        defer {
+            // 恢复两集的观看状态（片尾附近会被判为已看）
+            try? restoreEpisode(show, current, beforeCurrent)
+            try? restoreEpisode(show, next, beforeNext)
+        }
+        startSeconds = durationMs / 1000 - 30
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-mcServer", server, "-mcUser", username, "-mcPass", password,
+            "-mcRoute", String(format: "/play/%d/s01e%02d?t=%d", show, current, startSeconds),
+            // 用系统播放器：模拟器上 MPV 走 OpenGL ES 在主线程逐帧绘制，软解高码率时主线程一直忙，
+            // XCUITest 每一步都要等「App 空闲」而被拖到超时；这条用例测的是切集逻辑，与引擎无关
+            "-movieclaw.player.engine", "system",
+        ]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["player-upnext"].waitForExistence(timeout: 60), "片尾没有出现「即将播放」卡片")
+        shot(app, "upnext")
+        tapControl(app, "upnext-play")
+        // 换集后播放头回到下一集开头（它从没看过，续播点是 0）
+        var switched = false
+        for _ in 0 ..< 60 {
+            if let current = position(app), current < 60 { switched = true; break }
+            sleep(1)
+        }
+        if !switched { print("[PlayerUITests] 界面树：\n\(app.debugDescription)") }
+        XCTAssertTrue(switched, "没有切到下一集")
+        revealChrome(app)
+        let nextLabel = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", String(format: "S01E%02d", next))).firstMatch
+        XCTAssertTrue(nextLabel.waitForExistence(timeout: 5), "顶栏没有显示下一集")
+        XCTAssertTrue(waitForPosition(app, atLeast: 3, timeout: 90), "下一集没有开始播放")
+        tapControl(app, "player-close")
+        XCTAssertTrue(app.descendants(matching: .any)["player-screen"].waitForNonExistence(timeout: 10), "播放器没有关闭")
+    }
+
     @MainActor
     private func launch(item: Int, engine: String, diagnostics: Bool) -> XCUIApplication {
         let app = XCUIApplication()
@@ -247,6 +287,47 @@ final class PlayerUITests: XCTestCase {
             "media_item_id": item, "season_number": 0, "episode_number": 0,
             "event": "stop", "position_ms": positionMs, "device_id": "ui-test",
         ])
+    }
+
+    private func resumeState(_ item: Int, _ season: Int, _ episode: Int) throws -> [String: Any] {
+        try call("GET", "/playback/resume?media_item_id=\(item)&season_number=\(season)&episode_number=\(episode)") as? [String: Any] ?? [:]
+    }
+
+    private func restoreEpisode(_ show: Int, _ episode: Int, _ state: [String: Any]) throws {
+        _ = try call("POST", "/playback/progress", body: [
+            "media_item_id": show, "season_number": 1, "episode_number": episode,
+            "event": "stop", "position_ms": state["position_ms"] as? Int ?? 0, "device_id": "ui-test",
+        ])
+        _ = try call("POST", "/playback/marks", body: [
+            "media_item_id": show, "season_number": 1, "episode_number": episode,
+            "played": state["played"] as? Bool ?? false, "device_id": "ui-test",
+        ])
+    }
+
+    /// 找一部第一季前两集都在位、且都是 1080p 以下 SDR 的剧集：返回 (条目, 本集, 下一集, 本集片长毫秒)。
+    /// 避开 4K/HDR：模拟器没有硬解，4K HEVC 软解会把整台模拟器拖垮，测的就不是切集逻辑了
+    private func findEpisodePair() throws -> (Int, Int, Int, Int)? {
+        let libraries = try call("GET", "/libraries") as? [[String: Any]] ?? []
+        for library in libraries where library["kind"] as? String == "tv" {
+            guard let id = library["id"] as? Int else { continue }
+            let items = try call("GET", "/libraries/\(id)/items?limit=30") as? [[String: Any]] ?? []
+            for item in items {
+                guard let show = item["media_item_id"] as? Int,
+                      let detail = try? call("GET", "/libraries/\(id)/items/\(show)") as? [String: Any],
+                      let files = detail["files"] as? [[String: Any]] else { continue }
+                let light = files.filter {
+                    $0["season_number"] as? Int == 1 && $0["hdr"] is NSNull
+                        && ["1080p", "720p"].contains($0["resolution"] as? String ?? "")
+                        && ($0["duration_seconds"] as? Int ?? 0) > 120
+                }
+                let numbers = Set(light.compactMap { $0["episode_number"] as? Int }).sorted()
+                guard let first = numbers.first, numbers.contains(first + 1),
+                      let duration = light.first(where: { $0["episode_number"] as? Int == first })?["duration_seconds"] as? Int
+                else { continue }
+                return (show, first, first + 1, duration * 1000)
+            }
+        }
+        return nil
     }
 
     /// 在电影库里找一部主文件是指定容器的片子（最多翻前 60 部）
