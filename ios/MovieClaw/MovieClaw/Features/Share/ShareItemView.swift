@@ -275,7 +275,7 @@ struct ShareItemView: View {
 
     private func load() async {
         do {
-            item = try await api.shareItem(slug: slug, item: mediaItemId)
+            item = try await api.shareGuestItem(slug: slug, item: mediaItemId)
             failed = nil
         } catch is CancellationError {
         } catch let error as APIError where error.status != nil {
@@ -401,7 +401,7 @@ private struct ShareSeasonEpisodes: View {
         data = nil
         failed = false
         do {
-            let result = try await api.shareEpisodes(slug: slug, seasonNumber: s, item: queryItem)
+            let result = try await api.shareGuestEpisodes(slug: slug, seasonNumber: s, item: queryItem)
             guard s == currentSeason else { return }
             data = result
             selected = (result.episodes.first(where: \.owned) ?? result.episodes.first)?.episodeNumber
@@ -469,7 +469,22 @@ private struct ShareTrackRows: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             row("音轨", groups: Self.groups((audio ?? []).map { Self.language($0.language) }),
-                empty: audio == nil ? "尚未探测" : "文件内没有音轨")
+                empty: audio == nil ? "尚未探测" : "文件内没有音轨",
+                token: { name in
+                    // 只有一条的语言，芯片上直接写格式（同 Web）
+                    let hits = (audio ?? []).filter { Self.language($0.language) == name }
+                    guard hits.count == 1, let codec = hits[0].codec?.lowercased() else { return nil }
+                    return Self.audioTokens[codec] ?? codec.uppercased()
+                })
+            if let spec = topAudioSpec {
+                Text(spec)
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.white.opacity(0.14)))
+                    .padding(.leading, 38)
+            }
             row("字幕", groups: Self.groups(subtitles.map { Self.language($0.language, title: $0.title) }),
                 empty: "无内封或外挂字幕")
         }
@@ -485,7 +500,39 @@ private struct ShareTrackRows: View {
         }
     }
 
-    private func row(_ label: String, groups: [(name: String, count: Int)], empty: String) -> some View {
+    private static let audioTokens = [
+        "aac": "AAC", "ac3": "AC3", "eac3": "EAC3", "truehd": "TrueHD", "dts": "DTS",
+        "flac": "FLAC", "opus": "Opus", "mp3": "MP3", "vorbis": "Vorbis",
+    ]
+    private static let audioLabels = [
+        "aac": "AAC", "ac3": "Dolby Digital", "eac3": "Dolby Digital+", "truehd": "Dolby TrueHD",
+        "dts": "DTS", "flac": "FLAC", "opus": "Opus", "mp3": "MP3", "vorbis": "Vorbis",
+    ]
+    private static let audioTier = ["truehd": 5, "dts": 4, "eac3": 3, "flac": 3, "ac3": 2, "opus": 1, "aac": 1]
+
+    /// 多条音轨时行尾常显最高规格（同 Web `topAudioSpec`：先比编码档次再比声道数）
+    private var topAudioSpec: String? {
+        let streams = audio ?? []
+        guard streams.count >= 2,
+              let best = streams.max(by: {
+                  (Self.audioTier[$0.codec?.lowercased() ?? ""] ?? 0) * 100 + ($0.channels ?? 0)
+                      < (Self.audioTier[$1.codec?.lowercased() ?? ""] ?? 0) * 100 + ($1.channels ?? 0)
+              }) else { return nil }
+        let generic: Set<String> = ["lc", "main", "high", "baseline", "main 10"]
+        let profile = best.profile.flatMap { generic.contains($0.lowercased()) || $0.isEmpty ? nil : $0 }
+        let codec = profile ?? best.codec.map { Self.audioLabels[$0.lowercased()] ?? $0.uppercased() }
+        var channels: String?
+        if let layout = best.channelLayout?.split(separator: "(").first?.trimmingCharacters(in: .whitespaces),
+           let first = layout.first, first.isNumber {
+            channels = layout
+        } else if let n = best.channels {
+            channels = [1: "单声道", 2: "2.0", 6: "5.1", 7: "6.1", 8: "7.1"][n] ?? "\(n) 声道"
+        }
+        let text = [codec, channels].compactMap { $0 }.joined(separator: " ")
+        return text.isEmpty ? nil : text
+    }
+
+    private func row(_ label: String, groups: [(name: String, count: Int)], empty: String, token: @escaping (String) -> String? = { _ in nil }) -> some View {
         HStack(spacing: 8) {
             Text(label).font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.5)).frame(width: 30, alignment: .leading)
             if groups.isEmpty {
@@ -493,7 +540,7 @@ private struct ShareTrackRows: View {
             } else {
                 // 手机上最多 2 枚芯片，其余折成「+N 种」
                 ForEach(groups.prefix(2), id: \.name) { group in
-                    chip(group.count > 1 ? "\(group.name) ×\(group.count)" : group.name, label)
+                    chip(group.count > 1 ? "\(group.name) ×\(group.count)" : [group.name, token(group.name)].compactMap { $0 }.joined(separator: " "), label)
                 }
                 if groups.count > 2 { chip("+\(groups.count - 2) 种", label) }
             }

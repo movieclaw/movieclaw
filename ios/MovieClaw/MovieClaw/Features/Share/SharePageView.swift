@@ -61,7 +61,7 @@ struct SharePageView: View {
     private func probe() async {
         phase = .loading
         do {
-            let info = try await api.shareProbe(slug: slug)
+            let info = try await api.shareGuestProbe(slug: slug)
             isCollection = info.collectionId != nil
             phase = info.requiresPassword && !info.unlocked ? .locked : isCollection ? .collection : .item(nil)
         } catch is CancellationError {
@@ -144,7 +144,7 @@ private struct ShareGateView: View {
         error = nil
         defer { busy = false }
         do {
-            _ = try await api.shareUnlock(slug: slug, body: API.ShareUnlockRequest(password: value))
+            _ = try await api.shareGuestUnlock(slug: slug, password: value)
             onUnlocked()
         } catch let apiError as APIError where apiError.status != nil {
             let message = apiError.localizedDescription
@@ -250,7 +250,7 @@ private struct ShareCollectionView: View {
         .navigationTitle(data?.name ?? "")
         .task {
             do {
-                data = try await api.shareCollection(slug: slug)
+                data = try await api.shareGuestCollection(slug: slug)
             } catch is CancellationError {
             } catch {
                 failed = true
