@@ -87,6 +87,8 @@ struct DiscoverTag: View {
 
     var body: some View {
         Text(text)
+            .lineLimit(1)
+            .fixedSize()
             .font(.system(size: 11, weight: weight))
             .monospacedDigit()
             .foregroundStyle(foreground)
@@ -100,5 +102,12 @@ extension View {
     /// 强调按钮：液态玻璃强调底（App tint 是冷银浅色）+ 深色文字，避免白底白字
     func discoverProminentButton() -> some View {
         buttonStyle(.glassProminent).foregroundStyle(Color.black.opacity(0.85))
+    }
+}
+
+extension View {
+    /// 给容器打测试标识：先声明为「包含子元素」的容器，否则标识会被下发到每个子元素上
+    func discoverContainer(_ identifier: String) -> some View {
+        accessibilityElement(children: .contain).accessibilityIdentifier(identifier)
     }
 }

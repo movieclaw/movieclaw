@@ -266,7 +266,7 @@ struct MediaDetailView: View {
         .padding(.vertical, 10)
         .background(Color(red: 0.2, green: 0.8, blue: 0.55).opacity(0.08), in: .rect(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(red: 0.4, green: 0.9, blue: 0.7).opacity(0.2)))
-        .accessibilityIdentifier("detail-library-bar")
+        .discoverContainer("detail-library-bar")
     }
 
     private func overview(_ text: String) -> some View {
@@ -355,7 +355,7 @@ struct MediaDetailView: View {
                 .foregroundStyle(Theme.textFaint)
                 .padding(.horizontal, Theme.pagePadding)
         }
-        .accessibilityIdentifier("detail-trailers")
+        .discoverContainer("detail-trailers")
     }
 
     @ViewBuilder
@@ -372,7 +372,7 @@ struct MediaDetailView: View {
             .font(.subheadline)
             .foregroundStyle(Theme.textMuted)
             .padding(.top, 8)
-            .accessibilityIdentifier("detail-links")
+            .discoverContainer("detail-links")
         }
     }
 }
@@ -417,7 +417,7 @@ struct DetailCastRow: View {
                 .padding(.horizontal, Theme.pagePadding)
             }
         }
-        .accessibilityIdentifier("detail-cast")
+        .discoverContainer("detail-cast")
     }
 
     @ViewBuilder
@@ -499,7 +499,7 @@ struct DetailPhotoWall: View {
             }
         }
         .fullScreenCover(item: $lightbox) { DiscoverLightbox(content: $0) }
-        .accessibilityIdentifier("detail-photos")
+        .discoverContainer("detail-photos")
     }
 
     private func open(active: (id: String, label: String, images: [API.MediaImage]), index: Int) {

@@ -200,7 +200,7 @@ struct TorrentActionsSheet: View {
         .padding(20)
         .presentationDetents([.medium])
         .presentationDragIndicator(.visible)
-        .accessibilityIdentifier("torrent-actions")
+        .discoverContainer("torrent-actions")
     }
 
     private func actionButton(_ title: String, systemImage: String, id: String, disabled: Bool = false, action: @escaping () -> Void) -> some View {
@@ -265,7 +265,7 @@ struct TorrentFilterSheet: View {
             }
         }
         .presentationDetents([.large])
-        .accessibilityIdentifier("torrent-filter-sheet")
+        .discoverContainer("torrent-filter-sheet")
     }
 
     /// 站点维度只列成功返回的站点（顺序同站点状态），其余维度用聚合结果
@@ -342,6 +342,6 @@ struct SiteStatusSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
-        .accessibilityIdentifier("torrent-sites-sheet")
+        .discoverContainer("torrent-sites-sheet")
     }
 }

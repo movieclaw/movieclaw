@@ -200,7 +200,7 @@ struct MediaSearchResultsView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.top, 60)
-                    .accessibilityIdentifier("media-empty")
+                    .discoverContainer("media-empty")
                 } else {
                     section("豆瓣", items: douban, error: doubanError)
                     section("TMDB", items: tmdb, error: tmdbError)
@@ -310,7 +310,7 @@ struct LibrarySearchResultsView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.top, 60)
-                    .accessibilityIdentifier("library-empty")
+                    .discoverContainer("library-empty")
                 }
                 ForEach(groups ?? [], id: \.libraryId) { group in
                     VStack(alignment: .leading, spacing: 12) {
@@ -324,7 +324,7 @@ struct LibrarySearchResultsView: View {
                             }
                         }
                     }
-                    .accessibilityIdentifier("library-group")
+                    .discoverContainer("library-group")
                 }
             }
             .padding(.horizontal, Theme.pagePadding)

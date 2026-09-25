@@ -102,7 +102,7 @@ struct TorrentResultsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.info.opacity(0.12), in: .rect(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.info.opacity(0.3)))
-        .accessibilityIdentifier("grab-banner")
+        .discoverContainer("grab-banner")
     }
 
     private var header: some View {
@@ -145,7 +145,7 @@ struct TorrentResultsView: View {
             .font(.subheadline)
             .monospacedDigit()
             .foregroundStyle(Theme.textMuted)
-            .accessibilityIdentifier("torrent-status")
+            .discoverContainer("torrent-status")
         }
         .padding(.top, 4)
     }
@@ -180,21 +180,15 @@ struct TorrentResultsView: View {
 
     // MARK: 工具栏
 
+    /// 第一行固定：排序 + 视图切换 + 筛选（常用操作不随横滚跑出屏幕）；
+    /// 第二行横滚：命中最多的前三个分辨率 + 年份 / 季 / 压制组下拉（可选值 ≥2 才出现）
     private var toolbar: some View {
         let facets = model.facets
-        return ScrollView(.horizontal, showsIndicators: false) {
+        let dims = [TorrentFilterDim.year, .season, .group].filter { facets.values($0).count >= 2 }
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 sortMenu
-                ForEach(facets.values(.resolution).prefix(3), id: \.value) { facet in
-                    DiscoverChip(label: facet.value, count: facet.count, active: model.filters.values(.resolution).contains(facet.value)) {
-                        model.filters.toggle(.resolution, facet.value)
-                    }
-                }
-                ForEach([TorrentFilterDim.year, .season, .group], id: \.self) { dim in
-                    if facets.values(dim).count >= 2 {
-                        facetMenu(dim, facets.values(dim))
-                    }
-                }
+                Spacer(minLength: 0)
                 viewSwitcher
                 Button {
                     showsFilter = true
@@ -213,9 +207,23 @@ struct TorrentResultsView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("torrent-filter")
             }
-            .padding(.vertical, 2)
+            if !facets.values(.resolution).isEmpty || !dims.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(facets.values(.resolution).prefix(3), id: \.value) { facet in
+                            DiscoverChip(label: facet.value, count: facet.count, active: model.filters.values(.resolution).contains(facet.value)) {
+                                model.filters.toggle(.resolution, facet.value)
+                            }
+                        }
+                        ForEach(dims, id: \.self) { dim in
+                            facetMenu(dim, facets.values(dim))
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .scrollClipDisabled()
+            }
         }
-        .scrollClipDisabled()
     }
 
     private var sortMenu: some View {
@@ -328,7 +336,7 @@ struct TorrentResultsView: View {
                     .font(.caption)
                     .foregroundStyle(Theme.textMuted)
             }
-            .accessibilityIdentifier("torrent-applied")
+            .discoverContainer("torrent-applied")
         }
     }
 
@@ -407,7 +415,7 @@ struct TorrentResultsView: View {
             Text(hint).font(.subheadline).foregroundStyle(Theme.textMuted).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, minHeight: 200)
-        .accessibilityIdentifier("torrent-empty")
+        .discoverContainer("torrent-empty")
     }
 
     @ViewBuilder

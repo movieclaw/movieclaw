@@ -247,7 +247,7 @@ struct DownloadTargetSheet: View {
                 }
             }
         }
-        .accessibilityIdentifier("download-target-sheet")
+        .discoverContainer("download-target-sheet")
         .task {
             guard !initialized else { return }
             initialized = true

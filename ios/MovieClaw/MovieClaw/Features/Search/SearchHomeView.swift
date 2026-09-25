@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 搜索标签根页（对应 Web `components/search-command.tsx` 的命令面板）。
 ///
-/// - 输入框：iOS 26 搜索标签页原生的底部搜索栏（`.searchable`），回车提交；
+/// - 输入框：系统搜索栏（`.searchable`，常驻标题下方），回车提交；
 /// - 模式分段「影视 | 资源 | 媒体库」（按权限裁剪）；资源模式下多一行分类 / 预设 chips，
 ///   留空提交 = 浏览该分类的最新资源；
 /// - 最近搜索（`GET /search/history`）：同关键词的多条记录折叠成一组（可展开看各范围），输入即过滤，
@@ -76,7 +76,7 @@ struct SearchHomeView: View {
         .scrollDismissesKeyboard(.interactively)
         .appBackground()
         .navigationTitle("搜索")
-        .searchable(text: $keyword, prompt: prompt)
+        .searchable(text: $keyword, placement: .navigationBarDrawer(displayMode: .always), prompt: prompt)
         .searchFocused($focused)
         .onSubmit(of: .search) { submit() }
         .autocorrectionDisabled()
