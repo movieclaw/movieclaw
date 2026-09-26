@@ -134,12 +134,13 @@ struct ActivityActiveJobRow: View {
 /// 点进二级页看逐站点、逐种子明细
 struct ActivityBoostSummaryRow: View {
     let tasks: [API.DownloadTaskView]
-    /// 已配置站点（取刷流开关 / 暂停状态）；nil = 还没取到
-    let configured: [API.ConfiguredSite]?
+    /// 刷流在池概况（站点开关 / 暂停、待清理）；nil = 还没取到
+    let pool: API.BoostPoolView?
 
     var body: some View {
         let totals = ActivityBoostTotals(tasks)
-        let sites = ActivityBoostSites(tasks: tasks, configured: configured)
+        let sites = ActivityBoostSites(tasks: tasks, pool: pool)
+        let scheduled = sites.scheduledCount
         let off = sites.count(.off), paused = sites.count(.paused)
         let allOff = off == totals.count, allPaused = paused == totals.count
         HStack(spacing: 12) {
@@ -154,7 +155,8 @@ struct ActivityBoostSummaryRow: View {
                     "↑ \(ActivityFormat.rate(Double(totals.upSpeed)))",
                     !allOff && off > 0 ? "\(off) 个来自已关闭刷流的站点" : nil,
                     !allPaused && paused > 0 ? "\(paused) 个已暂停" : nil,
-                    allOff || off > 0 || paused > 0 ? nil : "已上传 \(ActivityFormat.bytes(Double(totals.uploaded)))",
+                    scheduled > 0 ? "\(scheduled) 个等待到期删除" : nil,
+                    allOff || off > 0 || paused > 0 || scheduled > 0 ? nil : "已上传 \(ActivityFormat.bytes(Double(totals.uploaded)))",
                 ]))
                 .font(.footnote).monospacedDigit().foregroundStyle(Theme.textMuted).lineLimit(2)
             }

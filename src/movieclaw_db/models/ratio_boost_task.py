@@ -102,5 +102,12 @@ class RatioBoostTask(TimestampMixin, table=True):
     # 不必等测量成熟即可汰换；NULL=下载器未提供（旧适配器/无 tracker 数据）
     swarm_seeders: int | None = Field(default=None, description="蜂群做种数；NULL=未知")
     swarm_leechers: int | None = Field(default=None, description="蜂群下载数；NULL=未知")
+    # 用户请求清理后最早可删除的时刻（docs/design/site-protection-ratio-boost.md §2.9）：
+    # 请求时还在保留期内的记保留期到期时刻（提前删可能被记 H&R），下载器暂时不可达
+    # 没删成的记请求时刻；引擎每 tick 检查、到点连数据删除。请求时就把到期时刻算好
+    # 落库，站点配置之后被删（保留天数随之丢失）也不会提前删。NULL=未请求清理
+    cleanup_after: datetime | None = Field(
+        default=None, description="用户请求清理后最早可删除的时刻；NULL=未请求清理"
+    )
     evicted_at: datetime | None = Field(default=None, description="汰换/失踪的时间")
     evict_reason: str | None = Field(default=None, description="汰换原因（中文，展示用）")

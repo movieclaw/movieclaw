@@ -514,6 +514,122 @@ nonisolated extension API {
         }
     }
 
+    /// 清理残留刷流种子的请求体。
+    struct BoostCleanupRequest: Codable, Hashable, Sendable {
+        /// 只清理这些站点；null=全部有在池种子的站点
+        var siteIds: [String]?
+        /// 先关闭这些站点的刷流（不关的话引擎几分钟内会重新拉新种）
+        var disableBoost: Bool?
+        /// true=保留期内的也立即删除（可能被站点记 H&R）；false=保留期内的先标记，到期后由引擎自动删除
+        var force: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case siteIds = "site_ids"
+            case disableBoost = "disable_boost"
+            case force
+        }
+    }
+
+    /// 清理结果。
+    struct BoostCleanupResult: Codable, Hashable, Sendable {
+        /// 已连数据删除的种子数
+        var deletedCount: Int
+        /// 已释放的体积（字节）
+        var deletedBytes: Int
+        /// 保留期内、已标记到期自动删除的种子数
+        var scheduledCount: Int
+        /// 标记的种子里最晚的到期时刻
+        var scheduledUntil: String?
+        /// 下载器不可达等原因这次没删成的种子数（已标记，下一轮巡检自动重试）
+        var failedCount: Int
+        /// 本次顺带关闭了刷流的站点
+        var disabledSites: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case deletedCount = "deleted_count"
+            case deletedBytes = "deleted_bytes"
+            case scheduledCount = "scheduled_count"
+            case scheduledUntil = "scheduled_until"
+            case failedCount = "failed_count"
+            case disabledSites = "disabled_sites"
+        }
+    }
+
+    /// 某站点在池刷流种子的概况：开关状态、体积、能否立即删。
+    struct BoostPoolSiteView: Codable, Hashable, Sendable {
+        /// 站点标识
+        var siteId: String
+        /// 站点显示名
+        var siteName: String
+        /// 该站当前是否开着刷流（站点配置已删除时为 false）
+        var boostEnabled: Bool
+        /// 该站刷流是否处于暂停
+        var boostPaused: Bool
+        /// 在池种子数
+        var taskCount: Int
+        /// 在池种子总体积（字节）
+        var sizeBytes: Int
+        /// 现在就能删的种子数（已过保留期或未下完）
+        var deletableCount: Int
+        /// 现在就能删的体积（字节）
+        var deletableBytes: Int
+        /// 还在保留期内的种子数（现在删可能被记 H&R）
+        var protectedCount: Int
+        /// 还在保留期内的体积（字节）
+        var protectedBytes: Int
+        /// 保留期内种子里最晚的到期时刻；null=没有保留期内的种子
+        var protectedUntil: String?
+        /// 已请求清理、等待自动删除的种子数
+        var scheduledCount: Int
+
+        enum CodingKeys: String, CodingKey {
+            case siteId = "site_id"
+            case siteName = "site_name"
+            case boostEnabled = "boost_enabled"
+            case boostPaused = "boost_paused"
+            case taskCount = "task_count"
+            case sizeBytes = "size_bytes"
+            case deletableCount = "deletable_count"
+            case deletableBytes = "deletable_bytes"
+            case protectedCount = "protected_count"
+            case protectedBytes = "protected_bytes"
+            case protectedUntil = "protected_until"
+            case scheduledCount = "scheduled_count"
+        }
+    }
+
+    /// 在池刷流任务的清理相关状态（逐种子，供界面在对应行上标注）。
+    struct BoostPoolTaskView: Codable, Hashable, Sendable {
+        /// 种子 infohash（小写）
+        var infoHash: String
+        /// 站点标识
+        var siteId: String
+        /// 保留期到期时刻（站点保留天数与 H&R 考核时长取大）；null=现在删不涉及保留期
+        var protectedUntil: String?
+        /// 已请求清理，等保留期满（或下载器恢复可达）后自动删除
+        var cleanupScheduled: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case infoHash = "info_hash"
+            case siteId = "site_id"
+            case protectedUntil = "protected_until"
+            case cleanupScheduled = "cleanup_scheduled"
+        }
+    }
+
+    /// 刷流在池概况：按站点汇总 + 逐种子的清理状态。
+    struct BoostPoolView: Codable, Hashable, Sendable {
+        /// 有在池种子的站点
+        var sites: [API.BoostPoolSiteView]
+        /// 在池种子的清理状态
+        var tasks: [API.BoostPoolTaskView]
+
+        enum CodingKeys: String, CodingKey {
+            case sites
+            case tasks
+        }
+    }
+
     /// 首次初始化：创建超级管理员账号。
     struct BootstrapRequest: Codable, Hashable, Sendable {
         /// 管理员用户名

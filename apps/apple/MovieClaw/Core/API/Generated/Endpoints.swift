@@ -2003,6 +2003,18 @@ nonisolated extension APIClient {
         return try await send("POST", "/sites", body: body)
     }
 
+    /// 刷流在池种子概况（按站点，含能否立即清理）
+    /// `GET /sites/boost-pool`
+    func siteBoostPoolShow() async throws -> API.BoostPoolView {
+        return try await send("GET", "/sites/boost-pool")
+    }
+
+    /// 清理残留的刷流种子（连数据删除）
+    /// `POST /sites/boost-pool/cleanup`
+    func siteBoostPoolCleanup(body: API.BoostCleanupRequest) async throws -> API.BoostCleanupResult {
+        return try await send("POST", "/sites/boost-pool/cleanup", body: body)
+    }
+
     /// 各站点的刷流运行统计
     /// `GET /sites/boost-stats`
     func siteBoostStats() async throws -> [String: API.SiteBoostStatsView] {

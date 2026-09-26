@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.exceptions import (
@@ -17,6 +19,9 @@ from movieclaw_db.repositories.cookie_repo import CookieRepository
 from movieclaw_db.repositories.credential_repo import CredentialRepository
 from movieclaw_db.repositories.profile_repo import ProfileRepository
 from movieclaw_db.repositories.torrent_repo import TorrentRepository
+
+if TYPE_CHECKING:
+    from movieclaw_api.schemas.site import BoostCleanupResult
 
 
 class SiteConfigService:
@@ -214,6 +219,41 @@ class SiteConfigService:
             # 免费新种的发现延迟收敛到 5 分钟级，而不是等冷站的旧排期走完
             await self._torrents.expire_cursor(site_id)
         return await self.get_configured(site_id)
+
+    async def cleanup_boost_pool(
+        self, *, site_ids: list[str] | None, disable_boost: bool, force: bool
+    ) -> BoostCleanupResult:
+        """清理残留的刷流种子（连数据删除），机制见 ratio_boost 模块「用户清理」一节。
+
+        ``disable_boost`` 时先把目标站点里还开着的刷流关掉（走 ``set_ratio_boost``，
+        连带解除暂停限速）——否则引擎几分钟内就会重新拉新种，清了等于白清。
+        ``site_ids`` 为 None 时目标是全部还有在池种子的站点。
+        """
+        # 局部导入：schemas.site 经 services 包反向依赖本模块，顶层导入会成环
+        from movieclaw_api.schemas.site import BoostCleanupResult
+        from movieclaw_api.services.ratio_boost import active_boost_site_ids, cleanup_boost_pool
+
+        targets = (
+            sorted(set(site_ids))
+            if site_ids is not None
+            else await active_boost_site_ids(self._session)
+        )
+        disabled: list[str] = []
+        if disable_boost:
+            for site_id in targets:
+                row = await self._credentials.get_by_site(site_id)
+                if row is not None and row.boost_enabled:
+                    await self.set_ratio_boost(site_id, enabled=False)
+                    disabled.append(site_id)
+        outcome = await cleanup_boost_pool(self._session, site_ids=targets, force=force)
+        return BoostCleanupResult(
+            deleted_count=outcome.deleted_count,
+            deleted_bytes=outcome.deleted_bytes,
+            scheduled_count=outcome.scheduled_count,
+            scheduled_until=outcome.scheduled_until,
+            failed_count=outcome.failed_count,
+            disabled_sites=disabled,
+        )
 
     async def set_boost_paused(self, site_id: str, paused: bool) -> SiteCredential:
         """暂停 / 恢复某站点的刷流；未配置时抛 404，未开启刷流时抛 400。

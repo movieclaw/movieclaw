@@ -38,6 +38,7 @@ from sqlalchemy import case, delete, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.schemas.site import BoostPoolSiteView, BoostPoolTaskView, BoostPoolView
 from movieclaw_api.services.boost_bandwidth import concurrent_download_cap, per_task_limit
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
@@ -1399,6 +1400,8 @@ async def run_ratio_boost() -> None:
                 if t.state == BoostTaskState.ACTIVE:
                     used_by_site[t.site_id] = used_by_site.get(t.site_id, 0) + t.size_bytes
             await _record_stats(session, deltas=deltas, used_by_site=used_by_site, now=now)
+            # ①½ 兑现用户的清理请求：保留期满 / 上次没删成的连数据删除（不论刷流开没开）
+            await _process_cleanup_requests(session, pool, list(active_tasks), now)
 
             for cred in boost_creds:
                 site_tasks = [
@@ -1481,8 +1484,229 @@ async def wants_fast_sync(session: AsyncSession, cred: SiteCredential) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# 用户清理残留种子（docs/design/site-protection-ratio-boost.md §2.9）
+# ---------------------------------------------------------------------------
+#
+# 关闭刷流只是不再拉新种、不再汰换：已在池的种子继续满速做种、一直占着磁盘。
+# 用户随时可以从活动页（或关闭刷流的那一刻）请求清理：
+# - 已过保留期 / 没下完的立即连数据删除（与汰换同一删法）；
+# - 还在保留期内的默认不提前删（提前删可能被记 H&R），把保留期到期时刻记进
+#   ``cleanup_after``，由引擎每个 tick 检查、到点即删——不论该站刷流开没开；
+#   到期时刻请求时就算好落库，之后站点配置被删（保留天数随之丢失）也不会提前删；
+# - 显式 force 才立即全删（风险由用户确认过）；
+# - 下载器暂时不可达没删成的记请求时刻，下一轮巡检重试。
+# 台账行不物理删除（EVICTED 终态）：累计上传统计靠它，也防止同一种子被再次抢回。
+
+_CLEANUP_REASON = "用户清理刷流种子（连数据删除）"
+_CLEANUP_DUE_REASON = "用户请求清理，保留期已满，按约连数据删除"
+
+
+def protected_until(
+    task: RatioBoostTask, now: datetime, *, hold: timedelta, hr_hold: timedelta | None
+) -> datetime | None:
+    """任务的保留期到期时刻；已过期或未下完返回 None（现在删不涉及保留期）。
+
+    与汰换同一口径（``_effective_hold``：站点保留天数与 H&R 考核时长取大）。
+    未下完的任务不受保留期约束——与止损一致，保留期保护的是已完成的做种。
+    """
+    if not task.completed:
+        return None
+    until = task.created_at + _effective_hold(task, hold, hr_hold)
+    return until if until > now else None
+
+
+async def _site_holds(
+    session: AsyncSession, site_ids: Iterable[str]
+) -> dict[str, tuple[timedelta, timedelta | None, SiteCredential | None]]:
+    """站点 → (保留期, H&R 考核时长, 站点配置)。站点配置已删的按默认保留期从严。"""
+    ids = sorted(set(site_ids))
+    if not ids:
+        return {}
+    creds = {
+        c.site_id: c
+        for c in (
+            await session.execute(
+                select(SiteCredential).where(SiteCredential.site_id.in_(ids))  # type: ignore[attr-defined]
+            )
+        )
+        .scalars()
+        .all()
+    }
+    return {
+        site_id: (
+            hold_for(creds[site_id]) if site_id in creds else _DEFAULT_MIN_HOLD,
+            hr_hold_for(site_id),
+            creds.get(site_id),
+        )
+        for site_id in ids
+    }
+
+
+def _site_display_name(site_id: str) -> str:
+    from movieclaw_tracker.exceptions import SiteNotFoundError
+    from movieclaw_tracker.registry import get_site_config
+
+    try:
+        return get_site_config(site_id).display_name
+    except SiteNotFoundError:
+        return site_id
+
+
+async def _active_tasks(
+    session: AsyncSession, site_ids: list[str] | None = None
+) -> list[RatioBoostTask]:
+    query = select(RatioBoostTask).where(RatioBoostTask.state == BoostTaskState.ACTIVE)
+    if site_ids is not None:
+        query = query.where(RatioBoostTask.site_id.in_(site_ids))  # type: ignore[attr-defined]
+    return list((await session.execute(query)).scalars().all())
+
+
+async def active_boost_site_ids(session: AsyncSession) -> list[str]:
+    """还有在池刷流种子的站点（清理「全部」时的目标范围）。"""
+    return sorted({t.site_id for t in await _active_tasks(session)})
+
+
+async def boost_pool_overview(session: AsyncSession, now: datetime | None = None) -> BoostPoolView:
+    """刷流在池概况：按站点汇总开关状态、体积、能否立即删，并给出逐种子的清理状态。"""
+    now = now or utcnow()
+    tasks = await _active_tasks(session)
+    holds = await _site_holds(session, (t.site_id for t in tasks))
+    sites: list[BoostPoolSiteView] = []
+    views: list[BoostPoolTaskView] = []
+    for site_id, (hold, hr_hold, cred) in holds.items():
+        site_tasks = [t for t in tasks if t.site_id == site_id]
+        protected: list[tuple[RatioBoostTask, datetime]] = []
+        for task in site_tasks:
+            until = protected_until(task, now, hold=hold, hr_hold=hr_hold)
+            if until is not None:
+                protected.append((task, until))
+            views.append(
+                BoostPoolTaskView(
+                    info_hash=task.info_hash,
+                    site_id=site_id,
+                    protected_until=until,
+                    cleanup_scheduled=task.cleanup_after is not None,
+                )
+            )
+        protected_bytes = sum(t.size_bytes for t, _ in protected)
+        size = sum(t.size_bytes for t in site_tasks)
+        sites.append(
+            BoostPoolSiteView(
+                site_id=site_id,
+                site_name=_site_display_name(site_id),
+                boost_enabled=bool(cred and cred.boost_enabled),
+                boost_paused=bool(cred and cred.boost_paused),
+                task_count=len(site_tasks),
+                size_bytes=size,
+                deletable_count=len(site_tasks) - len(protected),
+                deletable_bytes=size - protected_bytes,
+                protected_count=len(protected),
+                protected_bytes=protected_bytes,
+                protected_until=max((u for _, u in protected), default=None),
+                scheduled_count=sum(1 for t in site_tasks if t.cleanup_after is not None),
+            )
+        )
+    sites.sort(key=lambda site: site.size_bytes, reverse=True)
+    return BoostPoolView(sites=sites, tasks=views)
+
+
+@dataclass
+class CleanupOutcome:
+    """一次清理的计数（路由层再拼成 BoostCleanupResult）。"""
+
+    deleted_count: int = 0
+    deleted_bytes: int = 0
+    scheduled_count: int = 0
+    scheduled_until: datetime | None = None
+    failed_count: int = 0
+
+
+async def cleanup_boost_pool(
+    session: AsyncSession,
+    *,
+    site_ids: list[str],
+    force: bool = False,
+    now: datetime | None = None,
+    pool: _DownloaderPool | None = None,
+) -> CleanupOutcome:
+    """清理这些站点在池的刷流种子（连数据删除），规则见本节开头。
+
+    只动 ACTIVE 台账里的任务——所有权铁律不变：用户自己加的、已被订阅/手动
+    下载接管的种子不在台账 ACTIVE 里，永远碰不到。``pool`` 供测试注入替身。
+    """
+    now = now or utcnow()
+    outcome = CleanupOutcome()
+    tasks = await _active_tasks(session, site_ids)
+    if not tasks:
+        return outcome
+    holds = await _site_holds(session, (t.site_id for t in tasks))
+    owned_pool = pool is None
+    pool = pool or _DownloaderPool(session)
+    try:
+        for task in tasks:
+            hold, hr_hold, _ = holds[task.site_id]
+            until = protected_until(task, now, hold=hold, hr_hold=hr_hold)
+            if until is not None and not force:
+                task.cleanup_after = until
+                task.updated_at = now
+                outcome.scheduled_count += 1
+                outcome.scheduled_until = max(outcome.scheduled_until or until, until)
+                continue
+            if await _evict(pool, task, now, reason=_CLEANUP_REASON):
+                outcome.deleted_count += 1
+                outcome.deleted_bytes += task.size_bytes
+            else:
+                # 下载器缺失 / 不可达 / 删除失败：到点即删，下一轮巡检重试
+                task.cleanup_after = now
+                task.updated_at = now
+                outcome.failed_count += 1
+        await session.commit()
+    finally:
+        if owned_pool:
+            await pool.close()
+    logger.info(
+        "清理刷流种子（站点 %s，force=%s）：删除 %d 个（%.1f GiB），"
+        "保留期内待到期删除 %d 个，失败待重试 %d 个",
+        ",".join(site_ids),
+        force,
+        outcome.deleted_count,
+        outcome.deleted_bytes / 1024**3,
+        outcome.scheduled_count,
+        outcome.failed_count,
+    )
+    return outcome
+
+
+async def _process_cleanup_requests(
+    session: AsyncSession, pool: _DownloaderPool, tasks: list[RatioBoostTask], now: datetime
+) -> None:
+    """巡检里的清理兑现：到了 ``cleanup_after`` 的任务连数据删除。
+
+    不看站点刷流开没开——关掉刷流后残留的种子正是清理的主要对象。站点配置还在时
+    再按当前保留期复核一次（用户在请求之后调长了保留天数，以更长的为准）。
+    """
+    pending = [
+        t
+        for t in tasks
+        if t.state == BoostTaskState.ACTIVE
+        and t.cleanup_after is not None
+        and t.cleanup_after <= now
+    ]
+    if not pending:
+        return
+    holds = await _site_holds(session, (t.site_id for t in pending))
+    for task in pending:
+        hold, hr_hold, cred = holds[task.site_id]
+        if cred is not None and protected_until(task, now, hold=hold, hr_hold=hr_hold) is not None:
+            continue
+        await _evict(pool, task, now, reason=_CLEANUP_DUE_REASON)
+    await session.commit()
+
+
 async def release_site_tasks(session: AsyncSession, site_id: str) -> int:
     """站点配置被删除时，把该站在池的刷流任务全部转出管理，返回转出数。
+    已请求清理的任务除外（继续由引擎按约删除，见「用户清理」一节）。
 
     预算的主体（站点）已不存在，但任务与数据保留继续做种——删数据太激进
     （用户可能有意保种），转出后由用户在下载器里按 movieclaw-boost 分类
@@ -1501,15 +1725,21 @@ async def release_site_tasks(session: AsyncSession, site_id: str) -> int:
         .all()
     )
     now = utcnow()
+    released = 0
     for task in tasks:
+        if task.cleanup_after is not None:
+            # 用户已请求清理（等保留期满 / 下载器恢复）：留在台账里由引擎按约删除，
+            # 不能因为站点配置删了就把它放生成永远没人管的残留
+            continue
         task.state = BoostTaskState.MISSING
         task.evicted_at = now
         task.evict_reason = "站点配置已删除，转出刷流管理（任务与数据保留做种）"
         task.updated_at = now
-    if tasks:
+        released += 1
+    if released:
         await session.commit()
-        logger.info("站点 %s 已删除，%d 个刷流任务转出管理（保留做种）", site_id, len(tasks))
-    return len(tasks)
+        logger.info("站点 %s 已删除，%d 个刷流任务转出管理（保留做种）", site_id, released)
+    return released
 
 
 async def collect_boost_stats(session: AsyncSession) -> dict:

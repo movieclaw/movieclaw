@@ -601,7 +601,8 @@ struct ActivityBoostTotals {
 ///
 /// 关掉刷流不会删种：已下好的种子留在下载器里继续满速做种（暂停只是每种限速 1 KiB/s），
 /// 引擎也不再汰换它们——所以「还有刷流种子」不等于「刷流开着」，总览与刷流页都按站点把状态说清楚。
-/// `configured` 为 nil（站点列表还没取到或取失败）时一律当作运行中，不替用户下「已关闭」的结论。
+/// 状态来自 `GET /sites/boost-pool`（在池概况）；`pool` 为 nil（还没取到或取失败）时一律当作
+/// 运行中，不替用户下「已关闭」的结论。
 struct ActivityBoostSites {
     enum Mode { case running, paused, off }
 
@@ -610,29 +611,64 @@ struct ActivityBoostSites {
         var name: String
         var mode: Mode
         var tasks: [API.DownloadTaskView]
+        /// 后端的在池概况（保留期、待清理数）；pool 没取到时为 nil
+        var pool: API.BoostPoolSiteView?
     }
 
     let sites: [Site]
+    /// infohash → 清理状态（保留期到期时刻、是否已请求清理）
+    let taskStates: [String: API.BoostPoolTaskView]
 
-    init(tasks: [API.DownloadTaskView], configured: [API.ConfiguredSite]?) {
+    init(tasks: [API.DownloadTaskView], pool: API.BoostPoolView?) {
         let bySite = Dictionary(grouping: tasks) { $0.siteId ?? "" }
-        let config = Dictionary((configured ?? []).map { ($0.siteId, $0) }, uniquingKeysWith: { first, _ in first })
+        let poolSites = Dictionary((pool?.sites ?? []).map { ($0.siteId, $0) }, uniquingKeysWith: { first, _ in first })
         sites = bySite.map { siteId, tasks in
-            let mode: Mode
-            if configured == nil {
-                mode = .running
-            } else if let site = config[siteId], site.boostEnabled {
-                mode = site.boostPaused ? .paused : .running
+            let info = poolSites[siteId]
+            let mode: Mode = if pool == nil {
+                .running
+            } else if let info, info.boostEnabled {
+                info.boostPaused ? .paused : .running
             } else {
-                mode = .off
+                .off
             }
-            return Site(id: siteId, name: tasks.first?.siteName ?? (siteId.isEmpty ? "未知站点" : siteId), mode: mode, tasks: tasks)
+            let name = info?.siteName ?? tasks.first?.siteName ?? (siteId.isEmpty ? "未知站点" : siteId)
+            return Site(id: siteId, name: name, mode: mode, tasks: tasks, pool: info)
         }
         .sorted { $0.tasks.count > $1.tasks.count }
+        taskStates = Dictionary((pool?.tasks ?? []).map { ($0.infoHash.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     func count(_ mode: Mode) -> Int {
         sites.filter { $0.mode == mode }.reduce(0) { $0 + $1.tasks.count }
+    }
+
+    /// 已请求清理、等着自动删除的种子数
+    var scheduledCount: Int { taskStates.values.filter(\.cleanupScheduled).count }
+}
+
+/// 刷流清理的文案（活动页刷流做种、设置页关闭刷流两处共用）
+enum ActivityBoostCleanupText {
+    /// 「9月29日 14:00」
+    static func deadline(_ raw: String?) -> String? {
+        guard let date = Formatters.date(raw) else { return nil }
+        let c = Calendar(identifier: .gregorian).dateComponents([.month, .day, .hour, .minute], from: date)
+        return String(format: "%d月%d日 %02d:%02d", c.month ?? 0, c.day ?? 0, c.hour ?? 0, c.minute ?? 0)
+    }
+
+    /// 清理结果的一句话反馈
+    static func summary(_ result: API.BoostCleanupResult) -> String {
+        var parts: [String] = []
+        if result.deletedCount > 0 {
+            parts.append("已删除 \(result.deletedCount) 个刷流种子，释放 \(ActivityFormat.bytes(Double(result.deletedBytes)))")
+        }
+        if result.scheduledCount > 0 {
+            let until = deadline(result.scheduledUntil).map { "（最晚 \($0)）" } ?? ""
+            parts.append("\(result.scheduledCount) 个还在保留期内，到期后自动删除\(until)")
+        }
+        if result.failedCount > 0 {
+            parts.append("\(result.failedCount) 个因下载器暂时连不上没删成，稍后自动重试")
+        }
+        return parts.isEmpty ? "没有需要清理的刷流种子" : parts.joined(separator: "；")
     }
 }
 
@@ -640,6 +676,8 @@ struct ActivityBoostSites {
 /// 下载中的少数种子再补一行进度与下行速度
 struct BoostTaskRow: View {
     let task: API.DownloadTaskView
+    /// 清理备注（「已请求清理 · 9月29日 14:00 后自动删除」）；nil = 不显示
+    var cleanupNote: String?
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -686,6 +724,11 @@ struct BoostTaskRow: View {
                 }
                 .font(.caption)
                 .foregroundStyle(Theme.textFaint)
+            }
+            if let cleanupNote {
+                Label(cleanupNote, systemImage: "clock.badge.xmark")
+                    .font(.caption)
+                    .foregroundStyle(Theme.warning)
             }
         }
         .padding(.vertical, 8)

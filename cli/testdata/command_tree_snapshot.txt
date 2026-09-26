@@ -229,6 +229,8 @@ session stop
 shares list
 shares revoke
 site add
+site boost-pool cleanup
+site boost-pool show
 site boost-stats
 site catalog
 site delete

@@ -78,16 +78,24 @@ private struct ActivityTasksPage: View {
 
 // MARK: - 刷流
 
-/// 刷流做种：页头实时汇总 → 按站点（开着 / 已暂停 / 已关闭）→ 逐种子一行（按上行速度倒序，正在出力的在前）
+/// 刷流做种：页头实时汇总 → 按站点（开着 / 已暂停 / 已关闭）→ 逐种子一行 → 底部「清理刷流种子…」。
+///
+/// 清理（docs/design/site-protection-ratio-boost.md §2.9）：关闭刷流不会删种，残留种子会一直满速做种、
+/// 占着磁盘，这里是事后清掉它们的入口。点开先取最新的在池概况，再用系统底部菜单讲清后果：
+/// 删多少、还开着刷流的站点会一并关闭、保留期内的（提前删可能被记 H&R）默认到期后自动删，
+/// 另给「立即全部删除」由用户自担风险。同 Safari「清除历史记录」，破坏性入口放在列表最底下的红字行。
 private struct ActivityBoostPage: View {
     @Environment(ShellBadges.self) private var badges
     @Environment(\.api) private var api
-    @State private var configured: [API.ConfiguredSite]?
+    @Environment(Feedback.self) private var feedback
+    @State private var pool: API.BoostPoolView?
+    @State private var confirming = false
+    @State private var cleaning = false
 
     var body: some View {
         let tasks = badges.tasks.activity.boostTasks
         let totals = ActivityBoostTotals(tasks)
-        let sites = ActivityBoostSites(tasks: tasks, configured: configured)
+        let sites = ActivityBoostSites(tasks: tasks, pool: pool)
         List {
             Section {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
@@ -114,17 +122,33 @@ private struct ActivityBoostPage: View {
                     Text("按站点").textCase(nil)
                 } footer: {
                     if sites.count(.off) > 0 {
-                        Text("关闭刷流不会删除已有种子：它们会继续满速做种，引擎也不再自动汰换。")
+                        Text("关闭刷流不会删除已有种子：它们会继续满速做种，引擎也不再自动汰换。可以在本页最下方清理。")
                     }
                 }
             }
             if !tasks.isEmpty {
                 Section {
                     ForEach(ActivityBoostTotals.sorted(tasks)) { task in
-                        BoostTaskRow(task: task)
+                        BoostTaskRow(task: task, cleanupNote: cleanupNote(sites.taskStates[task.infoHash.lowercased()]))
                     }
                 } header: {
                     Text("按上行速度排序").textCase(nil)
+                }
+                Section {
+                    Button(role: .destructive) {
+                        Task { await prepareCleanup() }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if cleaning { ProgressView().padding(.trailing, 6) }
+                            Text(cleaning ? "正在清理…" : "清理刷流种子…")
+                            Spacer()
+                        }
+                    }
+                    .disabled(cleaning)
+                    .accessibilityIdentifier("boost-cleanup")
+                } footer: {
+                    Text("从下载器删除刷流种子及其数据文件，无法恢复。还没做满站点要求做种时长的，默认等到期后再自动删除，避免被记 H&R。")
                 }
             }
         }
@@ -132,12 +156,105 @@ private struct ActivityBoostPage: View {
         .scrollContentBackground(.hidden)
         .refreshable {
             badges.tasks.refreshDownloads()
-            configured = (try? await api.siteList()) ?? configured
+            await loadPool()
         }
         .navigationTitle("刷流做种")
         .navigationBarTitleDisplayMode(.inline)
         .appBackground()
-        .task { configured = (try? await api.siteList()) ?? configured }
+        .task { await loadPool() }
+        .confirmationDialog(confirmTitle, isPresented: $confirming, titleVisibility: .visible) {
+            let plan = CleanupPlan(pool)
+            Button(plan.enabledNames.isEmpty ? "清理" : "关闭刷流并清理", role: .destructive) {
+                Task { await cleanup(force: false) }
+            }
+            if plan.protectedCount > 0 {
+                Button("立即全部删除（可能被记 H&R）", role: .destructive) {
+                    Task { await cleanup(force: true) }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(CleanupPlan(pool).message)
+        }
+    }
+
+    // MARK: 清理
+
+    /// 清理前的汇总：删多少、哪些站还开着刷流、保留期内有多少（都取自最新的在池概况）
+    private struct CleanupPlan {
+        var count = 0
+        var bytes = 0
+        var protectedCount = 0
+        var protectedBytes = 0
+        var protectedUntil: String?
+        var enabledNames: [String] = []
+
+        init(_ pool: API.BoostPoolView?) {
+            for site in pool?.sites ?? [] {
+                count += site.taskCount
+                bytes += site.sizeBytes
+                protectedCount += site.protectedCount
+                protectedBytes += site.protectedBytes
+                if let until = site.protectedUntil, until > (protectedUntil ?? "") { protectedUntil = until }
+                if site.boostEnabled { enabledNames.append(site.siteName) }
+            }
+        }
+
+        var message: String {
+            var lines = ["将从下载器删除 \(count) 个刷流种子及其数据文件（共 \(ActivityFormat.bytes(Double(bytes)))），无法恢复。"]
+            if !enabledNames.isEmpty {
+                lines.append("\(enabledNames.joined(separator: "、")) 还开着刷流，清理时会一并关闭，否则引擎几分钟内又会拉新种。")
+            }
+            if protectedCount > 0 {
+                let until = ActivityBoostCleanupText.deadline(protectedUntil).map { "，最晚 \($0)" } ?? ""
+                let rest = protectedCount == count ? "它们" : "这 \(protectedCount) 个"
+                lines.append(
+                    "其中 \(protectedCount) 个（\(ActivityFormat.bytes(Double(protectedBytes)))）还没做满站点要求的做种时长，现在删可能被记 H&R。"
+                        + "选「清理」会先删其余的，\(rest)到期后自动删除\(until)。"
+                )
+            }
+            return lines.joined(separator: "\n\n")
+        }
+    }
+
+    private var confirmTitle: String {
+        let count = CleanupPlan(pool).count
+        return count > 0 ? "清理 \(count) 个刷流种子？" : "清理刷流种子？"
+    }
+
+    private func cleanupNote(_ state: API.BoostPoolTaskView?) -> String? {
+        guard let state, state.cleanupScheduled else { return nil }
+        if let until = ActivityBoostCleanupText.deadline(state.protectedUntil) {
+            return "已请求清理 · \(until) 保留期满后自动删除"
+        }
+        return "已请求清理 · 下一轮巡检删除"
+    }
+
+    private func loadPool() async {
+        if let latest = try? await api.siteBoostPoolShow() { pool = latest }
+    }
+
+    /// 先取最新概况再弹确认（刚关掉刷流 / 保留期刚过，旧数据会讲错后果）
+    private func prepareCleanup() async {
+        do {
+            pool = try await api.siteBoostPoolShow()
+            confirming = true
+        } catch {
+            feedback.error(error)
+        }
+    }
+
+    private func cleanup(force: Bool) async {
+        cleaning = true
+        defer { cleaning = false }
+        do {
+            let result = try await api.siteBoostPoolCleanup(body: .init(siteIds: nil, disableBoost: true, force: force))
+            feedback.success(ActivityBoostCleanupText.summary(result))
+            badges.tasks.refreshDownloads()
+            await loadPool()
+        } catch {
+            feedback.error(error)
+        }
     }
 
     private func siteRow(_ site: ActivityBoostSites.Site) -> some View {
@@ -155,6 +272,10 @@ private struct ActivityBoostPage: View {
                     "\(site.tasks.count) 个种子", ActivityFormat.bytes(Double(size)), "↑ \(ActivityFormat.rate(Double(totals.upSpeed)))",
                 ]))
                 .font(.footnote).monospacedDigit().foregroundStyle(Theme.textMuted)
+                if let scheduled = site.pool?.scheduledCount, scheduled > 0 {
+                    Text("\(scheduled) 个已请求清理，保留期满后自动删除")
+                        .font(.footnote).foregroundStyle(Theme.warning)
+                }
             }
             Spacer(minLength: 8)
             Text(label).font(.footnote.weight(.medium)).foregroundStyle(color)

@@ -323,6 +323,9 @@ shares list
 shares revoke
 site
 site add
+site boost-pool
+site boost-pool cleanup
+site boost-pool show
 site boost-stats
 site catalog
 site delete

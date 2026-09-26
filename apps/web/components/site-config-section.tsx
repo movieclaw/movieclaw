@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
-import { useConfirm } from "@/components/feedback";
+import { useConfirm, useToast } from "@/components/feedback";
 import { Modal } from "@/components/modal";
 import {
   ChevronDownIcon,
@@ -15,6 +15,7 @@ import {
 } from "@/components/icons";
 import { ExtensionCard } from "@/components/extension-settings";
 import { SearchSection } from "@/components/search-settings";
+import { boostCleanupCheckbox, boostCleanupSummary } from "@/lib/boost-cleanup";
 import { useTabParam } from "@/lib/use-tab-param";
 import type { ConfiguredSite, SiteAuthType, SiteStatus } from "@/lib/api/extension";
 import {
@@ -23,8 +24,10 @@ import {
   type SiteBoostStats,
   type SiteConfigPayload,
   type SiteSyncStats,
+  cleanupBoostPool,
   configureSite,
   deleteSite,
+  getConfiguredSite,
   listConfiguredSites,
   listSiteBoostStats,
   listSiteCatalog,
@@ -520,6 +523,7 @@ function SiteRow({
   onError,
 }: SiteRowProps) {
   const confirm = useConfirm();
+  const toast = useToast();
   const [busy, setBusy] = useState(false);
   // 授权表单的展开态由行持有：菜单点「编辑授权」时行可能还没展开，需要先展开再亮表单
   const [editingAuth, setEditingAuth] = useState(false);
@@ -539,20 +543,68 @@ function SiteRow({
     }
   }
 
-  /** 关闭刷流：二次确认讲清后果（不删数据，只停新增）。 */
+  /** 在池刷流种子数（关闭刷流 / 删除站点时决定要不要给「同时清理」勾选项） */
+  const inPool = boost?.active_count ?? 0;
+
+  /**
+   * 关闭刷流。关掉刷流不会删种：残留种子会继续满速做种、引擎也不再汰换，一直占着磁盘——
+   * 该站还有在池种子时，确认框带一个「同时清理」勾选项（关的那一刻顺手清掉）；不勾也能事后在
+   * 任务中心的刷流分组里清理（docs/design/site-protection-ratio-boost.md §2.9）。
+   */
   async function disableBoost() {
-    const ok = await confirm({
-      title: `关闭「${item.display_name}」的自动刷分享率？`,
-      bullets: [
-        "停止抢该站新发布的免费种子",
-        "已在做种的刷流任务全部保留，不删除任何数据",
-        "站点索引同步回到正常自适应节奏",
-        "重新开启时会再次确认预算与保留期",
-      ],
+    const bullets = [
+      "停止抢该站新发布的免费种子",
+      "站点索引同步回到正常自适应节奏",
+      "重新开启时会再次确认预算与保留期",
+    ];
+    const title = `关闭「${item.display_name}」的自动刷分享率？`;
+    if (inPool === 0) {
+      if (!(await confirm({ title, bullets, confirmLabel: "关闭刷流" }))) return;
+      await guard(async () => onChanged(await setSiteRatioBoost(site.site_id, false)));
+      return;
+    }
+    const result = await confirm({
+      title,
+      bullets,
       confirmLabel: "关闭刷流",
+      checkbox: boostCleanupCheckbox(inPool, boost?.used_bytes ?? 0),
     });
-    if (!ok) return;
-    await guard(async () => onChanged(await setSiteRatioBoost(site.site_id, false)));
+    if (!result.ok) return;
+    await guard(async () => {
+      if (result.checked) {
+        // 后端先关刷流再删种（保留期内的记下到期时刻，到点自动删）
+        const cleanup = await cleanupBoostPool({ siteIds: [site.site_id] });
+        onChanged(await getConfiguredSite(site.site_id));
+        toast.success(`已关闭刷流。${boostCleanupSummary(cleanup)}`);
+      } else {
+        onChanged(await setSiteRatioBoost(site.site_id, false));
+      }
+    });
+  }
+
+  /** 删除站点配置：还有在池刷流种子时同样带「同时清理」勾选项；不清理的种子转出管理继续做种 */
+  async function removeSite() {
+    const title = `删除「${item.display_name}」的配置？`;
+    const description = "该站点将不再参与搜索与订阅投递，可随时重新接入。";
+    if (inPool === 0) {
+      if (!(await confirm({ title, description, confirmLabel: "删除", tone: "danger" }))) return;
+      await deleteSite(item.site_id);
+      onDeleted(item.site_id);
+      return;
+    }
+    const result = await confirm({
+      title,
+      description: `${description}不清理的刷流种子会转出管理并继续做种，之后只能在下载器里按 movieclaw-boost 分类手动清理。`,
+      confirmLabel: "删除",
+      tone: "danger",
+      checkbox: boostCleanupCheckbox(inPool, boost?.used_bytes ?? 0),
+    });
+    if (!result.ok) return;
+    // 先清理再删配置：已请求清理（保留期内）的种子留在台账里，由引擎到点删除，不会随删站点被放生
+    const cleanup = result.checked ? await cleanupBoostPool({ siteIds: [site.site_id] }) : null;
+    await deleteSite(item.site_id);
+    onDeleted(item.site_id);
+    if (cleanup) toast.success(`已删除站点配置。${boostCleanupSummary(cleanup)}`);
   }
 
   return (
@@ -663,23 +715,7 @@ function SiteRow({
             onReverify={() =>
               void guard(async () => onChanged(await reverifySite(site.site_id)))
             }
-            onDelete={() =>
-              void guard(async () => {
-                if (
-                  !(await confirm({
-                    title: `删除「${item.display_name}」的配置？`,
-                    description:
-                      "该站点将不再参与搜索与订阅投递；在池的刷流任务会转出管理并继续做种。可随时重新接入。",
-                    confirmLabel: "删除",
-                    tone: "danger",
-                  }))
-                ) {
-                  return;
-                }
-                await deleteSite(item.site_id);
-                onDeleted(item.site_id);
-              })
-            }
+            onDelete={() => void guard(removeSite)}
           />
         </div>
       </div>
