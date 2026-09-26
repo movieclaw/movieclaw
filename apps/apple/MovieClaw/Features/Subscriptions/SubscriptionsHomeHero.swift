@@ -417,27 +417,22 @@ struct SubsHomePressStyle: ButtonStyle {
 
 // MARK: - 氛围色
 
-/// 页面底色：剧照**底边**的颜色（同 Apple Music 专辑页的取色），只在 Hero 下面接一小段——
-/// 剧照底部渐隐进去不出接缝，再往下收回到接近纯黑。
-///
-/// 与 Apple Music 的区别是 Hero 在轮播：专辑页进去颜色就定了，这里每 8 秒换一次，整页大面积
-/// 跟着变色会晃眼（2026-09-26 用户拍板），所以颜色只留在交界那一段。
+/// 页面底色（同 Apple Music 专辑页）：整页铺当前那张剧照**底边**的颜色，剧照底部渐隐进去，
+/// 看起来像剧照自己延伸成了整页；往下只轻微加深一点做层次，不再渐隐成黑、滚动也不变淡。
 /// 没有 Hero（无订阅 / 非沉浸）时是纯黑。换张时颜色 1.2 秒过渡。
 struct SubsHomeAmbient: View {
     let tint: Color?
-    /// 列表滚动距离（保留参数：底色固定在屏幕上，不随滚动变化）
+    /// 列表滚动距离（保留参数：曾用于滚深变淡，现在整页恒定铺色）
     let scrollOffset: CGFloat
 
     var body: some View {
         ZStack {
             Theme.background
             if let tint {
-                // Hero 底边约在屏幕 57% 处（500pt / 874pt）：到那里保持原色接住剧照，之后收暗
                 LinearGradient(stops: [
                     .init(color: tint, location: 0),
-                    .init(color: tint, location: 0.52),
-                    .init(color: tint.mix(with: Theme.background, by: 0.6), location: 0.68),
-                    .init(color: Theme.background, location: 0.86),
+                    .init(color: tint, location: 0.55),
+                    .init(color: tint.mix(with: .black, by: 0.35), location: 1),
                 ], startPoint: .top, endPoint: .bottom)
                 .id(tint.description)
                 .transition(.opacity)
