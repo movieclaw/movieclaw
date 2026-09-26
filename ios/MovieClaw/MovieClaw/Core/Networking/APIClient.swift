@@ -81,8 +81,31 @@ nonisolated struct APIClient: Sendable {
         config.httpCookieAcceptPolicy = .always
         config.waitsForConnectivity = false
         config.timeoutIntervalForRequest = 60
+        config.httpAdditionalHeaders = ["User-Agent": userAgent]
         return URLSession(configuration: config)
     }()
+
+    /// 所有请求带的 User-Agent：`MovieClaw-iOS/0.1.0 (iPhone18,4; iOS 26.0; build 1)`。
+    /// App 与网页共用登录会话和播放上报接口，服务端只能靠它认出「这是原生 iOS App」——
+    /// 活动页据此显示「MovieClaw iOS · iPhone」和 App 版本，而不是「MovieClaw Web · 浏览器」
+    static let userAgent: String = {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "0"
+        let build = info?["CFBundleVersion"] as? String ?? "0"
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let system = os.patchVersion > 0 ? "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)" : "\(os.majorVersion).\(os.minorVersion)"
+        return "MovieClaw-iOS/\(version) (\(machineModel); iOS \(system); build \(build))"
+    }()
+
+    /// 机型标识（iPhone18,4）；模拟器上取它模拟的机型
+    private static var machineModel: String {
+        if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] { return simulated }
+        var system = utsname()
+        uname(&system)
+        return withUnsafeBytes(of: &system.machine) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+    }
 
     init(server: ServerAddress, session: URLSession = APIClient.sharedSession) {
         self.server = server

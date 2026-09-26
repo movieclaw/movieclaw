@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// 播放单元：电影用 (0, 0) 哨兵，与后端台账、playback_state 的约定一致。
 struct PlaybackUnit: Hashable {
@@ -97,19 +98,53 @@ struct PlaybackAPI {
 
     /// 上报观看进度（start / progress / stop 同一入口）。
     /// 分享访客：位置记本机；服务端只收一份「谁在播」的心跳给活动页，靠响应里的 ended_by_admin 退出。
+    /// 请求包在后台任务里：切后台、暂停、退出时发出的上报不会因为 App 被挂起而丢在半路。
     @discardableResult
-    func progress(_ unit: PlaybackUnit, event: String, positionMs: Int?, paused: Bool? = nil,
+    func progress(_ unit: PlaybackUnit, event: String, positionMs: Int?, durationMs: Int? = nil, paused: Bool? = nil,
                   audio: String?, subtitle: String?) async -> API.PlaybackStateView? {
-        let body = API.PlaybackProgressRequest(
+        let body = progressBody(unit, event: event, positionMs: positionMs, paused: paused, audio: audio, subtitle: subtitle)
+        let background = UIApplication.shared.beginBackgroundTask(withName: "playback-progress")
+        defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
+        if let shareSlug {
+            ShareLocalProgress.write(shareSlug, unit, positionMs: Self.localResume(positionMs, durationMs: durationMs), audio: audio, subtitle: subtitle)
+            return try? await api.sharePlaybackProgress(slug: shareSlug, body: body)
+        }
+        return try? await api.playbackProgress(body: body)
+    }
+
+    /// App 即将被结束：同步补发一次 stop，最多等 1.5 秒（异步任务在进程退出前跑不完）
+    func stopBeforeTermination(_ unit: PlaybackUnit, positionMs: Int, durationMs: Int?, audio: String?, subtitle: String?) {
+        let body = progressBody(unit, event: "stop", positionMs: positionMs, paused: nil, audio: audio, subtitle: subtitle)
+        let path: String
+        if let shareSlug {
+            ShareLocalProgress.write(shareSlug, unit, positionMs: Self.localResume(positionMs, durationMs: durationMs), audio: audio, subtitle: subtitle)
+            path = "/share/\(shareSlug)/playback/progress"
+        } else {
+            path = "/playback/progress"
+        }
+        var request = URLRequest(url: api.url(path))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 1.5
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? APIClient.encoder.encode(body)
+        let done = DispatchSemaphore(value: 0)
+        api.session.dataTask(with: request) { _, _, _ in done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 1.5)
+    }
+
+    private func progressBody(_ unit: PlaybackUnit, event: String, positionMs: Int?, paused: Bool?,
+                              audio: String?, subtitle: String?) -> API.PlaybackProgressRequest {
+        API.PlaybackProgressRequest(
             mediaItemId: unit.mediaItemId, seasonNumber: unit.season, episodeNumber: unit.episode,
             event: event, positionMs: positionMs, audioTrack: audio, subtitleTrack: subtitle,
             deviceId: deviceId, paused: paused
         )
-        if let shareSlug {
-            ShareLocalProgress.write(shareSlug, unit, positionMs: positionMs, audio: audio, subtitle: subtitle)
-            return try? await api.sharePlaybackProgress(slug: shareSlug, body: body)
-        }
-        return try? await api.playbackProgress(body: body)
+    }
+
+    /// 分享访客的本机续播点：看过 90% 或到了片尾就记 0（下次从头放），同服务端 resolve_progress 的口径
+    static func localResume(_ positionMs: Int?, durationMs: Int?) -> Int? {
+        guard let positionMs, let durationMs, durationMs > 0 else { return positionMs }
+        return positionMs * 10 >= durationMs * 9 || positionMs >= durationMs - 1000 ? 0 : positionMs
     }
 
     // MARK: 遥测（分享访客一律不报）

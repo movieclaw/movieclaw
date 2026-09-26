@@ -157,6 +157,10 @@ final class PlaybackController {
     private var noticeTask: Task<Void, Never>?
     private let nowPlaying = NowPlayingBridge()
     private var closed = false
+    /// 上报串行队列：start / progress / stop 按发出顺序到达。各自独立的 Task 可能乱序——
+    /// stop 先到、进度后到，服务端会把刚结束的会话「复活」，还多开一行永远不收口的播放日志
+    private var reportQueue: Task<Void, Never>?
+    private var terminationObserver: NSObjectProtocol?
 
     init(request: PlayRequest, api: APIClient) {
         self.request = request
@@ -171,6 +175,13 @@ final class PlaybackController {
     func start() {
         activateAudioSession()
         nowPlaying.attach(to: self)
+        // App 被结束（在后台播放时被划掉、被系统回收）：同步补发一次 stop（同网页 pagehide 的 sendBeacon），
+        // 否则续播点停在最后一次心跳、活动页还挂着一个几分钟后才过期的「幽灵」会话
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reportTermination() }
+        }
         startTickLoop()
         Task { await loadInfo() }
         startUnit(unit)
@@ -189,6 +200,8 @@ final class PlaybackController {
         engine?.destroy()
         engine = nil
         nowPlaying.detach()
+        if let terminationObserver { NotificationCenter.default.removeObserver(terminationObserver) }
+        terminationObserver = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -272,8 +285,9 @@ final class PlaybackController {
         progressTask?.cancel()
         if reportedStart {
             reportedStart = false
-            let unit = self.unit, position = positionMs, audio = currentAudio, subtitle = subtitleMemory
-            Task { await scope.progress(unit, event: "stop", positionMs: position, audio: audio, subtitle: subtitle) }
+            let unit = self.unit, position = positionMs, audio = audioMemory, subtitle = subtitleMemory, duration = durationMs
+            let scope = self.scope
+            enqueueReport { await scope.progress(unit, event: "stop", positionMs: position, durationMs: duration, audio: audio, subtitle: subtitle) }
             reportMetric()
         }
         if let activeSessionId {
@@ -628,10 +642,11 @@ final class PlaybackController {
             }
             if !reportedStart {
                 reportedStart = true
-                let unit = self.unit, audio = currentAudio, subtitle = subtitleMemory
-                Task {
+                let unit = self.unit, audio = audioMemory, subtitle = subtitleMemory
+                let scope = self.scope
+                enqueueReport { [weak self] in
                     let state = await scope.progress(unit, event: "start", positionMs: nil, audio: audio, subtitle: subtitle)
-                    handleProgressResponse(state)
+                    self?.handleProgressResponse(state)
                 }
                 startProgressLoop()
             } else {
@@ -640,7 +655,14 @@ final class PlaybackController {
         case .paused:
             paused = true
             seekStartedAt = nil
-            if reportedStart { sendProgress(paused: true) }
+            // 引擎已就绪却停在「缓冲」（暂停中拖动、以暂停状态起播）：回到正常态，否则转圈不消、10 秒心跳也停发，
+            // 活动页几分钟后就把这个会话丢了
+            if phase == .buffering, engine?.duration != nil {
+                if qoe.bufferingSince != nil { qoe.endRebuffer() }
+                phase = .playing
+            }
+            // 换会话 / 降档时控制器自己按的暂停（request 里的 engine.pause）不上报：那不是用户暂停
+            if reportedStart, !phase.isBusy { sendProgress(paused: true) }
         case .buffering:
             if phase == .playing {
                 phase = .buffering
@@ -656,7 +678,9 @@ final class PlaybackController {
             guard [.buffering, .playing].contains(phase) else { return }
             phase = .ended
             paused = true
-            if let durationMs { positionMs = durationMs }
+            // 引擎报「播完」不一定真到了片尾（MPV 断流也会报 eof）：离片尾 5 秒内才吸附到片长，
+            // 否则按真实位置上报——片长会让服务端直接标「已看」
+            if let durationMs, durationMs - positionMs <= 5000 { positionMs = durationMs }
             if reportedStart { sendProgress(paused: true) }
         case let .failed(reason, cause):
             engineFailed(reason: reason, cause: cause)
@@ -1024,6 +1048,8 @@ final class PlaybackController {
 
     func setBackgrounded(_ background: Bool) {
         backgrounded = background
+        // 切后台先把当前位置报上去：之后 App 可能被挂起、被系统回收，等不到下一次心跳（同网页 visibilitychange）
+        if background, reportedStart { sendProgress(paused: engine?.isPaused) }
         // 后台时引擎主动丢帧 / 不出画，回来先清窗口，免得误判卡顿与掉帧
         resetWatchdogs()
         engine?.setBackgrounded(background)
@@ -1074,12 +1100,31 @@ final class PlaybackController {
 
     private func sendProgress(paused: Bool?) {
         guard reportedStart else { return }
-        let unit = self.unit, position = positionMs, audio = currentAudio, subtitle = subtitleMemory
-        Task {
-            let state = await scope.progress(unit, event: "progress", positionMs: position, paused: paused, audio: audio, subtitle: subtitle)
-            handleProgressResponse(state)
+        let unit = self.unit, position = positionMs, audio = audioMemory, subtitle = subtitleMemory, duration = durationMs
+        let scope = self.scope
+        enqueueReport { [weak self] in
+            let state = await scope.progress(unit, event: "progress", positionMs: position, durationMs: duration, paused: paused, audio: audio, subtitle: subtitle)
+            self?.handleProgressResponse(state)
         }
     }
+
+    private func enqueueReport(_ work: @escaping @MainActor () async -> Void) {
+        let previous = reportQueue
+        reportQueue = Task { @MainActor in
+            await previous?.value
+            await work()
+        }
+    }
+
+    /// App 即将被结束：同步补发 stop（最多等 1.5 秒）
+    private func reportTermination() {
+        guard reportedStart else { return }
+        reportedStart = false
+        scope.stopBeforeTermination(unit, positionMs: positionMs, durationMs: durationMs, audio: audioMemory, subtitle: subtitleMemory)
+    }
+
+    /// 上报用的音轨记忆：刚换了音轨、新会话还没建好就退出时，也要记住用户的选择
+    private var audioMemory: String? { requestedAudio ?? currentAudio }
 
     /// 管理员在活动页结束了本次播放：退出并说明（服务端同时进入拒绝窗口，不能走「会话没了就重开」）
     private func handleProgressResponse(_ state: API.PlaybackStateView?) {
