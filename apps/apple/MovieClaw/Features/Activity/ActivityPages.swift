@@ -78,12 +78,14 @@ private struct ActivityTasksPage: View {
 
 // MARK: - 刷流
 
-/// 刷流做种：页头实时汇总 → 按站点（开着 / 已暂停 / 已关闭）→ 逐种子一行 → 底部「清理刷流种子…」。
+/// 刷流做种：页头实时汇总 → 按站点（开着 / 已暂停 / 已关闭）→ 逐种子一行；右上角「清理」。
 ///
 /// 清理（docs/design/site-protection-ratio-boost.md §2.9）：关闭刷流不会删种，残留种子会一直满速做种、
 /// 占着磁盘，这里是事后清掉它们的入口。点开先取最新的在池概况，再用系统底部菜单讲清后果：
 /// 删多少、还开着刷流的站点会一并关闭、保留期内的（提前删可能被记 H&R）默认到期后自动删，
-/// 另给「立即全部删除」由用户自担风险。同 Safari「清除历史记录」，破坏性入口放在列表最底下的红字行。
+/// 另给「立即全部删除」由用户自担风险。清理入口放右上角工具栏（同 Safari 历史记录的「清除」、照片
+/// 「最近删除」的「全部删除」）：种子动辄上百个，放列表底部要滑到头才找得到。
+/// 种子列表默认只列上行最快的 20 个（真正值得看的是正在出力的），其余按批「再显示 20 个」。
 private struct ActivityBoostPage: View {
     @Environment(ShellBadges.self) private var badges
     @Environment(\.api) private var api
@@ -93,6 +95,10 @@ private struct ActivityBoostPage: View {
     @State private var supportsCleanup = false
     @State private var confirming = false
     @State private var cleaning = false
+    /// 种子列表当前露出的条数（默认 20，每次「再显示」加 20）
+    @State private var visibleCount = ActivityBoostPage.pageSize
+
+    private static let pageSize = 20
 
     var body: some View {
         let tasks = badges.tasks.activity.boostTasks
@@ -124,50 +130,27 @@ private struct ActivityBoostPage: View {
                     Text("按站点").textCase(nil)
                 } footer: {
                     if sites.count(.off) > 0 {
-                        Text("关闭刷流不会删除已有种子：它们会继续满速做种，引擎也不再自动汰换。可以在本页最下方清理。")
+                        Text("关闭刷流不会删除已有种子：它们会继续满速做种，引擎也不再自动汰换。可点右上角「清理」删除。")
                     }
                 }
             }
             if !tasks.isEmpty {
+                let sorted = ActivityBoostTotals.sorted(tasks)
                 Section {
-                    ForEach(ActivityBoostTotals.sorted(tasks)) { task in
+                    ForEach(sorted.prefix(visibleCount)) { task in
                         BoostTaskRow(task: task, cleanupNote: cleanupNote(sites.taskStates[task.infoHash.lowercased()]))
+                    }
+                    if sorted.count > visibleCount {
+                        Button {
+                            withAnimation { visibleCount += Self.pageSize }
+                        } label: {
+                            Text("再显示 \(min(Self.pageSize, sorted.count - visibleCount)) 个（共 \(sorted.count) 个）")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .accessibilityIdentifier("boost-show-more")
                     }
                 } header: {
                     Text("按上行速度排序").textCase(nil)
-                }
-                if supportsCleanup {
-                Section {
-                    Button(role: .destructive) {
-                        Task { await prepareCleanup() }
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if cleaning { ProgressView().padding(.trailing, 6) }
-                            Text(cleaning ? "正在清理…" : "清理刷流种子…")
-                            Spacer()
-                        }
-                    }
-                    .disabled(cleaning)
-                    .accessibilityIdentifier("boost-cleanup")
-                    // 挂在按钮上：iOS 26 的确认菜单是贴着来源弹出的气泡，箭头要指向这个按钮
-                    .confirmationDialog(confirmTitle, isPresented: $confirming, titleVisibility: .visible) {
-                        let plan = CleanupPlan(pool)
-                        Button(plan.enabledNames.isEmpty ? "清理" : "关闭刷流并清理", role: .destructive) {
-                            Task { await cleanup(force: false) }
-                        }
-                        if plan.protectedCount > 0 {
-                            Button("立即全部删除（可能被记 H&R）", role: .destructive) {
-                                Task { await cleanup(force: true) }
-                            }
-                        }
-                        Button("取消", role: .cancel) {}
-                    } message: {
-                        Text(CleanupPlan(pool).message)
-                    }
-                } footer: {
-                    Text("从下载器删除刷流种子及其数据文件，无法恢复。还没做满站点要求做种时长的，默认等到期后再自动删除，避免被记 H&R。")
-                }
                 }
             }
         }
@@ -179,11 +162,47 @@ private struct ActivityBoostPage: View {
         }
         .navigationTitle("刷流做种")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if supportsCleanup, !tasks.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) { cleanupButton }
+            }
+        }
         .appBackground()
         .task { await loadPool() }
     }
 
     // MARK: 清理
+
+    /// 右上角「清理」：确认菜单挂在它上面（iOS 26 的确认菜单是贴着来源弹出的气泡，箭头指向这个按钮）
+    private var cleanupButton: some View {
+        Button(role: .destructive) {
+            Task { await prepareCleanup() }
+        } label: {
+            if cleaning {
+                ProgressView()
+            } else {
+                Text("清理")
+            }
+        }
+        .tint(Theme.danger)
+        .disabled(cleaning)
+        .accessibilityLabel("清理刷流种子")
+        .accessibilityIdentifier("boost-cleanup")
+        .confirmationDialog(confirmTitle, isPresented: $confirming, titleVisibility: .visible) {
+            let plan = CleanupPlan(pool)
+            Button(plan.enabledNames.isEmpty ? "清理" : "关闭刷流并清理", role: .destructive) {
+                Task { await cleanup(force: false) }
+            }
+            if plan.protectedCount > 0 {
+                Button("立即全部删除（可能被记 H&R）", role: .destructive) {
+                    Task { await cleanup(force: true) }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(CleanupPlan(pool).message)
+        }
+    }
 
     /// 清理前的汇总：删多少、哪些站还开着刷流、保留期内有多少（都取自最新的在池概况）
     private struct CleanupPlan {
