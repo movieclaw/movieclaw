@@ -45,7 +45,8 @@ struct PlayerTopBar: View {
             AirPlayButton()
                 .frame(width: 40, height: 40)
                 .background(.black.opacity(0.3), in: .circle)
-            if controller.engine?.supportsPictureInPicture == true {
+            // MPV 播放时也显示：点了会换成系统播放器再进画中画（见 PlaybackController.togglePictureInPicture）
+            if controller.pictureInPictureAvailable {
                 GlassIconButton(
                     systemImage: controller.pipActive ? "pip.exit" : "pip.enter",
                     label: controller.pipActive ? "退出画中画" : "画中画",

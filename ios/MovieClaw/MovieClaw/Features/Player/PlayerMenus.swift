@@ -155,8 +155,8 @@ struct SubtitleMenu: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
             }
-            if !controller.engineRendersSubtitles, controller.subtitles.options.contains(where: { $0.kind == "pgs" }) {
-                // 用户点之前就该知道代价：系统播放器渲染不了图形字幕，要转码压制进画面
+            if controller.graphicSubtitlesBurnIn, controller.subtitles.options.contains(where: { $0.kind == "pgs" }) {
+                // 用户点之前就该知道代价：系统播放器渲染不了图形字幕、这时又换不了 MPV，要转码压制进画面
                 MenuDivider()
                 MenuNote(text: "图形字幕会转码压制进画面（切换约一秒），画中画等场景也能看到")
             }
@@ -287,14 +287,6 @@ struct SettingsMenu: View {
             ForEach(QualityOption.all) { option in
                 PlayerMenuRow(title: option.label, hint: option.hint, active: controller.quality == option.maxHeight, identifier: "quality-\(option.label)") {
                     controller.selectQuality(option.maxHeight)
-                    close()
-                }
-            }
-            MenuDivider()
-            Text("播放引擎").font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.45)).padding(.horizontal, 16)
-            ForEach(EnginePreference.allCases) { preference in
-                PlayerMenuRow(title: preference.label, hint: preference.hint, active: controller.enginePreference == preference, identifier: "engine-\(preference.rawValue)") {
-                    controller.selectEngine(preference)
                     close()
                 }
             }

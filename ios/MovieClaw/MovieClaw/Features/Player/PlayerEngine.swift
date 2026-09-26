@@ -86,8 +86,9 @@ protocol PlayerEngine: AnyObject {
     var canSwitchAudioInPlace: Bool { get }
     func selectAudio(embeddedIndex: Int)
 
-    /// 字幕由引擎自己渲染（MPV）；否则由 SwiftUI 叠加层渲染（AVPlayer）
-    var rendersSubtitles: Bool { get }
+    /// 这类字幕（kind：vtt / ass / pgs）由引擎自己画；否则由 SwiftUI 叠加层用系统字体画。
+    /// 目前只有 MPV 画图形字幕（PGS）；文字字幕两个引擎都走叠加层
+    func rendersSubtitle(kind: String) -> Bool
     /// 选字幕：embeddedIndex 非空且直出原文件时直接选内封轨，否则挂服务端地址
     func selectSubtitle(_ option: SubtitleOption?, url: URL?)
     func applySubtitleStyle(_ style: SubtitleStyle)

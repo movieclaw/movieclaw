@@ -80,8 +80,12 @@ PlayerScreen（控制层 UI、手势、字幕叠加、选轨、诊断）
             ├─ AVPlayerEngine   HLS / MP4 直出；画中画、AirPlay、杜比视界、全景声、系统字幕
             └─ MPVEngine        libmpv（MPVKit LGPL）：MKV/HEVC/TrueHD/DTS 直出，ASS/PGS 由 libass 渲染
 ```
-- 引擎选择：设置里「播放引擎：自动 / 系统播放器 / MPV」；自动 = 服务端判定可直出且容器/编码 AVPlayer 支持时用 AVPlayer，
-  否则 MPV 直出；MPV 失败回落到服务端 HLS + AVPlayer。
+- 引擎选择全自动，用户不选（2026-09-26 用户决定，同 Infuse）：系统播放器优先——服务端能直出或只换封装/转音频
+  （画面不重编码）就用 AVPlayer，画中画、隔空播放、系统字体字幕都可用；只有选了图形字幕（PGS）、或服务端要为
+  AVPlayer 重新编码画面时才用 MPV 在本机直接放原文件。AVPlayer 在不重编码的档位放不出来时自动改用 MPV；MPV 失败回落服务端 HLS + AVPlayer。
+- 字幕：文字字幕（SRT/ASS）两个引擎都由 SwiftUI 叠加层用系统字体画（iOS 上 libass 用不了系统中文字体，会画成方框）；
+  MPV 只画图形字幕。MPV 播放中点画中画：在当前位置换成系统播放器，就绪后自动进画中画。
+- 开发期可用启动参数 `-movieclaw.player.engine system|mpv` 强制引擎、`-mcSubtitle <轨>` 指定起播字幕、`-mcAutoPiP <秒>` 自动点画中画。
 - 会话参数（capability、failed_tiers、audio/subtitle track、max_height、downlink_bps）按引擎能力申报。
 - LGPL 合规：MPVKit 动态库形式链接；关于页列出 libmpv/FFmpeg 许可与源码地址。
 - MPV 真机渲染走 Metal（MoltenVK + gpu-next）：黑底容器铺满播放区，渲染面按视频比例居中摆放，

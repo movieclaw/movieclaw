@@ -5,10 +5,12 @@ import UIKit
 ///
 /// 两种用法（由控制器决定，`playsOriginalFile` 标明）：
 /// - **原文件直出**：服务端判定视频可直通时，直接拉 `/playback/files/{id}/stream` 原文件——
-///   MKV/HEVC/TrueHD/DTS 都在本机解，服务端零开销；内封音轨/字幕可原地切换，ASS/PGS 由 libass 原样渲染；
+///   MKV/HEVC/TrueHD/DTS 都在本机解，服务端零开销；内封音轨可原地切换，图形字幕（PGS）由 mpv 原样画；
 /// - **放服务端 HLS**：需要转码（画质上限、带宽不足）时照样能放 fMP4 播放列表，此时字幕按地址外挂。
 ///
-/// 字幕样式映射到 mpv 选项：mpv 的字号/边距以「720 像素高的窗口」为基准，
+/// 文字字幕（SRT/ASS）不由 mpv 画，与系统播放器一样交给 SwiftUI 叠加层用系统字体画：iOS 上 libass
+/// 用不了系统的中文字体（苹方能按名字找到，却画不出字形），中文会变成方框或干脆不出字（模拟器与真机实测）。
+/// 字幕样式映射到 mpv 选项（只剩图形字幕的位置会用到）：mpv 的字号/边距以「720 像素高的窗口」为基准，
 /// 所以网页的「画面高度百分比」× 720 就是对应的 mpv 数值。
 @MainActor
 final class MPVEngine: PlayerEngine {
@@ -144,9 +146,9 @@ final class MPVEngine: PlayerEngine {
         core.setString("aid", String(audio[embeddedIndex].id))
     }
 
-    // MARK: - 字幕（libass 渲染，ASS 特效与 PGS 位图原样呈现）
+    // MARK: - 字幕（mpv 只画图形字幕 PGS，文字字幕交给叠加层）
 
-    var rendersSubtitles: Bool { true }
+    func rendersSubtitle(kind: String) -> Bool { kind == "pgs" }
 
     func selectSubtitle(_ option: SubtitleOption?, url: URL?) {
         guard fileLoaded else { pendingSubtitle = (option, url); return }

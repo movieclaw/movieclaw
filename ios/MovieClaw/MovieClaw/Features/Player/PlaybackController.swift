@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import SwiftUI
 
 /// 播放控制器：会话协议 + 状态机 + 引擎编排（对应 Web `components/player/video-player.tsx` 与 `lib/player/machine.ts`）。
@@ -8,12 +9,15 @@ import SwiftUI
 /// 为此每次「去后端要一个能播的地址」都带一个递增的 `attempt` 序号：响应回来时序号已被超越
 /// （用户又换了参数/退出了），就把刚拉起的会话当场掐掉，绝不让它变成占着转码名额的孤儿。
 ///
-/// ## 引擎选择（docs/design/ios-app.md §4）
-/// - 系统播放器：一律 AVPlayer，吃不下的交给服务端转封装/转码；
-/// - MPV：一律 libmpv，视频可直通（档 0–2）就直接拉原文件，转码档照样能放 HLS；
-/// - 自动：先用 AVPlayer 的能力问一次决策（`/decide`，不起会话）——能原文件直出（档 0）就用 AVPlayer；
-///   用户自己限了画质/线路不够导致的转码仍交给 AVPlayer 放 HLS；其余（MKV、TrueHD、需要转码的编码……）交给 MPV 直出。
-/// - MPV 出任何问题（创建失败、放不了）都回落到服务端 HLS + AVPlayer，并在本单元内不再尝试 MPV。
+/// ## 引擎选择（全自动，用户不选；docs/design/ios-app.md §4）
+/// 系统播放器优先：画中画、隔空播放、杜比视界、系统字体字幕都只有它有，用户在意的是这些，而不是引擎。
+/// 先用 AVPlayer 的能力问一次决策（`/decide`，不起会话），服务端能直出或只换封装/转音频（画面不重编码）
+/// 就交给 AVPlayer——MKV 换壳成 HLS、DTS/TrueHD 转 AAC 都是轻活。只有两种情况改用 MPV 在本机直接放原文件：
+/// 1. 选中的是图形字幕（PGS）：系统播放器画不了，服务端只能把字幕压进画面、整片重新编码（NAS 没有显卡时几乎放不动）；
+/// 2. 按 AVPlayer 的能力服务端要重新编码画面（编码不支持、杜比视界要色调映射……）或拒绝/要同意，
+///    而且不是因为用户限了画质、线路不够（那本来就要转码，交给 AVPlayer 放 HLS）。
+/// 系统播放器在不重编码的档位放不出来时自动改用 MPV；MPV 出任何问题都回落服务端 HLS + AVPlayer，本单元不再试 MPV。
+/// MPV 没有画中画：播放中点画中画，就在当前位置换成系统播放器、就绪后自动进画中画。
 ///
 /// ## 时间轴
 /// 引擎只认「流时间」。文件时间 = `originMs` + 流时间：原文件直出与 VOD 播放列表（timeline=file）
@@ -98,7 +102,8 @@ final class PlaybackController {
         }
     }
     private(set) var quality = PlayerPreferences.quality
-    private(set) var enginePreference = PlayerPreferences.engine
+    /// 开发期强制引擎（启动参数 `-movieclaw.player.engine system|mpv`），正式版恒为 nil
+    private let engineOverride = EngineOverride.current
 
     // MARK: 实时读数
 
@@ -137,8 +142,12 @@ final class PlaybackController {
     /// 拖动跟随：上一次真的跟过去的时刻与排队中的后沿落地
     private var lastScrubFollowAt = Date.distantPast
     private var scrubFollowTask: Task<Void, Never>?
-    /// 本单元内因为选了特效/图形字幕，自动模式改用 MPV（MPV 用 libass 原样渲染）
-    private var preferMPVForSubtitles = false
+    /// 本单元改用 MPV：选了图形字幕（PGS，MPV 在本机画）或系统播放器在不重编码的档位放不出来
+    private var preferMPV = false
+    /// 本单元为了画中画改用系统播放器（MPV 没有画中画），不再自动换回 MPV
+    private var systemForPiP = false
+    /// 换成系统播放器后，画面一就绪就自动进画中画
+    private var pendingPiP = false
     private var startTask: Task<Void, Never>?
     private var pingTask: Task<Void, Never>?
     private var progressTask: Task<Void, Never>?
@@ -240,7 +249,9 @@ final class PlaybackController {
         deadSession = false
         wantsPlay = true
         qoe = QoE()
-        preferMPVForSubtitles = false
+        preferMPV = false
+        systemForPiP = false
+        pendingPiP = false
         resetWatchdogs()
         // `startSeconds` 只覆盖进入播放器的第一个单元；其余交给服务端按观看状态定起点
         var start: Int? = overrideConsumed ? nil : startMsOverride
@@ -357,35 +368,31 @@ final class PlaybackController {
         )
     }
 
-    /// MPV 在这台设备上能不能用（本单元失败过就不再试）
-    private var mpvAvailable: Bool { !mpvFailed }
+    /// MPV 在这台设备上能不能用（本单元失败过、或为了画中画换成了系统播放器，就不再试）
+    private var mpvAvailable: Bool { !mpvFailed && !systemForPiP && engineOverride != .system }
 
     private func performRequest(startMs: Int?, attempt myAttempt: Int) async {
         do {
-            // 1. 选引擎
+            // 1. 选引擎（规则见类注释）
             var useMPV: Bool
-            switch enginePreference {
-            case .system:
+            if engineOverride == .mpv {
+                useMPV = !mpvFailed
+            } else if !mpvAvailable {
                 useMPV = false
-            case .mpv:
-                useMPV = mpvAvailable
-            case .auto:
-                if !mpvAvailable {
+            } else if preferMPV {
+                useMPV = true
+            } else {
+                let probe = try await scope.decide(sessionBody(capability: PlayerCapability.avPlayer(), startMs: startMs, forMPV: false))
+                guard myAttempt == attempt else { return }
+                if probe.outcome == "plan", probe.video?.action != "transcode" {
+                    // 直出或只换封装/转音频：系统播放器（画中画、隔空播放、系统字体字幕）
                     useMPV = false
-                } else if preferMPVForSubtitles {
-                    // 选中的是 ASS 特效 / PGS 图形字幕：叠加层只能画纯文本、PGS 要服务端烧录，MPV 用 libass 原样渲染
-                    useMPV = true
+                } else if probe.outcome == "plan", quality != nil || bandwidthDegraded {
+                    // 用户自己限了画质 / 线路不够：本来就要服务端转码，交给 AVPlayer 放 HLS
+                    useMPV = false
                 } else {
-                    let probe = try await scope.decide(sessionBody(capability: PlayerCapability.avPlayer(), startMs: startMs, forMPV: false))
-                    guard myAttempt == attempt else { return }
-                    if probe.outcome == "plan", probe.tier == 0 {
-                        useMPV = false
-                    } else if probe.outcome == "plan", probe.video?.action == "transcode", quality != nil || bandwidthDegraded {
-                        // 用户自己限了画质 / 线路不够：本来就要服务端转码，交给 AVPlayer 放 HLS（能画中画、投屏）
-                        useMPV = false
-                    } else {
-                        useMPV = true
-                    }
+                    // 要为系统播放器重新编码画面（含图形字幕压制）、或被拒绝/要同意：MPV 在本机直接放原文件
+                    useMPV = true
                 }
             }
 
@@ -488,13 +495,17 @@ final class PlaybackController {
         if let burned = decision.video?.burnSubtitle {
             selectedSubtitle = burned
         } else if !subtitleTouched {
-            let remembered = scope.shareSlug.flatMap { ShareLocalProgress.read($0, unit)?.subtitleTrack } ?? session.watch?.subtitleTrack
+            var remembered = scope.shareSlug.flatMap { ShareLocalProgress.read($0, unit)?.subtitleTrack } ?? session.watch?.subtitleTrack
+            #if DEBUG
+            // 开发期：-mcSubtitle <轨引用>（embedded:N / external:文件名 / off）指定起播字幕，对照两个引擎的字幕渲染用
+            if let forced = UserDefaults.standard.string(forKey: "mcSubtitle") { remembered = forced }
+            #endif
             selectedSubtitle = subtitles.initialSelection(remembered: remembered)
         }
 
-        if !useMPV, shouldSwitchToMPVForSubtitles(selectedSubtitle) {
-            // 续播记忆 / 默认轨是特效或图形字幕：自动模式下直接换 MPV 原样渲染，不让用户先看到纯文本或等烧录
-            preferMPVForSubtitles = true
+        if !useMPV, shouldSwitchToMPV(forSubtitle: selectedSubtitle) {
+            // 续播记忆 / 默认轨是图形字幕：直接换 MPV 在本机画，不让服务端整片重新编码去压字幕
+            preferMPV = true
             if let sid = session.sessionId { let scope = self.scope; Task { await scope.stop(sid) } }
             activeSessionId = nil
             request(startMs: positionMs, phase: .sessionStarting)
@@ -525,6 +536,11 @@ final class PlaybackController {
         newEngine.load(url: url, start: startSeconds, autoplay: wantsPlay)
         if original, let index = decision.audio?.trackRef.flatMap({ AudioOption(ref: $0, label: "", isDefault: false).embeddedIndex }) {
             newEngine.selectAudio(embeddedIndex: index)
+        }
+        if pendingPiP, let avPlayer = newEngine as? AVPlayerEngine {
+            // 为画中画换成了系统播放器：画面一就绪就进画中画
+            pendingPiP = false
+            avPlayer.startPictureInPictureWhenPossible()
         }
         applySubtitleToEngine()
         applySystemSubtitle()
@@ -678,6 +694,15 @@ final class PlaybackController {
             // 连续重开都没能出画：「网络」归因多半不对，按这一档放不了继续往下走（降档或报错）
             scope.clientLog("network-restart-exhausted", ["reason": .string(reason)])
         }
+        if engine?.kind == .avPlayer, cause == .decode, session.decision.video?.action != "transcode", mpvAvailable, !preferMPV {
+            // 系统播放器在不重编码的档位放不出来（封装/编码细节不认）：交给 MPV 在本机直接放原文件，
+            // 比让服务端降到转码档省事得多
+            preferMPV = true
+            scope.clientLog("engine-fallback", ["from": .string("avplayer"), "reason": .string(reason)])
+            flash("系统播放器放不了这个文件，已改用 MPV")
+            request(startMs: positionMs, phase: .sessionStarting)
+            return
+        }
         let stats = engine?.stats()
         let downlink = stats?.downlinkBps
         let bitrate = stats?.bitrateBps ?? session.source?.bitRate.map(Double.init)
@@ -715,7 +740,7 @@ final class PlaybackController {
         failedTiers = accumulated.sorted()
         failureCount += 1
         if tier >= 4 {
-            fail(reason, suggestion: "这个文件在系统播放器里放不出来，可以在「⋯ → 播放引擎」换用 MPV 再试。")
+            fail(reason, suggestion: "可以换一个版本重试；若反复出现，请打开「⋯ → 播放诊断」查看原因。")
             return
         }
         request(startMs: positionMs, phase: .degrading)
@@ -839,7 +864,29 @@ final class PlaybackController {
 
     // MARK: 画中画
 
-    func togglePictureInPicture() { engine?.togglePictureInPicture() }
+    /// 画中画按钮显不显示：设备支持画中画就一直有——MPV 播放时点它会换成系统播放器再进画中画
+    var pictureInPictureAvailable: Bool {
+        guard let engine else { return false }
+        if engine.supportsPictureInPicture { return true }
+        return engine.kind == .mpv && engineOverride != .mpv && AVPictureInPictureController.isPictureInPictureSupported()
+    }
+
+    func togglePictureInPicture() {
+        guard let engine else { return }
+        if engine.supportsPictureInPicture {
+            engine.togglePictureInPicture()
+            return
+        }
+        guard pictureInPictureAvailable, !pendingPiP else { return }
+        // MPV 没有画中画：在当前位置换成系统播放器（服务端换封装），就绪后自动进画中画。
+        // 字幕按当前选择申请；图形字幕要压制而服务端没开软件转码时，由同意分支自动关掉字幕、不弹窗打断
+        systemForPiP = true
+        pendingPiP = true
+        requestedSubtitle = selectedSubtitle ?? "off"
+        wantsPlay = true
+        flash("正在切换到系统播放器以开启画中画…")
+        request(startMs: positionMs, phase: .sessionStarting)
+    }
 
     // MARK: - 音轨 / 字幕 / 画质 / 引擎
 
@@ -863,14 +910,28 @@ final class PlaybackController {
     /// 当前正在服务端烧录的字幕轨
     var burnedSubtitle: String? { session?.decision.video?.burnSubtitle }
 
-    /// 字幕由 MPV 自己渲染（样式/时间轴都作用在 mpv 上）
-    var engineRendersSubtitles: Bool { engine?.rendersSubtitles ?? false }
+    /// 当前选中的字幕轨
+    private var selectedOption: SubtitleOption? {
+        selectedSubtitle.flatMap { ref in subtitles.options.first { $0.ref == ref } }
+    }
+
+    /// 当前字幕由引擎自己画：只有 MPV 画图形字幕（PGS）这一种。
+    /// 文字字幕（SRT/ASS）两个引擎都交给叠加层用系统字体画——iOS 上 libass 用不了系统中文字体，
+    /// mpv 自己画会变成方框或干脆不出字（模拟器与真机实测），样式设置也与系统播放器不一致
+    var engineRendersSubtitles: Bool {
+        guard let engine, let option = selectedOption else { return false }
+        return engine.rendersSubtitle(kind: option.kind)
+    }
+
+    /// 选图形字幕要服务端压制进画面（系统播放器、且不能换 MPV 时），菜单里提前说明代价
+    var graphicSubtitlesBurnIn: Bool { engine?.kind == .avPlayer && !mpvAvailable }
 
     func selectSubtitle(_ ref: String?) {
         subtitleTouched = true
         selectedSubtitle = ref
         let target = ref.flatMap { ref in subtitles.options.first { $0.ref == ref } }
-        if engineRendersSubtitles {
+        if engine?.kind == .mpv {
+            // MPV：图形字幕交给 mpv 画，文字字幕由叠加层画（在 applySubtitleToEngine 里分流）
             applySubtitleToEngine()
             if burnedSubtitle != nil {
                 // MPV 在放烧录过的转码流：撤下烧录
@@ -880,9 +941,9 @@ final class PlaybackController {
             if reportedStart { sendProgress(paused: paused) }
             return
         }
-        if shouldSwitchToMPVForSubtitles(ref) {
-            // 自动模式下选了特效/图形字幕：换 MPV 原样渲染（不再走「ASS 降级纯文本」或「PGS 服务端烧录」）
-            preferMPVForSubtitles = true
+        if shouldSwitchToMPV(forSubtitle: ref) {
+            // 系统播放器上选了图形字幕：换 MPV 在本机画（不让服务端整片重新编码去压字幕）
+            preferMPV = true
             requestedSubtitle = ref
             wantsPlay = true
             request(startMs: positionMs, phase: .sessionStarting)
@@ -903,11 +964,11 @@ final class PlaybackController {
         request(startMs: positionMs, phase: .sessionStarting)
     }
 
-    /// 自动模式下、当前是系统播放器、选中的是 ASS/PGS、MPV 可用 → 该换 MPV
-    private func shouldSwitchToMPVForSubtitles(_ ref: String?) -> Bool {
-        guard enginePreference == .auto, mpvAvailable, !preferMPVForSubtitles, engine?.kind != .mpv,
+    /// 当前是系统播放器、选中的是图形字幕（PGS）、MPV 可用 → 该换 MPV
+    private func shouldSwitchToMPV(forSubtitle ref: String?) -> Bool {
+        guard mpvAvailable, !preferMPV, engine?.kind != .mpv,
               let ref, let option = subtitles.options.first(where: { $0.ref == ref }) else { return false }
-        return ["ass", "pgs"].contains(option.kind)
+        return option.kind == "pgs"
     }
 
     /// 把当前字幕对应到 master 字幕组的下标，交给 AVPlayer 在画中画 / 隔空播放时由系统渲染。
@@ -923,7 +984,7 @@ final class PlaybackController {
         avPlayer.systemSubtitleIndex = textPlans.firstIndex { $0.trackRef == ref }
     }
 
-    /// 叠加层要渲染的文本字幕（AVPlayer 模式）：ASS 由服务端转成 VTT 纯文本。
+    /// 叠加层要渲染的文本字幕（两个引擎通用）：ASS 由服务端转成 VTT 纯文本。
     /// 隔空播放时字幕由系统画在电视上，本机叠加层收起
     var overlaySubtitleURL: URL? {
         guard !engineRendersSubtitles, burnedSubtitle == nil, !((engine as? AVPlayerEngine)?.systemSubtitlesActive ?? false),
@@ -932,10 +993,11 @@ final class PlaybackController {
         return scope.streamURL(option.path + "&format=vtt")
     }
 
+    /// 把引擎自己画的字幕（MPV 的图形字幕）交给引擎；其余一律让引擎关掉字幕、由叠加层画
     private func applySubtitleToEngine() {
-        guard let engine, engine.rendersSubtitles else { return }
-        let option = selectedSubtitle.flatMap { ref in subtitles.options.first { $0.ref == ref } }
-        engine.selectSubtitle(option, url: option.flatMap { scope.streamURL($0.path) })
+        guard let engine else { return }
+        let own = selectedOption.flatMap { engine.rendersSubtitle(kind: $0.kind) ? $0 : nil }
+        engine.selectSubtitle(own, url: own.flatMap { scope.streamURL($0.path) })
     }
 
     /// 上报用的字幕记忆："off" = 用户明确关掉
@@ -955,17 +1017,6 @@ final class PlaybackController {
         wantsPlay = true
         failedTiers = []
         failureCount = 0
-        request(startMs: positionMs, phase: .deciding)
-    }
-
-    func selectEngine(_ preference: EnginePreference) {
-        PlayerPreferences.engine = preference
-        guard preference != enginePreference else { return }
-        enginePreference = preference
-        mpvFailed = false
-        failedTiers = []
-        failureCount = 0
-        wantsPlay = !(engine?.isPaused ?? false) || wantsPlay
         request(startMs: positionMs, phase: .deciding)
     }
 

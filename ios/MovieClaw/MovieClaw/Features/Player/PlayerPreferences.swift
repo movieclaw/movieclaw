@@ -1,30 +1,19 @@
 import Foundation
 
-/// 播放引擎偏好（播放器「⋯ 设置 → 播放引擎」，存本机）。
-enum EnginePreference: String, CaseIterable, Identifiable {
-    /// 服务端判定能原文件直出且 AVPlayer 吃得下 → 系统播放器；否则 MPV 直出
-    case auto
-    /// 始终用系统播放器（AVPlayer）：需要时由服务端转封装/转码
-    case system
-    /// 始终用 MPV（libmpv）：MKV/HEVC/TrueHD/DTS/ASS/PGS 都在本机解
-    case mpv
+/// 开发期强制某个播放引擎（启动参数 `-movieclaw.player.engine system|mpv`），排查问题与 UI 测试用。
+///
+/// 正式版没有引擎选项：用户不关心用的是哪个引擎，只关心画中画、字幕、格式能不能用（见 PlaybackController 选引擎）。
+/// 只认启动参数、不读本机存档——以前版本在设置里存过的「系统播放器 / MPV」选择一律作废。
+enum EngineOverride: String {
+    case system, mpv
 
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .auto: "自动"
-        case .system: "系统播放器"
-        case .mpv: "MPV"
-        }
-    }
-
-    var hint: String {
-        switch self {
-        case .auto: "能直出用系统播放器，其余交给 MPV"
-        case .system: "支持画中画、隔空播放、杜比视界"
-        case .mpv: "本机解码 MKV/DTS/TrueHD，特效字幕原样渲染"
-        }
+    static var current: EngineOverride? {
+        #if DEBUG
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        return (arguments["movieclaw.player.engine"] as? String).flatMap(EngineOverride.init)
+        #else
+        return nil
+        #endif
     }
 }
 
@@ -64,11 +53,6 @@ struct SubtitleStyle: Equatable, Codable {
 /// 播放器的本机偏好。键名带 `movieclaw.player.` 前缀，与 Web localStorage 的键同名同义。
 enum PlayerPreferences {
     private static let defaults = UserDefaults.standard
-
-    static var engine: EnginePreference {
-        get { defaults.string(forKey: "movieclaw.player.engine").flatMap(EnginePreference.init) ?? .auto }
-        set { defaults.set(newValue.rawValue, forKey: "movieclaw.player.engine") }
-    }
 
     /// 画质上限（max_height）；nil = 自动
     static var quality: Int? {

@@ -239,34 +239,6 @@ enum SettingsTime {
     }
 }
 
-// MARK: - 播放引擎偏好（本机）
-
-/// App 专属的「播放引擎」偏好。键名、取值与播放器模块 `PlayerPreferences.engine` 完全一致
-/// （`movieclaw.player.engine` = auto / system / mpv），播放器起播时读它；这里只负责展示与修改。
-enum SettingsPlaybackEngine: String, CaseIterable, Identifiable {
-    case auto, system, mpv
-
-    static let storageKey = "movieclaw.player.engine"
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .auto: "自动"
-        case .system: "系统播放器"
-        case .mpv: "MPV"
-        }
-    }
-
-    var hint: String {
-        switch self {
-        case .auto: "能直出用系统播放器，其余交给 MPV"
-        case .system: "支持画中画、隔空播放、杜比视界"
-        case .mpv: "本机解码 MKV/DTS/TrueHD，特效字幕原样渲染"
-        }
-    }
-}
-
 // MARK: - 主按钮
 
 extension View {

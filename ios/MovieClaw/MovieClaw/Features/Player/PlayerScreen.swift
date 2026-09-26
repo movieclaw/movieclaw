@@ -54,6 +54,14 @@ struct PlayerScreen: View {
             created.start()
             UIApplication.shared.isIdleTimerDisabled = true
             #if DEBUG
+            // 真机排查用：-mcAutoPiP <秒> 起播后到点自动点一次画中画（真机跑不了界面测试，靠它验证换引擎进画中画）
+            let autoPiP = UserDefaults.standard.double(forKey: "mcAutoPiP")
+            if autoPiP > 0 {
+                Task {
+                    try? await Task.sleep(for: .seconds(autoPiP))
+                    created.togglePictureInPicture()
+                }
+            }
             // 真机排查用：-mcAutoLandscape <秒> 起播后自动切横屏；
             // 再加 -mcAutoRotate <次数> 则之后每 3 秒横竖交替，共转这么多次（测旋转耗时）
             let autoLandscape = UserDefaults.standard.double(forKey: "mcAutoLandscape")
@@ -141,16 +149,15 @@ private struct PlayerContent: View {
                         .id(ObjectIdentifier(engine))
                         .ignoresSafeArea()
                         .accessibilityIdentifier("player-video")
-                    if !engine.rendersSubtitles {
-                        SubtitleOverlay(
-                            url: controller.overlaySubtitleURL,
-                            style: controller.subtitleStyle,
-                            videoSize: engine.videoSize,
-                            time: { Double(controller.originMs) / 1000 + (controller.engine?.currentTime ?? 0) },
-                            session: controller.scope.api.session
-                        )
-                        .ignoresSafeArea()
-                    }
+                    // 文字字幕两个引擎都由叠加层用系统字体画（没有要画的字幕时地址为空、什么也不显示）
+                    SubtitleOverlay(
+                        url: controller.overlaySubtitleURL,
+                        style: controller.subtitleStyle,
+                        videoSize: engine.videoSize,
+                        time: { Double(controller.originMs) / 1000 + (controller.engine?.currentTime ?? 0) },
+                        session: controller.scope.api.session
+                    )
+                    .ignoresSafeArea()
                 }
 
                 PlayerGestureLayer(

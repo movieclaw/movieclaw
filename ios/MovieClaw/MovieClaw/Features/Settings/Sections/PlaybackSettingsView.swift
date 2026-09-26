@@ -2,7 +2,6 @@ import SwiftUI
 
 /// 设置 → 播放（Web settings-view.tsx 的 PlaybackSection：进度条预览、转码缓存、远程转码）。
 ///
-/// - 播放引擎（**App 专属**，存本机）：自动 / 系统播放器 / MPV，键名与播放器模块共用（见 `SettingsPlaybackEngine`）；
 /// - 进度条预览、转码缓存：两颗开关改即存（`PUT /playback/policy`），失败回滚（乐观更新）；
 /// - 远程转码：开关是**意图**、Worker 连接是**现实**，两件事分开说——
 ///   配置 `GET/PUT /transcode-worker/config`，在线状态 `GET /transcode-worker/status` 每 5 秒轮询，
@@ -11,7 +10,6 @@ import SwiftUI
 struct PlaybackSettingsView: View {
     @Environment(\.api) private var api
     @Environment(Router.self) private var router
-    @AppStorage(SettingsPlaybackEngine.storageKey) private var engine = SettingsPlaybackEngine.auto.rawValue
 
     @State private var policy: API.PlaybackPolicyView?
     /// 策略错误及其归属：加载失败两张卡都显示；保存失败只显示在出错的那张卡（Web 两张卡各管各的错误）
@@ -36,7 +34,6 @@ struct PlaybackSettingsView: View {
 
     var body: some View {
         List {
-            engineSection
             policySection
             remoteSections
         }
@@ -45,26 +42,6 @@ struct PlaybackSettingsView: View {
         .task { await loadPolicy() }
         .task { await loadConfig() }
         .polling(every: 5, immediately: true) { await pollStatus() }
-    }
-
-    // MARK: 播放引擎（本机）
-
-    private var engineSection: some View {
-        Section {
-            Picker("播放引擎", selection: $engine) {
-                ForEach(SettingsPlaybackEngine.allCases) { option in
-                    Text(option.label).tag(option.rawValue)
-                }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("playback-engine")
-            Text((SettingsPlaybackEngine(rawValue: engine) ?? .auto).hint)
-                .font(.caption).foregroundStyle(Theme.textFaint)
-        } header: {
-            Text("播放引擎（本机）")
-        } footer: {
-            Text("只影响这台设备上的 App；自动 = 服务端判定可直出且系统播放器支持时用系统播放器，否则交给 MPV，MPV 失败回落服务端转码。")
-        }
     }
 
     // MARK: 进度条预览 / 转码缓存

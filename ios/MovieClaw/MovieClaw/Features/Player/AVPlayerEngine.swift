@@ -19,6 +19,9 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     private let layerView = PlayerLayerView()
     private var pipController: AVPictureInPictureController?
     private var observations: [NSKeyValueObservation] = []
+    /// 等画面就绪再进画中画（从 MPV 换过来时）
+    private var pipPossibleObservation: NSKeyValueObservation?
+    private var wantsPictureInPicture = false
     private var timeObserver: Any?
     private var notificationTokens: [NSObjectProtocol] = []
 
@@ -159,7 +162,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
 
     var canSwitchAudioInPlace: Bool { false }
     func selectAudio(embeddedIndex: Int) {}
-    var rendersSubtitles: Bool { false }
+    func rendersSubtitle(kind: String) -> Bool { false }
     func selectSubtitle(_ option: SubtitleOption?, url: URL?) {}
     func applySubtitleStyle(_ style: SubtitleStyle) {}
 
@@ -176,6 +179,27 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         }
     }
 
+    /// 画面就绪（`isPictureInPicturePossible`）后自动进画中画：MPV 播放中点画中画、换成系统播放器时用
+    func startPictureInPictureWhenPossible() {
+        guard let pipController, !pipController.isPictureInPictureActive else { return }
+        if pipController.isPictureInPicturePossible {
+            pipController.startPictureInPicture()
+            return
+        }
+        wantsPictureInPicture = true
+        pipPossibleObservation = pipController.observe(\.isPictureInPicturePossible, options: [.new]) { @Sendable [weak self] _, change in
+            let possible = change.newValue ?? false
+            Task { @MainActor in self?.pictureInPicturePossibleChanged(possible) }
+        }
+    }
+
+    private func pictureInPicturePossibleChanged(_ possible: Bool) {
+        guard possible, wantsPictureInPicture, let pipController, !pipController.isPictureInPictureActive else { return }
+        wantsPictureInPicture = false
+        pipPossibleObservation = nil
+        pipController.startPictureInPicture()
+    }
+
     /// 后台：不在画中画时把播放器从图层上摘下来，否则系统会连声音一起暂停
     func setBackgrounded(_ background: Bool) {
         guard !isPictureInPictureActive else { return }
@@ -186,6 +210,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
         observations.removeAll()
+        pipPossibleObservation = nil
         notificationTokens.forEach(NotificationCenter.default.removeObserver)
         notificationTokens.removeAll()
         pipController?.stopPictureInPicture()
