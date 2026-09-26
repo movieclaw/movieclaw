@@ -57,27 +57,13 @@ struct DiscoverView: View {
             filters = viewpoint.filters
             router.rootParameter = nil
         }
-        // 标题同媒体库：左上角大字页面名（iOS 标签根页规范）；电影 / 剧集切换固定在标题下方。
-        // 沉浸 Hero 仍顶到屏幕物理顶边（topInset 量的是含这一条在内的安全区）
-        .navigationTitle("发现")
-        .toolbarTitleDisplayMode(.inlineLarge)
+        // 左上角大字标题即当前看的类型（电影 / 剧集），后面小字是数据源；点标题弹出菜单切换两者
+        // （iOS「切换当前页显示内容」的标题菜单交互，同「照片」「文件」）。系统的 toolbarTitleMenu
+        // 不支持 inlineLarge 大标题（不显示箭头、点了不弹），所以用无玻璃底的前置菜单按钮画成大标题的样子。
+        // 顶部不再另占一行，沉浸 Hero 完整露出；右上角只留筛选（TMDB 才有）与外壳的搜索
+        .navigationTitle(currentType == "tv" ? "剧集" : "电影")
+        .toolbarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
-        .safeAreaBar(edge: .top, alignment: .leading) {
-            Picker("内容类型", selection: Binding(get: { currentType }, set: { next in
-                // 切类型保留数据源、清空筛选（同 Web `switchMediaType`）
-                guard next != currentType else { return }
-                mediaType = next
-                filters = .empty
-            })) {
-                Text("电影").tag("movie")
-                Text("剧集").tag("tv")
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 124)
-            .accessibilityIdentifier("discover-type")
-            .padding(.horizontal, Theme.pagePadding)
-            .padding(.bottom, 6)
-        }
         .task(id: feedKey) {
             await feed.loadIfNeeded(api: api)
         }
@@ -144,10 +130,58 @@ struct DiscoverView: View {
         }
     }
 
+    /// 标题菜单：类型与数据源两组（切类型保留数据源、切数据源保留类型，都清空筛选，同 Web）
+    @ViewBuilder
+    private var titleMenu: some View {
+        Picker("类型", selection: Binding(get: { currentType }, set: { next in
+            guard next != currentType else { return }
+            mediaType = next
+            filters = .empty
+        })) {
+            Label("电影", systemImage: "film").tag("movie")
+            Label("剧集", systemImage: "tv").tag("tv")
+        }
+        .pickerStyle(.inline)
+        .accessibilityIdentifier("discover-type")
+        Picker("数据源", selection: Binding(get: { source }, set: { next in
+            guard next != source else { return }
+            source = next
+            filters = .empty
+        })) {
+            Text("TMDB").tag("tmdb")
+            Text("豆瓣").tag("douban")
+        }
+        .pickerStyle(.inline)
+        .accessibilityIdentifier("discover-source")
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        // 顺序：组合发现筛选在前、TMDB/豆瓣数据源切换在这一组的最右（用户要求，常规设计把全局切换放最外侧）；
-        // 整条顶栏的最右是外壳注入的搜索圆钮（MainTabView 的 AppTopBar），与这一组分开
+        ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1) } // 藏起系统的居中小标题
+        ToolbarItem(placement: .topBarLeading) {
+            Menu { titleMenu } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(currentType == "tv" ? "剧集" : "电影")
+                        .font(.system(size: 34, weight: .bold))
+                        .foregroundStyle(Theme.text)
+                    Text(source == "tmdb" ? "TMDB" : "豆瓣")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Theme.textMuted)
+                    Image(systemName: "chevron.down")
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(Theme.textMuted)
+                }
+                .fixedSize()
+                .contentShape(.rect)
+                // 工具栏按钮自带内边距，比系统大标题多缩进约 9pt：挪回去与其它标签页的大标题左边对齐
+                .offset(x: -9)
+            }
+            .accessibilityLabel("正在看\(currentType == "tv" ? "剧集" : "电影")，数据源\(source == "tmdb" ? "TMDB" : "豆瓣")")
+            .accessibilityHint("切换类型或数据源")
+            .accessibilityIdentifier("discover-title-menu")
+        }
+        .sharedBackgroundVisibility(.hidden)
+        // 右上角只剩组合发现筛选（豆瓣视角没有）；整条顶栏的最右是外壳注入的搜索圆钮（MainTabView 的 AppTopBar）
         ToolbarItemGroup(placement: .topBarTrailing) {
             if source == "tmdb" {
                 Button {
@@ -168,22 +202,6 @@ struct DiscoverView: View {
                 .accessibilityLabel(filters.activeCount > 0 ? "筛选，已启用 \(filters.activeCount) 项" : "筛选影片")
                 .accessibilityIdentifier("discover-filter")
             }
-            Menu {
-                Picker("数据源", selection: Binding(get: { source }, set: { next in
-                    // 切数据源保留类型、清空筛选（同 Web `switchSource`）
-                    guard next != source else { return }
-                    source = next
-                    filters = .empty
-                })) {
-                    Text("TMDB").tag("tmdb")
-                    Text("豆瓣").tag("douban")
-                }
-            } label: {
-                Text(source == "tmdb" ? "TMDB" : "豆瓣")
-                    .font(.subheadline.weight(.semibold))
-            }
-            .accessibilityLabel("数据源：\(source == "tmdb" ? "TMDB" : "豆瓣")")
-            .accessibilityIdentifier("discover-source")
         }
     }
 }

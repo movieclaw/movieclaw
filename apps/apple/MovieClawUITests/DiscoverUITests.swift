@@ -49,14 +49,13 @@ final class DiscoverUITests: XCTestCase {
         XCTAssertTrue(firstCard.waitForExistence(timeout: 30), "应渲染海报行")
         snapshot("发现-电影-TMDB")
 
-        // 电影 → 剧集
-        app.segmentedControls["discover-type"].buttons["剧集"].tap()
+        // 电影 → 剧集：点左上角标题弹出菜单切换
+        pickFromTitleMenu(app, "剧集")
         XCTAssertTrue(app.staticTexts["今日精选 · 剧集"].waitForExistence(timeout: 30) || app.buttons["poster-card"].waitForExistence(timeout: 30))
         snapshot("发现-剧集-TMDB")
 
         // TMDB → 豆瓣：筛选键仅 TMDB 显示
-        app.buttons["discover-source"].tap()
-        app.buttons["豆瓣"].tap()
+        pickFromTitleMenu(app, "豆瓣")
         XCTAssertTrue(app.buttons["poster-card"].waitForExistence(timeout: 30), "豆瓣视角应有海报行")
         XCTAssertFalse(app.buttons["discover-filter"].exists, "豆瓣视角不支持筛选")
         snapshot("发现-剧集-豆瓣")
@@ -73,6 +72,17 @@ final class DiscoverUITests: XCTestCase {
         snapshot("详情-豆瓣")
     }
 
+    /// 左上角标题菜单（类型 / 数据源）：点标题弹出，再点选项
+    @MainActor
+    private func pickFromTitleMenu(_ app: XCUIApplication, _ option: String) {
+        let title = app.buttons["discover-title-menu"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10) && title.isHittable, "标题菜单不可点")
+        title.tap()
+        let item = app.buttons[option].firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 5), "标题菜单里没有「\(option)」")
+        item.tap()
+    }
+
     /// 切电影/剧集要清空筛选（两套类型 ID），回到该类型的发现首页（同 Web switchMediaType）
     @MainActor
     func testSwitchTypeClearsFilters() throws {
@@ -85,9 +95,7 @@ final class DiscoverUITests: XCTestCase {
         genre.tap()
         app.buttons["filter-apply"].tap()
         XCTAssertTrue(app.staticTexts["筛选结果"].waitForExistence(timeout: 20))
-        let tv = app.segmentedControls["discover-type"].buttons["剧集"]
-        XCTAssertTrue(tv.isHittable)
-        tv.tap()
+        pickFromTitleMenu(app, "剧集")
         XCTAssertTrue(app.otherElements["discover-hero"].waitForExistence(timeout: 30), "切到剧集应回到发现首页")
         XCTAssertFalse(app.staticTexts["筛选结果"].exists, "筛选应已清空")
         XCTAssertTrue(app.buttons["筛选影片"].exists, "筛选键不应再带角标")
