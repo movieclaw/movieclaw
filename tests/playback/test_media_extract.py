@@ -309,7 +309,7 @@ def _outputs(argv) -> list[str]:
 
 
 class _DoneProcess:
-    pid = 1
+    pid = None  # 没有真实进程组；终止路径对 None 按幂等跳过
 
     def __init__(self, returncode: int = 0) -> None:
         self.returncode: int | None = None
@@ -393,6 +393,8 @@ async def test_a_timed_out_file_is_not_read_again(video: Path, monkeypatch) -> N
     monkeypatch.setattr(media_extract.shutil, "which", lambda _n: "/fake/ffmpeg")
     monkeypatch.setattr(media_extract.asyncio, "create_subprocess_exec", fake_exec)
     monkeypatch.setattr(media_extract, "_extract_timeout", lambda _v: 0.01)
+    # 超时后会给进程组发 SIGTERM/SIGKILL：假进程的 pid 不能真的拿去 killpg
+    monkeypatch.setattr(media_extract, "_signal_process_group", lambda _pid, _sig: None)
     monkeypatch.setattr(media_extract, "_PROCESS_TERM_TIMEOUT", 0.01)
     monkeypatch.setattr(media_extract, "_PROCESS_KILL_TIMEOUT", 0.01)
 
@@ -481,3 +483,13 @@ async def test_a_bad_track_does_not_sink_the_good_ones(video: Path, monkeypatch)
     assert media_extract.extraction_failed(file, 1) is True
     assert media_extract.extraction_failed(file, 0) is False
     assert not list((video.parent / "cache").glob("*.part*")), "失败留下了半成品"
+
+
+def test_signalling_never_reaches_pid_one(monkeypatch) -> None:
+    """glibc 的 killpg(1) 等于 kill(-1)：会杀光当前用户的所有进程。"""
+    sent = []
+    monkeypatch.setattr(media_extract.os, "killpg", lambda pid, sig: sent.append(pid))
+    for pid in (None, 0, 1):
+        media_extract._signal_process_group(pid, media_extract.signal.SIGTERM)
+    media_extract._signal_process_group(4321, media_extract.signal.SIGTERM)
+    assert sent == [4321]

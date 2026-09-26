@@ -482,8 +482,13 @@ def schedule_extraction(file: LibraryFile, index: int) -> bool:
 
 
 def _signal_process_group(pid: int | None, sig: signal.Signals) -> None:
-    """给独立进程组发信号；进程已退出时按幂等处理。"""
-    if pid is None:
+    """给独立进程组发信号；进程已退出时按幂等处理。
+
+    pid ≤ 1 一律拒绝：glibc 的 ``killpg(1, sig)`` 就是 ``kill(-1, sig)``，
+    会把当前用户能碰到的所有进程一起杀掉（CI 上曾因测试替身 pid=1 杀死整个
+    Runner）。真实子进程的 pid 不可能落在这里，拦住只防替身与异常值。
+    """
+    if pid is None or pid <= 1:
         return
     with contextlib.suppress(OSError):
         os.killpg(pid, sig)
