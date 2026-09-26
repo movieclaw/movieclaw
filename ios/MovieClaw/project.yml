@@ -16,10 +16,11 @@ packages:
     url: https://github.com/kean/Nuke
     from: "13.0.0"
   # libmpv 播放引擎（LGPL 构建）：MKV/HEVC/TrueHD/DTS 直出、ASS/PGS 由 libass 渲染。
-  # 只能用 `MPVKit` 产品，绝不能用 `MPVKit-GPL`（GPL 会传染整个 App 的许可）。
+  # 用仓库内的精简版 MPVKit（Vendor/MPVKit）：只含 LGPL 产品，libmpv 打了尺寸自检补丁
+  # （旋转屏幕时 mpv 下一帧即按新尺寸出图），其余二进制仍引用上游 1.0.0 发布包。
+  # 绝不能换成 `MPVKit-GPL`（GPL 会传染整个 App 的许可）。
   MPVKit:
-    url: https://github.com/mpvkit/MPVKit
-    from: "1.0.0"
+    path: Vendor/MPVKit
 configFiles:
   # 开发者团队从本机 Signing.local.xcconfig 读（不入库），见 XcodeConfig/Signing.xcconfig
   Debug: XcodeConfig/Signing.xcconfig

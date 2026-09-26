@@ -1,0 +1,59 @@
+--- a/video/out/vulkan/context_moltenvk.m
++++ b/video/out/vulkan/context_moltenvk.m
+@@ -22,6 +22,9 @@
+ #include "common.h"
+ #include "context.h"
+ #include "utils.h"
++#include "common/common.h"
++#include "osdep/timer.h"
++#include "video/out/vo.h"
+ 
+ struct priv {
+     struct mpvk_ctx vk;
+@@ -81,16 +84,46 @@
+     return true;
+ }
+ 
++// MovieClaw：宿主改了 CAMetalLayer 的 drawableSize（iOS 旋转、分屏、画中画尺寸变化）后立即跟上。
++// 原实现只在 reconfig（视频参数变化）时读取 drawableSize：屏幕旋转后 MoltenVK 虽已按新尺寸重建交换链，
++// mpv 仍按旧尺寸计算画面位置（vo->dwidth/dheight 过期），画面压扁、偏到一边，只能由宿主销毁重建 VO 纠正
++// （真机约 0.6~1.2 秒并黑屏）。这里在 VO 线程每轮检查事件（VOCTRL_CHECK_EVENTS）时核对尺寸，
++// 变了就 resize 交换链并上报 VO_EVENT_RESIZE，vo_gpu_next 随即重算画面位置并重绘，下一帧即是新尺寸。
++static bool moltenvk_check_resize(struct ra_ctx *ctx)
++{
++    struct priv *p = ctx->priv;
++    CGSize s = p->layer.drawableSize;
++    int w = (int)s.width, h = (int)s.height;
++    // MoltenVK 呈现时会临时把 drawableSize 设为 1x1（宿主层会忽略这种设置），不当成真实尺寸
++    if (w <= 1 || h <= 1 || (w == ctx->vo->dwidth && h == ctx->vo->dheight))
++        return false;
++    return ra_vk_ctx_resize(ctx, w, h);
++}
++
+ static int moltenvk_control(struct ra_ctx *ctx, int *events, int request, void *arg)
+ {
++    if (request == VOCTRL_CHECK_EVENTS) {
++        if (moltenvk_check_resize(ctx))
++            *events |= VO_EVENT_RESIZE;
++        return VO_TRUE;
++    }
+     return VO_NOTIMPL;
+ }
+ 
++// 空闲（暂停、没有新帧）时 VO 线程会一直睡到被唤醒；这里把单次等待封顶 50ms，
++// 暂停中旋转屏幕也能在 50ms 内检查到尺寸变化并重绘当前帧。有新帧时 VO 本就不睡，不增加开销。
++static void moltenvk_wait_events(struct ra_ctx *ctx, int64_t until_time_ns)
++{
++    int64_t cap = mp_time_ns() + MP_TIME_MS_TO_NS(50);
++    vo_wait_default(ctx->vo, MPMIN(until_time_ns, cap));
++}
++
+ const struct ra_ctx_fns ra_ctx_vulkan_moltenvk = {
+     .type           = "vulkan",
+     .name           = "moltenvk",
+     .reconfig       = moltenvk_reconfig,
+     .control        = moltenvk_control,
++    .wait_events    = moltenvk_wait_events,
+     .init           = moltenvk_init,
+     .uninit         = moltenvk_uninit,
+ };

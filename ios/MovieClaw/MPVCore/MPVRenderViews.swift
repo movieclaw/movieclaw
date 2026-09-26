@@ -47,10 +47,7 @@ final class MPVMetalView: UIView {
         metalLayer.drawableSize = size
         CATransaction.commit()
         guard size.width > 1, size.height > 1, size != lastDrawableSize else { return }
-        let resized = lastDrawableSize != .zero
         lastDrawableSize = size
-        // 尺寸真的变了（旋转）：mpv 还按旧尺寸出图，先把画面藏起来，校正完成后再淡入
-        if resized { setPictureHidden(true) }
         onDrawableSizeChange?(size)
     }
 }

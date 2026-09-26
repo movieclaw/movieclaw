@@ -145,14 +145,22 @@ public final class MPVPlayer {
         // ① 转横屏后仍按竖屏尺寸（1206x2622）排布画面——压扁、偏到一边；
         // ② 起播时 VO 先于界面排版初始化，拿到 0 尺寸、输出停在 1x1——整片黑屏。
         // 所以视图尺寸变化后、以及起播后各核对一次，对不上就重建输出（见 scheduleVideoRelayout）。
-        metalViewForResize?.onDrawableSizeChange = { [weak self] _ in
-            self?.scheduleVideoRelayout()
+        metalViewForResize?.onDrawableSizeChange = { [weak self] size in
+            // 补丁版 libmpv 会在下一帧自己跟上新尺寸；150ms 后仍对不上才走重建兜底
+            self?.scheduleVideoRelayout(after: .milliseconds(150))
+            #if DEBUG
+            self?.measureRelayout(to: size)
+            #endif
         }
     }
 
-    /// 核对 mpv 输出尺寸，对不上就重建视频输出（VO），让它按新尺寸排布画面。
+    /// 兜底：核对 mpv 输出尺寸，对不上就重建视频输出（VO），让它按新尺寸排布画面。
     ///
-    /// 为什么要重建：iOS 版 libmpv 没有 android-surface-size 之类的外部尺寸通知（设置返回 -12），
+    /// 正常情况下用不到：Vendor/MPVKit 里的 libmpv 打了 0004-moltenvk-detect-resize 补丁，
+    /// Metal 渲染面尺寸一变，mpv 的 VO 线程下一帧就自己 resize（真机旋转无黑屏、无错位）。
+    /// 只有换回上游未打补丁的 libmpv 时才会走到下面的重建流程。
+    ///
+    /// 为什么要重建：上游 iOS 版 libmpv 没有 android-surface-size 之类的外部尺寸通知（设置返回 -12），
     /// video-reload 在参数不变时跳过配置，改 video-aspect-override / video-rotate 也不重算输出尺寸
     /// （真机逐一实测过）。可行的只有重建 VO，两种做法真机测速（iPhone Air，4K 杜比视界）：
     /// - 切 vo 到 null 再切回：只重建输出、保留解码器，约 0.6 秒——默认用它；
@@ -207,6 +215,26 @@ public final class MPVPlayer {
             metalView.setPictureHidden(false)
         }
     }
+
+    #if DEBUG
+    /// 真机测速：尺寸变化后多久 mpv 的输出尺寸跟上（每 10ms 查一次，最多 1 秒）
+    private func measureRelayout(to size: CGSize) {
+        MPVDiag.log("渲染面尺寸变为 \(Int(size.width))x\(Int(size.height))，当前 mpv 输出 \(int("osd-width") ?? -1)x\(int("osd-height") ?? -1)")
+        guard string("path") != nil else { return }
+        let started = Date()
+        Task { [weak self] in
+            for _ in 0 ..< 100 {
+                try? await Task.sleep(for: .milliseconds(10))
+                guard let self else { return }
+                if self.int("osd-width") == Int(size.width), self.int("osd-height") == Int(size.height) {
+                    MPVDiag.log("mpv 自行跟上新尺寸 \(Int(size.width))x\(Int(size.height))：\(Int(Date().timeIntervalSince(started) * 1000)) 毫秒")
+                    return
+                }
+            }
+            MPVDiag.log("1 秒内 mpv 未自行跟上新尺寸（未打补丁？）")
+        }
+    }
+    #endif
 
     /// 轮询 mpv 输出尺寸直到等于目标（每 30 毫秒一次）
     private func waitForOutput(_ target: (width: Int, height: Int), timeout: Duration) async -> Bool {
@@ -617,7 +645,17 @@ nonisolated final class MPVHandle: @unchecked Sendable {
 /// 真机排查用：写 stderr，`xcrun devicectl device process launch --console` 能收到
 enum MPVDiag {
     static func log(_ message: String) {
-        FileHandle.standardError.write(Data("[MPVDiag] \(message)\n".utf8))
+        let line = Data("[MPVDiag] \(message)\n".utf8)
+        FileHandle.standardError.write(line)
+        #if targetEnvironment(simulator)
+        // 模拟器：同时追加到宿主机文件，方便命令行读取
+        let url = URL(fileURLWithPath: "/tmp/mc-mpvdiag.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile(); handle.write(line); try? handle.close()
+        } else {
+            try? line.write(to: url)
+        }
+        #endif
     }
 }
 #endif
