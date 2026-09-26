@@ -1,3 +1,4 @@
+import Nuke
 import SwiftUI
 
 /// 发现页（发现标签根页，对应 Web `components/discover-view.tsx`）：Hero 轮播 + 分类横滚行。
@@ -25,6 +26,12 @@ struct DiscoverView: View {
     @State private var store = DiscoverFeedStore()
     /// 顶部安全区（状态栏 + 顶栏）高度：沉浸 Hero 用等量负边距顶到屏幕物理顶边
     @State private var topInset: CGFloat = 0
+    /// Hero 当前那张（页面据此给氛围底取色）；切换电影 / 剧集、数据源时回到第一张
+    @State private var heroIndex = 0
+    /// 当前那张剧照的主色（氛围底，与订阅首页同一套取色）
+    @State private var tint: Color?
+    /// 滚动距离：只给 Hero（视差、淡出）与氛围底读，滚动时不重算整页
+    @State private var scroll = ImmersiveHeroScroll()
 
     private var currentType: String { mediaType ?? (kind == "tv" ? "tv" : "movie") }
     private var feedKey: String { "\(currentType):\(source)" }
@@ -79,7 +86,7 @@ struct DiscoverView: View {
                 } else {
                     if feed.declaresHero {
                         if let hero = feed.hero {
-                            if !hero.isEmpty { DiscoverHero(items: hero) }
+                            if !hero.isEmpty { DiscoverHeroHost(items: hero, scroll: scroll, index: $heroIndex) }
                         } else {
                             DiscoverHeroSkeleton()
                         }
@@ -102,8 +109,24 @@ struct DiscoverView: View {
         // 沉浸 Hero 从状态栏与顶栏底下穿过：关掉顶部滚动边缘雾化，由 Hero 自带的顶部压暗保证控件可读
         .scrollEdgeEffectHidden(immersive, for: .top)
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { topInset = $0 }
+        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { _, offset in
+            scroll.offset = offset
+        }
+        // 页面底色跟着当前那张剧照的主色走，剧照底部渐隐进去（与订阅首页同一套氛围底）
+        .background { DiscoverAmbientHost(tint: immersive ? tint : nil, scroll: scroll) }
+        .task(id: tintSource(feed)) {
+            guard let url = tintSource(feed) else { return }
+            if let color = await ImmersiveHeroAmbientColor.color(for: url), !Task.isCancelled { tint = color }
+        }
+        .onChange(of: feedKey) { heroIndex = 0 }
         .refreshable { await feed.reload(api: api) }
         .accessibilityIdentifier("discover-scroll")
+    }
+
+    /// 当前那张 Hero 的剧照地址（与 Hero 显示同一个地址，取色命中图片缓存）
+    private func tintSource(_ feed: DiscoverFeed) -> URL? {
+        guard let hero = feed.hero, !hero.isEmpty else { return nil }
+        return DiscoverHeroSlide.imageURL(hero[min(heroIndex, hero.count - 1)], api: api)
     }
 
     @ViewBuilder
@@ -326,20 +349,35 @@ final class DiscoverFeed {
 
 // MARK: - Hero
 
-/// Hero 大横幅：精选影片每 8 秒自动轮播，左右滑动手动切换（手动切换后重新计时），右下圆点指示。
-/// 整块点按进详情；订阅键与海报卡一致（已订阅切成状态键，打开订阅弹层的管理态）。
+/// 发现页的沉浸 Hero：编辑推荐轮播（今日精选剧照 + 片名 + 简介 + 订阅键，左对齐）。
+///
+/// 轮播与图片处理和订阅首页是同一套（DesignSystem/ImmersiveHero.swift）：剧照慢速推近、上滑视差
+/// 下沉与文字淡出、下半部压暗后渐隐进页面氛围色、指示器当前格按 8 秒填满、预载下一张。
+/// 与订阅首页的区分在内容与版式：这里是编辑推荐（文字左对齐、指示器靠右下），订阅首页是
+/// 时间驱动（片名 Logo 居中、大号时刻、指示器居中）；高度也略高（520 对 500）。
 struct DiscoverHero: View {
     /// Hero 高度（pt，从屏幕物理顶边算起）：固定 520，约占 iPhone 屏高六成（用户拍板，原先 440）
     static let height: CGFloat = 520
+    private static let interval: Double = 8
 
     let items: [DiscoverPosterItem]
-    @State private var index = 0
-    @Environment(\.scenePhase) private var scenePhase
+    /// 列表向上滚动的距离（下拉为负）：驱动视差与淡出
+    let scrollOffset: CGFloat
+    @Binding var index: Int
+
+    @Environment(\.api) private var api
+    /// 指示器当前胶囊的填充进度 0...1
+    @State private var fill: CGFloat = 0
+
+    /// 预载下一张剧照：原图约 400KB～1MB，等轮到它才下载会闪一下空底；只预载下一张，蜂窝网络下不白烧流量
+    private static let prefetcher = ImagePrefetcher()
+
+    private var fade: Double { Double(max(0, min(1, 1 - scrollOffset / 260))) }
 
     var body: some View {
         TabView(selection: $index) {
             ForEach(items.indices, id: \.self) { i in
-                DiscoverHeroSlide(item: items[i])
+                DiscoverHeroSlide(item: items[i], active: i == index, scrollOffset: scrollOffset, fade: fade)
                     .tag(i)
             }
         }
@@ -347,49 +385,57 @@ struct DiscoverHero: View {
         .frame(height: DiscoverHero.height)
         .overlay(alignment: .bottomTrailing) {
             if items.count > 1 {
-                HStack(spacing: 6) {
-                    ForEach(items.indices, id: \.self) { i in
-                        Capsule()
-                            .fill(Color.white.opacity(i == index ? 0.85 : 0.3))
-                            .frame(width: i == index ? 20 : 6, height: 6)
-                            .contentShape(.rect.inset(by: -6))
-                            .onTapGesture { withAnimation { index = i } }
-                            .accessibilityLabel("切换到《\(items[i].title)》")
-                    }
-                }
-                .padding(.trailing, 20)
-                .padding(.bottom, 16)
-                .animation(.easeInOut(duration: 0.3), value: index)
+                ImmersiveHeroIndicator(count: items.count, index: $index, fill: fill) { "切换到《\(items[$0].title)》" }
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 16)
+                    .opacity(fade)
             }
         }
-        .task(id: "\(index)-\(scenePhase == .active)") {
-            // index 作为任务标识：手动切换后重置轮播计时；退到后台不推进
-            guard items.count > 1, scenePhase == .active else { return }
-            try? await Task.sleep(for: .seconds(8))
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeInOut(duration: 0.7)) { index = (index + 1) % items.count }
+        .immersiveHeroRotation(index: $index, count: items.count, fill: $fill, interval: Self.interval)
+        .onChange(of: index, initial: true) { _, current in
+            guard items.count > 1 else { return }
+            let next = items[(current + 1) % items.count]
+            if let url = DiscoverHeroSlide.imageURL(next, api: api) {
+                Self.prefetcher.startPrefetching(with: [url])
+            }
         }
         .accessibilityIdentifier("discover-hero")
     }
 }
 
+/// 只有它读滚动距离：滚动时只重算 Hero，不牵动整个发现页
+private struct DiscoverHeroHost: View {
+    let items: [DiscoverPosterItem]
+    let scroll: ImmersiveHeroScroll
+    @Binding var index: Int
+
+    var body: some View {
+        DiscoverHero(items: items, scrollOffset: scroll.offset, index: $index)
+    }
+}
+
+private struct DiscoverAmbientHost: View {
+    let tint: Color?
+    let scroll: ImmersiveHeroScroll
+
+    var body: some View {
+        ImmersiveHeroAmbient(tint: tint, scrollOffset: scroll.offset)
+    }
+}
+
 private struct DiscoverHeroSlide: View {
     let item: DiscoverPosterItem
+    let active: Bool
+    let scrollOffset: CGFloat
+    let fade: Double
     @Environment(\.api) private var api
     @Environment(\.permissions) private var permissions
     @Environment(Router.self) private var router
 
-    private static let shade = Color(red: 7 / 255, green: 9 / 255, blue: 14 / 255)
-
     var body: some View {
         let sub = SubscriptionIndex.shared.subscription(for: item)
         ZStack(alignment: .bottomLeading) {
-            Color.clear
-                .overlay { RemoteImage(url: api.image(Self.fullResolution(item.backdropUrl) ?? item.posterUrl)) }
-                .clipped()
-                .mask(LinearGradient(stops: [.init(color: .black, location: 0.55), .init(color: .black.opacity(0.6), location: 0.78), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
-            LinearGradient(colors: [Self.shade.opacity(0.55), .clear], startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.25))
-            LinearGradient(colors: [.clear, Self.shade.opacity(0.62)], startPoint: UnitPoint(x: 0.5, y: 0.45), endPoint: .bottom)
+            ImmersiveHeroBackdrop(url: Self.imageURL(item, api: api), active: active, scrollOffset: scrollOffset)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("今日精选 · \(item.mediaType == "tv" ? "剧集" : "电影")")
@@ -428,6 +474,8 @@ private struct DiscoverHeroSlide: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 28)
             .padding(.trailing, 60)
+            .opacity(fade)
+            .offset(y: max(0, scrollOffset) * 0.15)
         }
         .contentShape(.rect)
         .onTapGesture {
@@ -442,6 +490,11 @@ private struct DiscoverHeroSlide: View {
     /// 放大裁切铺满竖向大区域（3 倍屏上约需 2400～3000 像素宽），1280 的图被拉伸发糊；原图到 720pt 高都不用放大
     static func fullResolution(_ raw: String?) -> String? {
         raw?.replacingOccurrences(of: "image.tmdb.org/t/p/w1280/", with: "image.tmdb.org/t/p/original/")
+    }
+
+    /// Hero 显示与取色、预载共用的剧照地址（剧照原图；没有剧照退回海报）
+    static func imageURL(_ item: DiscoverPosterItem, api: APIClient) -> URL? {
+        api.image(fullResolution(item.backdropUrl) ?? item.posterUrl)
     }
 
     private var meta: some View {

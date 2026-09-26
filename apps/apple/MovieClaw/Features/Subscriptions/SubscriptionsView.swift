@@ -9,7 +9,7 @@ import SwiftUI
 ///   → 日程（今天起一周的日期条 + 当天议程）
 ///   → 剧集订阅 / 电影订阅（横滑海报，在追的在前，「›」压栈到完整海报墙）
 ///
-/// 页面底色跟着当前那张 Hero 剧照的主色走（`SubsHomeAmbient`），剧照底部渐隐进去，整页像被
+/// 页面底色跟着当前那张 Hero 剧照的主色走（`ImmersiveHeroAmbient`），剧照底部渐隐进去，整页像被
 /// 这部作品的光照着。链路体检收成右上角的琥珀色警示钮（管理员），不再占首屏一整条横幅。
 ///
 /// 数据：订阅清单直接消费全站订阅索引 `SubscriptionIndex.shared`（订阅弹层里订阅 / 取消后
@@ -33,7 +33,7 @@ struct SubscriptionsView: View {
     /// 滚过 Hero 之后才恢复顶部滚动边缘效果（Hero 在顶栏下面时由它自带的压暗保证可读）
     @State private var pastHero = false
     /// 连续滚动距离单独放在可观察对象里：只有 Hero 与氛围底读它，页面主体不随每一帧滚动重算
-    @State private var scroll = SubsHomeScrollState()
+    @State private var scroll = ImmersiveHeroScroll()
 
     #if DEBUG
     private static var debugSubscribeConsumed = false
@@ -195,7 +195,7 @@ struct SubscriptionsView: View {
 
     private func updateTint(_ slides: [SubsHomeHeroSlide]) async {
         guard let url = tintSource(slides) else { return }
-        if let color = await SubsHomeAmbientColor.color(for: url), !Task.isCancelled {
+        if let color = await ImmersiveHeroAmbientColor.color(for: url), !Task.isCancelled {
             tint = color
         }
     }
@@ -231,18 +231,9 @@ struct SubscriptionsView: View {
     }
 }
 
-// MARK: - 滚动状态
-
-/// 订阅首页的连续滚动距离（向上为正）。放在可观察对象里而不是页面的 @State：
-/// 页面主体不读它，只有 Hero（视差、淡出）与氛围底（随滚动退淡）读，滚动时只重算这两块。
-@Observable
-final class SubsHomeScrollState {
-    var offset: CGFloat = 0
-}
-
 private struct SubsHomeHeroHost: View {
     let slides: [SubsHomeHeroSlide]
-    let scroll: SubsHomeScrollState
+    let scroll: ImmersiveHeroScroll
     @Binding var index: Int
 
     var body: some View {
@@ -252,9 +243,9 @@ private struct SubsHomeHeroHost: View {
 
 private struct SubsHomeAmbientHost: View {
     let tint: Color?
-    let scroll: SubsHomeScrollState
+    let scroll: ImmersiveHeroScroll
 
     var body: some View {
-        SubsHomeAmbient(tint: tint, scrollOffset: scroll.offset)
+        ImmersiveHeroAmbient(tint: tint, scrollOffset: scroll.offset)
     }
 }
