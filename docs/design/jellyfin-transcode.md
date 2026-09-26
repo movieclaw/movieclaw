@@ -171,7 +171,17 @@ master 也不查任何服务端状态，播放器重放同一 URL 得到同样�
    分片以 `video/mp2t` 交付；`mp4` → 与网页播放器同一套 fMP4。转码缓存的成分里本来
    就含 `container`，两种分片各占各的缓存目录。`AudioCodec` / `MaxAudioChannels` 进
    `plan_capped_transcode`：源轨编码与声道都在申报内才 copy，否则转 AAC 并把声道压到
-   申报上限（Infuse 的 DTS 5.1 → AAC 立体声降混）。远程 Worker 的产物白名单同步放行 `.ts`。
+   申报上限（Infuse 的 DTS 5.1 → AAC 立体声降混）。
+
+   **远程 Worker 要两头放行 `.ts`**（issue #444）：首版只改了 NAS 产物端点的白名单，
+   Mac Worker 上传代理的白名单仍只认 `.m4s`，TS 分片全在 Worker 本机被 404 拒收；
+   ffmpeg 的 HTTP 输出不看上传响应码（实测退出码 0、stderr 为空），NAS 等满 30 秒
+   超时，Infuse 报错，网页播放器（fMP4）却一切正常。现在：Worker 在握手能力里声明
+   `segment_types`（新版为 `fmp4,mpegts`，没声明的旧版只当它会 fMP4），TS 任务只派给
+   声明了 `mpegts` 的 Worker；硬件只剩旧版 Worker 时，PlaybackInfo 与 master 都按
+   「无硬件」协商（软转开着退软转，没开按直连应答），日志点名更新 Worker。
+   `tests/playback/test_remote_worker.py` 从 Swift 源码读出 Worker 白名单，逐个核对 NAS
+   会让 ffmpeg 上传的产物名，两边再漂移会直接挂 CI。
 
    **为什么不能直接指到 `/api/v1/playback/sessions/…`**（首版就是这么写的，
    2026-09-23 真机翻车）：Infuse 解析 Jellyfin 转码列表不按 RFC 3986，而是把

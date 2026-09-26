@@ -453,6 +453,74 @@ def test_infuse_profile_gets_mpegts_segments_and_aac_stereo(
     assert segment.content == b"TS-SEGMENT-DATA"
 
 
+def _only_remote_worker(monkeypatch, *, ts_capable: bool) -> None:
+    """NAS 本机没有硬件、只连着一台 Mac Worker；旧版（ts_capable=False）只会回传 fMP4。"""
+    from movieclaw_jellyfin.routes import playback as jf_playback
+
+    monkeypatch.setattr(playback_plan, "hardware_available", lambda: True)
+    monkeypatch.setattr(jf_playback, "available_local_backends", lambda: ())
+    monkeypatch.setattr(
+        jf_playback,
+        "remote_worker_available",
+        lambda _backend="videotoolbox", segment_type="fmp4": (
+            ts_capable or segment_type == "fmp4"
+        ),
+    )
+
+
+def test_infuse_ts_never_goes_to_outdated_remote_worker(
+    client: TestClient, seeded: dict, media_root: Path, transcode_env: list, monkeypatch, caplog
+) -> None:
+    """issue #444：旧版 Mac Worker 的上传代理只放行 fMP4，TS 分片在它本机被悄悄拒收，
+    ffmpeg 照样退出码 0，播放器等满 30 秒拿 404。硬件只剩这种 Worker 时，Infuse 的
+    TS 转码按「无硬件」协商：软转没开就直连应答、日志点名更新 Worker；软转开着就退软转。"""
+    _only_remote_worker(monkeypatch, ts_capable=False)
+    movie = _seed_sdr_movie(client, seeded, media_root)
+    guid = item_guid(movie["item"])
+    auth = _auth(client)
+    body = {
+        "DeviceProfile": {
+            "MaxStreamingBitrate": 3_000_000,
+            "TranscodingProfiles": INFUSE_TRANSCODING_PROFILES,
+        }
+    }
+
+    with caplog.at_level("WARNING"):
+        info = client.post(f"/Items/{guid}/PlaybackInfo", params=auth, json=body).json()
+    ms = info["MediaSources"][0]
+    assert ms["SupportsDirectPlay"] is True and "TranscodingUrl" not in ms
+    assert any("MovieClaw Transcoder" in r.message for r in caplog.records)
+
+    _enable_software_transcode(client)
+    ms = client.post(f"/Items/{guid}/PlaybackInfo", params=auth, json=body).json()
+    master = client.get(
+        ms["MediaSources"][0]["TranscodingUrl"], headers={"Authorization": AUTH_HEADER}
+    )
+    assert master.status_code == 200, master.text
+    plan = transcode_env[-1]["plan"]
+    assert plan.container == "hls-ts" and plan.tier is PlaybackTier.SOFTWARE_TRANSCODE
+
+
+@pytest.mark.parametrize(
+    ("segment_container", "ts_capable", "hardware"),
+    [
+        ("mp4", False, True),  # fMP4（网页播放器 / 未申报 TS 的客户端）：旧版照样用
+        ("ts", True, True),  # 新版 Worker 声明了 mpegts
+        ("ts", False, False),  # 只剩旧版 Worker：TS 按无硬件
+    ],
+)
+def test_transcode_policy_hardware_follows_worker_segment_types(
+    client: TestClient, monkeypatch, segment_container: str, ts_capable: bool, hardware: bool
+) -> None:
+    from movieclaw_jellyfin.routes import playback as jf_playback
+
+    _only_remote_worker(monkeypatch, ts_capable=ts_capable)
+    policy = client.portal.call(  # type: ignore[attr-defined]
+        jf_playback._load_policy_for, segment_container
+    )
+    assert policy.hardware_available is hardware
+
+
 def test_forced_transcode_without_bitrate_and_audio_selection(
     client: TestClient, seeded: dict, media_root: Path, transcode_env: list
 ) -> None:

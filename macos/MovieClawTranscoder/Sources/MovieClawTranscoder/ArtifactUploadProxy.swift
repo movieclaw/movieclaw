@@ -147,16 +147,49 @@ final class ArtifactUploadProxy: @unchecked Sendable {
         var errorDescription: String? { description }
     }
 
+    /// 产物丢失事件。ffmpeg 不看上传的响应码，产物没传上去它也照常往下转，
+    /// 这两种情况只能由代理主动往上报，交给任务层处理。
+    enum ArtifactEvent: Sendable {
+        /// 重试用尽仍没传上去：NAS 等不到这一片，需要从这里补片重启。
+        case abandoned(name: String, status: Int, reason: String)
+        /// 文件名不在白名单：这个任务注定交不出这种产物，应当立即失败。
+        case rejected(name: String)
+    }
+
     private static let maxHeaderBytes = 64 * 1024
     /// 与服务端的默认值和校验上限保持一致；正常 HLS 分片远小于此值。
     static let maxArtifactBytes = 512 * 1024 * 1024
-    private static let maxUploadAttempts = 3
-    private static let uploadDrainTimeoutNanoseconds: UInt64 = 10_000_000_000
+    /// 退避 0.5 / 1 / 2 / 4 秒，合计约 7.5 秒：一次 Wi-Fi 重连（常见 2~5 秒）
+    /// 能熬过去。原先 3 次、间隔 0.25 / 0.5 秒，不到 1 秒就放弃，一次网络抖动
+    /// 就丢片——而 ffmpeg 不会回头补写，播放器会卡死在那一片。重试不阻塞
+    /// ffmpeg：它交完请求体就走，不等响应。
+    private static let maxUploadAttempts = 5
+    /// 收尾时等最后几个上传完成的上限，要盖住一轮完整的重试退避。
+    private static let uploadDrainTimeoutNanoseconds: UInt64 = 20_000_000_000
     private static let retryableStatusCodes: Set<Int> = [408, 425, 429, 499, 500, 502, 503, 504]
     private static let headerTerminator = Data([13, 10, 13, 10])
+    /// ffmpeg 会 PUT 过来的产物文件名白名单，必须与 NAS 端
+    /// `routes/transcode_worker.py` 的 `_ARTIFACT_NAME` 放行同一批名字。
+    ///
+    /// issue #444 的教训：NAS 为 Infuse 改出 MPEG-TS 分片（`segNNNNN.ts`）时，这里
+    /// 仍只认 `.m4s`，TS 分片在本机就被 404 拒收。ffmpeg 的 HTTP 输出根本不看上传
+    /// 的响应码（实测退出码 0、stderr 一行没有），照常把整部片转完；NAS 等满 30 秒
+    /// 超时，播放器报错——两边日志都看不出原因。现在 NAS 侧的测试会从本文件读出
+    /// 这条正则，逐个核对 NAS 能产出的每一种产物名，改一边忘了另一边会直接挂 CI。
     private static let artifactNamePattern = try! NSRegularExpression(
-        pattern: #"^(?:init\.mp4|(?:live|index)\.m3u8|seg[0-9]{5}\.m4s)$"#
+        pattern: #"^(?:init\.mp4|(?:live|index)\.m3u8|seg[0-9]{5}\.(?:m4s|ts))$"#
     )
+
+    /// 本 Worker 能回传的 HLS 分片类型（ffmpeg `-hls_segment_type` 的取值），在
+    /// 握手能力里声明。NAS 只把 TS 分片任务派给声明了 `mpegts` 的 Worker——没有
+    /// 声明的旧版 Worker 会像上面说的那样把 TS 分片悄悄丢掉。
+    static let supportedSegmentTypes = ["fmp4", "mpegts"]
+
+    /// 产物文件名是否在白名单内。
+    static func isAllowedArtifactName(_ filename: String) -> Bool {
+        let range = NSRange(filename.startIndex..<filename.endIndex, in: filename)
+        return artifactNamePattern.firstMatch(in: filename, options: [], range: range) != nil
+    }
 
     /// VOD 会话里 ffmpeg 每写完一个分片都会重写一次它，但服务端对远程会话
     /// **不解析**这份列表（分片是否就绪以产物文件本身为准，见 NAS 侧
@@ -185,6 +218,9 @@ final class ArtifactUploadProxy: @unchecked Sendable {
     private var started = false
     private var stopped = false
     private var failureMessage: String?
+    /// 白名单拒收只处理第一次：任务随即被叫停，后续同类拒收不必再报。
+    private var rejectionReported = false
+    private let onEvent: (@Sendable (ArtifactEvent) -> Void)?
     private var connections: [ObjectIdentifier: UploadConnection] = [:]
     /// 最后一次收到的 live.m3u8（内容与 query），收尾时补传。
     private var deferredPlaylist: (data: Data, query: String?)?
@@ -193,9 +229,14 @@ final class ArtifactUploadProxy: @unchecked Sendable {
     /// 起播和 seek 这些最怕延迟的时刻。共用后连接可以 keep-alive 复用。
     private let uploadSession: URLSession
 
-    init(jobID: String, remoteBaseURL: URL) throws {
+    init(
+        jobID: String,
+        remoteBaseURL: URL,
+        onEvent: (@Sendable (ArtifactEvent) -> Void)? = nil
+    ) throws {
         self.jobID = jobID
         self.remoteBaseURL = remoteBaseURL
+        self.onEvent = onEvent
         self.queue = DispatchQueue(label: "com.movieclaw.transcoder.artifacts.\(jobID)")
 
         // 会放在会抛错的那步之后：URLSession 在 invalidate 前会自持引用，
@@ -379,6 +420,25 @@ final class ArtifactUploadProxy: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// 白名单外的产物（issue #444 那一类）：ffmpeg 不看响应码，拒收后它照样把整部片
+    /// 转完，任务却注定交不出这种产物。记失败、写日志并通知任务立即失败，让终态
+    /// 带着原因回到 NAS——此前这里只回 404，两边日志一个字都没有。
+    fileprivate func rejectArtifact(_ filename: String) {
+        let message =
+            "产物文件名不在 Worker 白名单内，已拒收：name=\(filename)" +
+            "（NAS 可能比本 Worker 新，请把 MovieClaw Transcoder 更新到与服务端相同的版本）"
+        lock.lock()
+        let first = !rejectionReported
+        rejectionReported = true
+        if failureMessage == nil {
+            failureMessage = message
+        }
+        lock.unlock()
+        guard first else { return }
+        AppLogger.shared.error("\(message) job=\(jobID)")
+        onEvent?(.rejected(name: filename))
+    }
+
     private func hasPendingUploads() -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -544,8 +604,14 @@ final class ArtifactUploadProxy: @unchecked Sendable {
         let failure =
             "产物上传失败：name=\(filename) bytes=\(data.count) " +
             "attempts=\(Self.maxUploadAttempts) status=\(lastStatus) reason=\(lastMessage)"
-        rememberFailure(failure)
         AppLogger.shared.error("\(failure) job=\(jobID)")
+        // live.m3u8 只是收尾补传的诊断产物（见 flushDeferredPlaylist 的约定）：它传
+        // 不上去既不算任务失败，也不必让 NAS 补片。此前这里一律记失败，一次收尾时的
+        // 网络抖动就能把转完整片的任务报成 job.failed。
+        if !Self.isDeferredArtifact(filename) {
+            rememberFailure(failure)
+            onEvent?(.abandoned(name: filename, status: lastStatus, reason: lastMessage))
+        }
         return UploadResult(statusCode: lastStatus, message: lastMessage, attempts: Self.maxUploadAttempts)
     }
 
@@ -598,7 +664,8 @@ final class ArtifactUploadProxy: @unchecked Sendable {
     }
 
     private func retryDelay(after attempt: Int, filename: String, reason: String) async {
-        let delay = UInt64(attempt) * 250_000_000
+        // 指数退避：第 1~4 次失败后分别等 0.5 / 1 / 2 / 4 秒（理由见 maxUploadAttempts）
+        let delay = UInt64(250_000_000) << UInt64(min(attempt, 5))
         AppLogger.shared.warning(
             "产物上传将重试：job=\(jobID) name=\(filename) next_attempt=\(attempt + 1)/\(Self.maxUploadAttempts) delay_ms=\(delay / 1_000_000) reason=\(reason)"
         )
@@ -756,8 +823,8 @@ final class ArtifactUploadProxy: @unchecked Sendable {
                 return false
             }
             let filename = String(rawFilename)
-            let range = NSRange(filename.startIndex..<filename.endIndex, in: filename)
-            guard ArtifactUploadProxy.artifactNamePattern.firstMatch(in: filename, options: [], range: range) != nil else {
+            guard ArtifactUploadProxy.isAllowedArtifactName(filename) else {
+                proxy?.rejectArtifact(filename)
                 respond(status: 404, reason: "Not Found")
                 return false
             }

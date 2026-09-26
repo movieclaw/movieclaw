@@ -1883,6 +1883,11 @@ h264+10bit 规则。
 - seek 由分片请求驱动：客户端按列表请求任意分片，`ensure_segment` 决定
   「等转过来」或「杀掉 ffmpeg `-ss 边界 -start_number N` 直奔」（超前阈值
   6 段=24s，与 Jellyfin 一致）。前端「seek 出区间换会话」逻辑退役。
+- 写者（本地 ffmpeg / 远程 job）从某段起转却没产出它就退出——源比台账时长短
+  （`compute_uniform_plan` 按 `ceil(时长/4)` 切，台账时长越过一个 4 秒边界就多出
+  一个片尾孤儿分片）、边下边播的半截文件——同一段只再重试一次，之后本会话内
+  直接 404（`unreachable_segments`）。此前每 50 毫秒轮询就重拉一个进程，实测
+  3 秒 29 次、30 秒等待约 300 次。
 - 时间戳绝对化：`-copyts -avoid_negative_ts disabled -start_at_zero` 三件套，
   分片内部时间 = 文件时间。EXTINF 是索引近似（重启后边界偏差 < 1 GOP、
   不累积），播放器按分片真实时间戳自我校正——Jellyfin 同款软一致性取舍。

@@ -1040,6 +1040,13 @@ async def start_playback_session(
         # 决策阶段看到的硬件能力可能在准备阶段断线，或本地后端与当前滤镜链
         # 不兼容。不能把硬件档的计划悄悄交给 libx264；把硬件档标记为失败后
         # 重新走统一降档逻辑：软件开关关闭时返回 consent，开启时才允许软转。
+        logger.info(
+            "硬件转码在准备阶段落空（远程 Worker 刚断开或本地后端与滤镜链不兼容），"
+            "改走统一降档：file_id=%s 本地后端=%s 远程可用=%s",
+            file.id,
+            ",".join(local_backends) or "无",
+            remote_video_available,
+        )
         retry_failed_tiers = sorted({*payload.failed_tiers, int(Tier.HARDWARE_TRANSCODE)})
         fallback_payload = payload.model_copy(update={"failed_tiers": retry_failed_tiers})
         decision = await _decide(fallback_payload, principal, session)
@@ -1139,8 +1146,18 @@ async def start_playback_session(
             source_concat=disc.concat_list() if disc is not None else None,
         )
     except (SessionLimitError, DiskQuotaError) as exc:
+        # 这两类的文案本来就是写给用户的，前端原样展示；NAS 日志也要留一份，
+        # 用户反馈「点了播放没反应」时才对得上
+        logger.warning("播放会话被拒：file_id=%s 档 %s：%s", file.id, view.tier, exc)
         raise ServiceUnavailableException(str(exc)) from exc
     except SessionStartError as exc:
+        logger.warning(
+            "播放会话启动失败：file_id=%s 档 %s 执行=%s：%s",
+            file.id,
+            view.tier,
+            "远程 Worker" if use_remote else (hw_used or "本地软件/直通"),
+            exc,
+        )
         raise ServiceUnavailableException(f"播放启动失败：{exc}") from exc
     spawn_ms = int((time.perf_counter() - spawn_started_at) * 1000)
 
