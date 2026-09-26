@@ -611,4 +611,14 @@ Questions, ideas, bug reports — please
 
 ## License
 
-[MIT](LICENSE)
+Versions released after v0.27.0 are licensed under the [MovieClaw License](LICENSE):
+the Apache License 2.0 with additional conditions.
+
+- **Free for non-commercial use**: personal and household self-hosting, sharing
+  with family and friends, study and research.
+- **Commercial use requires written authorization**, including offering it as
+  SaaS or a hosted service, selling it or bundling it with hardware such as NAS
+  devices, paid deployment services, and use by companies.
+
+v0.27.0 and earlier releases remain under the MIT License. For commercial
+licensing, please contact us via [issues](https://github.com/movieclaw/movieclaw/issues).
