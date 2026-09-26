@@ -7,7 +7,7 @@ import SwiftUI
 ///   各模块只实现自己的 View，不改这里的枚举——并行开发时互不冲突；
 /// - `init?(webPath:)` 能把后端/网页里的站内链接（通知跳转、AI 卡片、订阅详情里的链接）
 ///   解析成原生路由，避免到处手拼；
-/// - 标签页根页面（发现、媒体库首页、订阅列表、活动、搜索）不作为路由压栈，由 MainTabView 直接承载；
+/// - 标签页根页面（发现、媒体库首页、订阅列表、活动、更多）不作为路由压栈，由 MainTabView 直接承载；
 ///   但它们也有对应 case，便于从别处「切到某个标签并定位」。
 enum AppRoute: Hashable {
     // MARK: 发现
@@ -38,6 +38,9 @@ enum AppRoute: Hashable {
     case libraryManage(create: Bool = false, tab: String? = nil, item: Int? = nil)
 
     // MARK: 搜索
+    /// 搜索首页（输入框 + 模式 + 最近搜索，对应 Web 的搜索命令面板，没有网页地址）：
+    /// 各标签根页右上角的放大镜压栈打开，结果页接着压在同一个栈里
+    case searchHome
     /// /search?q=&tab=&scope=&snapshot=&for_sub=
     case search(SearchQuery)
 
@@ -276,15 +279,15 @@ extension AppRoute {
     }
 
     /// 该路由归属的标签页（切标签定位用）
-    /// nil = 不属于任何标签（设置、AI 会话、分享等），在当前标签打开
+    /// nil = 不属于任何标签（搜索、设置、AI 会话、分享等），在当前标签打开
     var tab: MainTab? {
         switch self {
         case .discover, .discoverCollection, .mediaDetail, .person, .discoveredPerson: .discover
         case .libraryHome, .libraryCustomize, .favorites, .allCollections, .collection, .library, .libraryItem, .libraryManage: .library
         case .subscriptions, .subscription: .subscriptions
         case .activity: .activity
-        case .search: .search
-        case .newSession, .session, .my, .settings, .settingsSection, .share: nil
+        case .my: .more
+        case .searchHome, .search, .newSession, .session, .settings, .settingsSection, .share: nil
         }
     }
 }

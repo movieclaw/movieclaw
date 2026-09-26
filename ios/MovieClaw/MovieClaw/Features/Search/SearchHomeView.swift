@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// 搜索标签根页（对应 Web `components/search-command.tsx` 的命令面板）。
+/// 搜索首页（对应 Web `components/search-command.tsx` 的命令面板）：各标签根页右上角的放大镜
+/// 在当前标签里压栈打开（`AppRoute.searchHome`），结果页接着压在同一个栈里。
 ///
 /// - 输入框：系统搜索栏（`.searchable`，常驻标题下方），回车提交；
 /// - 模式分段「影视 | 资源 | 媒体库」（按权限裁剪）；资源模式下多一行分类 / 预设 chips，

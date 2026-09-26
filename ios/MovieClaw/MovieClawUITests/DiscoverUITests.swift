@@ -179,9 +179,9 @@ final class DiscoverUITests: XCTestCase {
     @MainActor
     func testSearchHomeAndMediaLibraryVerticals() throws {
         let app = try launch()
-        let searchTab = app.tabBars.buttons["搜索"]
-        XCTAssertTrue(searchTab.waitForExistence(timeout: 20))
-        searchTab.tap()
+        let searchButton = app.navigationBars.buttons["open-search"]
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 20), "标签根页右上角应有搜索")
+        searchButton.tap()
         XCTAssertTrue(app.otherElements["search-home"].waitForExistence(timeout: 10) || app.scrollViews["search-home"].waitForExistence(timeout: 10))
         let mode = app.segmentedControls["search-mode"]
         XCTAssertTrue(mode.waitForExistence(timeout: 10))
@@ -204,7 +204,9 @@ final class DiscoverUITests: XCTestCase {
     @MainActor
     func testTorrentSnapshotSortViewFilterAndDownloadDialog() throws {
         let app = try launch()
-        app.tabBars.buttons["搜索"].tap()
+        let searchButton = app.navigationBars.buttons["open-search"]
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 20), "标签根页右上角应有搜索")
+        searchButton.tap()
         let row = app.buttons.matching(NSPredicate(format: "identifier == 'history-row' AND label CONTAINS %@", torrentKeyword)).firstMatch
         guard row.waitForExistence(timeout: 15) else {
             throw XCTSkip("最近搜索里没有「\(torrentKeyword)」的站点资源快照，跳过（避免发起真实 PT 搜索）")

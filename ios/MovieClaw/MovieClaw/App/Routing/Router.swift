@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// 底部标签页。顺序与 Web 银玻璃主题手机底栏一致；搜索是独立的圆形按钮（iOS 26 search 角色标签）。
+/// 底部标签页。前四个与 Web 银玻璃主题手机底栏同序；最右是当前用户的头像（「更多」页，
+/// Instagram 式的个人页签）。搜索不占标签，在各标签根页右上角（见 MainTabView 的 AppTopBar）。
+/// 标签栏只显示图标，`title` 给读屏与 UI 测试用。
 enum MainTab: String, Hashable, CaseIterable {
-    case discover, library, subscriptions, activity, search
+    case discover, library, subscriptions, activity, more
 
     var title: String {
         switch self {
@@ -10,17 +12,18 @@ enum MainTab: String, Hashable, CaseIterable {
         case .library: "媒体库"
         case .subscriptions: "订阅"
         case .activity: "活动"
-        case .search: "搜索"
+        case .more: "更多"
         }
     }
 
+    /// 页签图标；「更多」平时显示头像，这个图标只在头像位图还没画好时顶一下
     var systemImage: String {
         switch self {
         case .discover: "house"
         case .library: "play.square.stack"
         case .subscriptions: "bookmark"
         case .activity: "waveform.path.ecg"
-        case .search: "magnifyingglass"
+        case .more: "person.crop.circle"
         }
     }
 }
@@ -114,8 +117,6 @@ final class Router {
     var activePlayback: PlaybackController?
     /// 全局弹层
     var sheet: AppSheet?
-    /// 「更多」面板（左上角头像）
-    var showsMore = false
 
     /// 当前标签的导航栈（绑定给 NavigationStack）
     func path(for tab: MainTab) -> Binding<[AppRoute]> {
@@ -160,7 +161,6 @@ final class Router {
             rememberRootParameter(of: route)
             return
         }
-        showsMore = false
         // 切到路由归属的标签（该标签对当前账号不可见时——例如成员没有订阅页——留在当前标签）
         if let target = route.tab, availableTabs.contains(target) { selectedTab = target }
         // 设置分区的返回固定回设置列表（Web app-shell：/settings/[x] 的返回是 /settings）：
@@ -241,6 +241,7 @@ final class Router {
         case .libraryHome: .library
         case .subscriptions: .subscriptions
         case .activity: .activity
+        case .my: .more
         default: nil
         }
     }

@@ -27,6 +27,7 @@ extension AppRoute {
             LibraryItemDetailView(libraryId: libraryId, itemId: itemId, season: season, episode: episode)
         case let .libraryManage(create, tab, item): LibraryManageView(openCreate: create, initialTab: tab, initialItemId: item)
         // 搜索
+        case .searchHome: SearchHomeView()
         case let .search(query): SearchResultsView(query: query)
         // 订阅
         case .subscriptions: SubscriptionsView()

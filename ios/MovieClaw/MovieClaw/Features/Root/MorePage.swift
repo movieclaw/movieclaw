@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 「更多」页（左上角头像打开；Web `/my` 与 components/more-page.tsx）。
+/// 「更多」页：标签栏最右的头像页签（Web `/my` 与 components/more-page.tsx）。
 ///
 /// iOS 设置式分组列表（与 Web 同序同文案）：
 /// - 用户头：头像 + 昵称 + `@用户名 · 角色`；
@@ -10,19 +10,15 @@ import SwiftUI
 /// - 最近会话（管理员）：AI 会话（取最近 20 条），默认露出 5 条，其余就地展开、可再收起；
 ///   行尾常驻「⋯」菜单：在新会话中继续 / 复制会话 ID / 重命名 / 删除会话。
 ///
-/// 两种打开方式：点头像以 sheet 弹出（`inSheet`，右上「完成」关闭）；站内链接 `/my` 压栈打开
-/// （只有系统返回键，不再叠一个「完成」）。
+/// 原先是点左上角头像弹出的 sheet（右上「完成」关闭），2026-09-26 头像挪进标签栏后改为标签根页；
+/// 站内链接 `/my` 也切到这个标签（Router.tabRoot）。
 struct MorePage: View {
-    /// 是否以 sheet 形式弹出（决定右上角要不要「完成」）
-    var inSheet = false
-
     @Environment(AppModel.self) private var model
     @Environment(Router.self) private var router
     @Environment(Feedback.self) private var feedback
     @Environment(ShellBadges.self) private var badges
     @Environment(\.permissions) private var permissions
     @Environment(\.api) private var api
-    @Environment(\.dismiss) private var dismiss
 
     @State private var sessions: [API.SessionSummary] = []
     @State private var notices: [API.NoticeView] = []
@@ -95,10 +91,7 @@ struct MorePage: View {
                     Label("切换账号", systemImage: "person.2")
                 }
                 Button(role: .destructive) {
-                    Task {
-                        dismiss()
-                        await model.logout()
-                    }
+                    Task { await model.logout() }
                 } label: {
                     Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
                 }
@@ -138,13 +131,6 @@ struct MorePage: View {
         .appBackground()
         .navigationTitle("更多")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if inSheet {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
-                }
-            }
-        }
         .task { await loadSessions() }
         // 待处理事项与 Web NoticeCenter 同频 30 秒轮询（首轮立即拉）
         .polling(every: 30, immediately: true) { await loadNotices() }
@@ -216,7 +202,6 @@ struct MorePage: View {
     private func fork(_ item: API.SessionSummary) async {
         do {
             let forked = try await api.sessionFork(sessionId: item.id)
-            dismiss()
             router.open(.session(id: forked.session.id))
         } catch {
             feedback.error("创建续接会话失败：\(error.localizedDescription)")
@@ -267,8 +252,8 @@ private struct MoreRunningDot: View {
     }
 }
 
-/// 更多页的跳转行：先关掉「更多」弹层，再在主导航里打开目标页
-/// （弹层自带的导航栈里打开会话页时隐藏不了标签栏，页内跳转也会压错栈）。
+/// 更多页的跳转行：经 Router 在主导航里打开目标页（设置、会话这类不归属任何标签的页面，
+/// 就压在「更多」标签自己的栈里）。
 /// `routes` 依次压栈（第一个走 `open` 定标签，其余 `push`），用于还原 Web 的返回链。
 private struct MoreRouteRow<Content: View>: View {
     let routes: [AppRoute]

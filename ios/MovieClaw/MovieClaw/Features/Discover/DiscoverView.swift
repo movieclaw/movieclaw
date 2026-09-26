@@ -141,7 +141,8 @@ struct DiscoverView: View {
             .frame(width: 124)
             .accessibilityIdentifier("discover-type")
         }
-        // 顺序：组合发现筛选在前、TMDB/豆瓣数据源切换在最右（用户要求，常规设计把全局切换放最外侧）
+        // 顺序：组合发现筛选在前、TMDB/豆瓣数据源切换在这一组的最右（用户要求，常规设计把全局切换放最外侧）；
+        // 整条顶栏的最右是外壳注入的搜索圆钮（MainTabView 的 AppTopBar），与这一组分开
         ToolbarItemGroup(placement: .topBarTrailing) {
             if source == "tmdb" {
                 Button {

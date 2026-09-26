@@ -276,7 +276,7 @@ struct AgentTopBarActions: ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
             if permissions.canSearch {
                 Button {
-                    router.selectedTab = .search
+                    router.push(.searchHome)
                 } label: {
                     Image(systemName: "magnifyingglass")
                 }

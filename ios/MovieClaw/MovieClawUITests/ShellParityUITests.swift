@@ -61,15 +61,17 @@ final class ShellParityUITests: XCTestCase {
 
     // MARK: 外壳
 
-    /// 「更多」弹层：右上「完成」、会话行常驻 ⋯（菜单四项）、展开 / 收起、切换账号弹层文案
+    /// 「更多」页（标签栏最右的头像页签）：会话行常驻 ⋯（菜单四项）、展开 / 收起、切换账号弹层文案
     @MainActor
-    func testMoreSheetAndAccountSwitcher() throws {
+    func testMoreTabAndAccountSwitcher() throws {
         let app = try launch(route: "/library")
-        tapSafely(app, app.buttons["open-more"], "头像")
-        XCTAssertTrue(app.buttons["完成"].waitForExistence(timeout: 10), "sheet 形态应有「完成」")
+        let avatarTab = app.tabBars.buttons["open-more"]
+        XCTAssertTrue(avatarTab.waitForExistence(timeout: 15), "标签栏最右应有头像页签")
+        avatarTab.tap()
+        XCTAssertTrue(avatarTab.isSelected, "点头像应切到「更多」页签")
         let menu = app.buttons.matching(identifier: "会话操作").firstMatch
         XCTAssertTrue(menu.waitForExistence(timeout: 15), "会话行应常驻 ⋯")
-        snapshot("更多-弹层")
+        snapshot("更多-页签")
         let toggle = app.buttons["more-sessions-toggle"]
         if toggle.waitForExistence(timeout: 3) {
             tapSafely(app, toggle, "显示全部")
@@ -86,7 +88,8 @@ final class ShellParityUITests: XCTestCase {
         app.terminate()
 
         let again = try launch(route: "/library")
-        tapSafely(again, again.buttons["open-more"], "头像")
+        XCTAssertTrue(again.tabBars.buttons["open-more"].waitForExistence(timeout: 15), "标签栏最右应有头像页签")
+        again.tabBars.buttons["open-more"].tap()
         tapSafely(again, again.buttons["切换账号"], "切换账号")
         XCTAssertTrue(again.staticTexts["本机已登录的账号，点击即可切换，不用再输密码。"].waitForExistence(timeout: 10))
         XCTAssertTrue(again.staticTexts["当前"].waitForExistence(timeout: 5), "当前账号应标「✓ 当前」")
