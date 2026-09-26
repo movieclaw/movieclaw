@@ -716,9 +716,11 @@ struct BoostTaskRow: View {
         let downloading = task.state == "downloading"
         let percent = task.progress.map { Int(($0 * 100).rounded(.down)) }
         let upSpeed = task.upspeedBytes ?? 0
+        let name = TaskCenter.nonEmpty(task.name) ?? task.infoHash
         return VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(TaskCenter.nonEmpty(task.name) ?? task.infoHash)
+                Text(Self.characterWrapped(name))
+                    .accessibilityLabel(name)
                     .font(.subheadline)
                     .foregroundStyle(Theme.text)
                     .lineLimit(2)
@@ -760,5 +762,12 @@ struct BoostTaskRow: View {
         }
         .padding(.vertical, 4)
         .contentShape(.rect)
+    }
+
+    /// 种子名按字符折行：系统 Text 只在空格、连字符处断行，种子名没有空格（点号不算断点），
+    /// 整串被当成几个超长的「词」，第一行常在「WEB-」这类连字符处提前断开、右边空一截。
+    /// 字符之间插零宽空格让任意位置可断，第一行排满再换行；读屏用原名（见 accessibilityLabel）。
+    static func characterWrapped(_ text: String) -> String {
+        text.map(String.init).joined(separator: "\u{200B}")
     }
 }
