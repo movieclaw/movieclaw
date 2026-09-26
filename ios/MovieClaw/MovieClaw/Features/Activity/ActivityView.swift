@@ -128,10 +128,15 @@ struct ActivityScopeSwitcher: View {
     var body: some View {
         HStack(spacing: 2) {
             segment(.media) {
+                // 绿点挂在文字右上角、不占横向宽度（同网页）：顶栏中间位宽度有限，
+                // 以前并排放在文字后面，一出现就把「观看」挤得折行/缩进
                 Text("观看")
-                if liveCount > 0 {
-                    ActivityStatusDot(color: Theme.success, pulse: true, size: 6, label: "有人正在观看")
-                }
+                    .overlay(alignment: .topTrailing) {
+                        if liveCount > 0 {
+                            ActivityStatusDot(color: Theme.success, pulse: true, size: 6, label: "有人正在观看")
+                                .offset(x: 7, y: -3)
+                        }
+                    }
             }
             segment(.tasks) {
                 Text("任务")
@@ -158,6 +163,8 @@ struct ActivityScopeSwitcher: View {
             withAnimation(.snappy(duration: 0.2)) { scope = value }
         } label: {
             HStack(spacing: 6) { label() }
+                .lineLimit(1)
+                .fixedSize()
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(selected ? Theme.text : Theme.textMuted)
                 .padding(.horizontal, 14)

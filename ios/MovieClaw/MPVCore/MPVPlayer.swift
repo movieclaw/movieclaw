@@ -30,6 +30,9 @@ public final class MPVPlayer {
     public var onEvent: ((MPVEvent) -> Void)?
 
     private let handle: MPVHandle
+    /// Metal 渲染表面（OpenGL 路径为 nil）：尺寸变化时要通知 mpv 重新排布画面
+    private var metalViewForResize: MPVMetalView?
+    private var resizeTask: Task<Void, Never>?
 
     /// 需要持续观察的属性（变化时推送 `.property` 事件）
     private static let observed: [(String, mpv_format)] = [
@@ -97,6 +100,7 @@ public final class MPVPlayer {
         case .metal:
             let metalView = MPVMetalView()
             view = metalView
+            metalViewForResize = metalView
             // wid 传的是 CAMetalLayer 的指针（MPVKit 的 moltenvk 补丁约定）
             var layerPointer = Int64(Int(bitPattern: Unmanaged.passUnretained(metalView.metalLayer).toOpaque()))
             mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &layerPointer)
@@ -132,6 +136,39 @@ public final class MPVPlayer {
             self?.onEvent?(event)
         }
         handle.startEventLoop()
+
+        // 视频输出尺寸与视图对齐：MPVKit 的 moltenvk 上下文只在 VO 初始化/视频配置时读一次
+        // drawableSize（ra_vk_ctx_resize），之后的尺寸变化它感知不到。两种后果（真机与模拟器 Metal 路径实测）：
+        // ① 转横屏后仍按竖屏尺寸（1206x2622）排布画面——压扁、偏到一边；
+        // ② 起播时 VO 先于界面排版初始化，拿到 0 尺寸、输出停在 1x1——整片黑屏。
+        // 所以视图尺寸变化后、以及起播后各核对一次，对不上就重建输出（见 scheduleVideoRelayout）。
+        metalViewForResize?.onDrawableSizeChange = { [weak self] _ in
+            self?.scheduleVideoRelayout()
+        }
+    }
+
+    /// 等尺寸稳定（旋转动画结束）后核对 mpv 输出尺寸，对不上就关开一次视频轨重建 VO。
+    ///
+    /// 为什么用关开视频轨：iOS 版 libmpv 没有 android-surface-size 之类的外部尺寸通知（设置返回 -12），
+    /// video-reload 在参数不变时跳过配置、切换 video-aspect-override 也不重算输出尺寸（逐一实测过）。
+    /// 关开视频轨会销毁并重建 VO，重建时读到的就是当前尺寸——与进出后台的 setVideoOutputEnabled 同一机制，
+    /// 代价是瞬间黑一下，只在尺寸真的对不上时才做。
+    private func scheduleVideoRelayout(after delay: Duration = .milliseconds(250)) {
+        guard metalViewForResize != nil else { return }
+        resizeTask?.cancel()
+        resizeTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self, let layer = self.metalViewForResize?.metalLayer else { return }
+            // 没有在放视频（未加载、已关视频输出、VO 还没初始化）时不用管，初始化时自然读到当前尺寸
+            guard let vid = self.string("vid"), vid != "no", self.string("path") != nil else { return }
+            let target = layer.drawableSize
+            let width = self.int("osd-width") ?? 0, height = self.int("osd-height") ?? 0
+            guard width > 0, height > 0, width != Int(target.width) || height != Int(target.height) else { return }
+            self.setString("vid", "no")
+            try? await Task.sleep(for: .milliseconds(60))
+            guard !Task.isCancelled else { return }
+            self.setString("vid", vid)
+        }
     }
 
     // MARK: - 播放控制
@@ -141,6 +178,8 @@ public final class MPVPlayer {
         setString("start", start.map { String(format: "%.3f", max(0, $0)) } ?? "none")
         setFlag("pause", paused)
         command(["loadfile", url.absoluteString, "replace"])
+        // 起播后核对一次输出尺寸（VO 可能先于界面排版初始化，停在 1x1）
+        scheduleVideoRelayout(after: .seconds(2))
     }
 
     public func play() { setFlag("pause", false) }
@@ -282,7 +321,15 @@ nonisolated public enum MPVRenderBackend: String, Sendable {
     /// 真机默认 Metal。模拟器默认 OpenGL ES：实测 iOS 27 模拟器上 MoltenVK 能放 1080p 8bit，
     /// 但 4K 10bit（HEVC/杜比视界）上传纹理时模拟器的 Metal 驱动（MTLSimDriver）申请共享内存越界直接崩溃，
     /// 这是模拟器驱动的限制，真机不受影响
-    nonisolated public static var automatic: MPVRenderBackend { isSimulator ? .openGL : .metal }
+    nonisolated public static var automatic: MPVRenderBackend {
+        #if DEBUG
+        // 开发期启动参数 `-mcMPVBackend metal|openGL`：在模拟器上强制走真机的 Metal 路径复现问题
+        if let raw = UserDefaults.standard.string(forKey: "mcMPVBackend"), let forced = MPVRenderBackend(rawValue: raw) {
+            return forced
+        }
+        #endif
+        return isSimulator ? .openGL : .metal
+    }
 }
 
 nonisolated public struct MPVTrack: Sendable, Hashable {
@@ -453,3 +500,4 @@ nonisolated final class MPVHandle: @unchecked Sendable {
         }
     }
 }
+

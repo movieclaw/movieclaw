@@ -153,8 +153,9 @@ struct TabRoot<Root: View>: View {
     }
 }
 
-/// 标签根页面的顶栏：左上头像（打开「更多」，有待处理更新时带蓝点）、
-/// 右上「+」新建 AI 会话（管理员）。页面自己的操作按钮用 `.toolbar` 追加在它们之间。
+/// 标签根页面的顶栏：左上头像（打开「更多」，有待处理更新时带蓝点）。
+/// 网页右上角的「+」新建 AI 会话在手机 App 里按用户决定去掉了（移动端不合适）。
+/// 页面自己的操作按钮用 `.toolbar` 追加。
 struct AppTopBar: ViewModifier {
     @Environment(AppModel.self) private var model
     @Environment(Router.self) private var router
@@ -177,16 +178,6 @@ struct AppTopBar: ViewModifier {
                 }
                 .accessibilityLabel("更多")
                 .accessibilityIdentifier("open-more")
-            }
-            if permissions.isAdmin {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        router.push(.newSession)
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .accessibilityLabel("新会话")
-                }
             }
         }
     }
