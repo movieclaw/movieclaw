@@ -534,7 +534,7 @@ def test_remote_only_backend_is_never_sent_to_local_ffmpeg(client, tmp_path, mon
     monkeypatch.setattr(hwprobe, "available_backends", lambda: ("videotoolbox",))
     monkeypatch.setattr(routes_playback, "available_backends", lambda: ("videotoolbox",))
     monkeypatch.setattr(routes_playback, "available_local_backends", lambda: ())
-    monkeypatch.setattr(routes_playback, "remote_worker_available", lambda _: False)
+    monkeypatch.setattr(routes_playback, "remote_worker_available", lambda *_, **__: False)
 
     file_id = seed(client, tmp_path, container="mkv", codec="hevc")
     response = client.post(
@@ -555,7 +555,7 @@ def test_quality_switch_releases_remote_worker_before_final_decision(
 
     availability = {"value": False}
 
-    def remote_available(_backend: str) -> bool:
+    def remote_available(_backend: str, **_kwargs: object) -> bool:
         return availability["value"]
 
     monkeypatch.setattr(
