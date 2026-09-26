@@ -12,7 +12,7 @@ from pathlib import Path as PathLib
 from typing import Annotated, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Path, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, Path, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -708,6 +708,7 @@ async def decide_playback_route(
     payload: PlaybackDecideRequest,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
+    user_agent: Annotated[str | None, Header(include_in_schema=False)] = None,
 ) -> ApiResponse[PlaybackDecisionView]:
     """算出「这部片在你的浏览器上该怎么放」（docs/design/web-player.md §3）。
 
@@ -717,6 +718,7 @@ async def decide_playback_route(
     返回三态：``plan`` 可以播；``consent`` 需要用户同意开启软件转码；
     ``rejected`` 放不了，附中文原因与下一步建议。
     """
+    _remember_capability(payload, principal, user_agent)
     # 决策接口与开会话接口必须共享同一组参数转发和可见性规则；否则客户端
     # 在切换音轨/字幕/清晰度时会看到与实际起播不同的计划。
     decision = await _decide(payload, principal, session)
@@ -785,6 +787,17 @@ def _share_stream_kwargs(principal: Principal) -> dict[str, int]:
         "share_id": principal.share.share_id,
         "ttl_seconds": max(1, min(STREAM_TOKEN_TTL_S, remaining)),
     }
+
+
+def _remember_capability(
+    payload: PlaybackDecideRequest, principal: Principal, user_agent: str | None
+) -> None:
+    """把客户端上报的解码能力记给详情页预热：它据此判断值不值得读盘采样。"""
+    playback_warmup.remember_capability(
+        playback_warmup.identity_of(principal),
+        user_agent,
+        playback_plan.capability_from_request(payload.capability),
+    )
 
 
 async def _decide(
@@ -946,8 +959,8 @@ async def start_playback_session(
     )
     chapter_marks = _chapter_marks(file)
 
-    # 详情页可能正在为同一条目预热字幕；正式播放已经接管 IO，取消那条
-    # 后台任务，避免留下与播放无关的 ffmpeg（尤其是 PGS 的 .part.sup）。
+    # 详情页可能正在为同一条目预热；正式播放已经接管 IO，取消那条后台任务，
+    # 别让它和首片转码抢同一块盘。
     playback_warmup.cancel(file.media_item_id)
 
     # 进度条缩略图：后台起，不挡首帧；延迟 90 秒 + 读入限速，起播关键窗口
