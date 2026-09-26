@@ -35,6 +35,12 @@
 /** 统计窗口。短了随分片到货剧烈跳动，长了跟不上外网的抖动。 */
 export const BANDWIDTH_WINDOW_MS = 12_000;
 
+/**
+ * 窗口外的样本也至少留这么多个（HLS 取最快一片时用，见 `peakBandwidthBps`）：转码会话要等 ffmpeg 追上来，
+ * 分片隔十几秒才到一片，12 秒窗口里常常只剩最新那一片，偏偏它又可能被读慢了。
+ */
+export const BANDWIDTH_MIN_SAMPLES = 3;
+
 /** 攒够这么多字节才给读数：init 分片才几 KB，单靠它算出来的速度是噪声。 */
 const MIN_SAMPLED_BYTES = 64 * 1024;
 
@@ -78,12 +84,14 @@ export function createBandwidthWindow(): BandwidthWindow {
 export function pushBandwidthSample(
   window: BandwidthWindow,
   sample: BandwidthSample,
+  options: { minSamples?: number } = {},
 ): BandwidthWindow {
   // 传输时间为 0 或负（缓存命中、时钟回拨）的样本直接丢：它会让速度变成无穷大
   if (!(sample.bytes > 0) || !(sample.transferMs > 0)) return window;
   const cutoff = sample.at - BANDWIDTH_WINDOW_MS;
-  const samples = window.samples.filter((item) => item.at > cutoff);
-  samples.push(sample);
+  const samples = [...window.samples, sample];
+  const minSamples = options.minSamples ?? 0;
+  while (samples.length > minSamples && samples[0].at <= cutoff) samples.shift();
   return { samples };
 }
 
@@ -105,6 +113,26 @@ export function bandwidthBps(window: BandwidthWindow): number | null {
 }
 
 /**
+ * 窗口内**最快一片**的传输速率（bps）；没有像样的样本时为 null。HLS 的带宽用它（2026-09-27 起）。
+ *
+ * 为什么不取平均：接收端忙的时候会读慢——浏览器主线程一忙，网络层就把整条连接压慢，个别分片的
+ * 「首字节 → 末字节」被拉长。本机限速 1MB/s 实测，同一次播放里按平均算掉到过 0.53MB/s，线路一点没变。
+ * 那几片慢在接收端、不在线路；而每一片的时刻都取自网络栈，快的那几片不会超过真实线路。
+ * iOS 同理且更明显（AVPlayer 会自己放慢读取），见 apps/apple 的 PlayerEngine.swift `BandwidthMeter`。
+ * 直出档仍取平均（`bandwidthBps`）：它的每个样本是「缓冲涨了几秒 × 全片平均码率」的估算，单个样本
+ * 本身就带着码率起伏的误差，取最快只会把误差挑出来。
+ */
+export function peakBandwidthBps(window: BandwidthWindow): number | null {
+  let peak = 0;
+  for (const sample of window.samples) {
+    // 太小太短的一片（init 分片几 KB）算出来的速度是噪声
+    if (sample.bytes < MIN_SAMPLED_BYTES || sample.transferMs < MIN_TRANSFER_MS) continue;
+    peak = Math.max(peak, (sample.bytes * 8 * 1000) / sample.transferMs);
+  }
+  return peak > 0 ? peak : null;
+}
+
+/**
  * bps → 「3.2 MB/s」这样的人话。
  *
  * 用 MB/s 而不是 Mbps：用户对下载速度的直觉全部来自下载器和浏览器的下载
@@ -119,6 +147,74 @@ export function formatBandwidth(bps: number | null): string | null {
   // 不足 1 KB/s 就别装精确了，那已经是「基本没在动」
   if (kbPerSecond < 1) return "0 KB/s";
   return `${Math.round(kbPerSecond)} KB/s`;
+}
+
+// ---------------------------------------------------------------------------
+// 实时加载速度：顶栏那行「↓」（2026-09-27 改口径）
+// ---------------------------------------------------------------------------
+
+/**
+ * 顶栏与起播/缓冲转圈下方那行「↓ 3.2 MB/s」报的是**此刻的加载速度**：最近 2 秒实际收到的字节 ÷ 时长。
+ * 在下载就是实际下载速度，没在下载（缓冲喂饱、暂停后缓冲够了）就是「0 KB/s」。这是下载器与常见视频
+ * App「网速」的口径（2026-09-27 用户定；iOS 同口径，见 apps/apple 的 PlayerEngine.swift `LoadingSpeedMeter`）。
+ *
+ * 它和上面的取流速度（`bandwidthBps`，诊断面板里叫「带宽」）是两个量：带宽回答「线路能跑多快」，缓冲满了
+ * 也保持实测值，还喂着按带宽重开 / 降档 / 直通提示三条决策，口径一点没动；加载速度回答「此刻在下多快」。
+ * 原先顶栏显示的是带宽，缓冲满了读数照旧，用户看不出现在到底在不在下。
+ *
+ * 字节来源：hls.js 在途分片的 `stats.loaded`（XHR 下载途中持续更新）加已下完分片的字节；直出档量不到字节，
+ * 沿用「缓冲涨了几秒 × 源码率」。窗口 2 秒：进度回调在主线程上跑，忙的时候会攒一会儿再一起到，1 秒窗口
+ * 会把这一坨算进同一秒，读数忽高忽低（iOS 实测同理：1 秒窗口误差是 2 秒窗口的两倍）。
+ */
+export const LOADING_WINDOW_MS = 2_000;
+
+export interface LoadingMeter {
+  /** 最近的采样点：累计收到的字节与时刻（`performance.now()` 口径） */
+  points: { at: number; bytes: number }[];
+  /** 最新读数（bps）；还没攒够一个窗口时为 null */
+  bps: number | null;
+}
+
+export function createLoadingMeter(): LoadingMeter {
+  return { points: [], bps: null };
+}
+
+/**
+ * 记一个采样点，返回新的计量状态（纯函数，单测可以一路串着算）。
+ *
+ * 调用方每秒至少一次（诊断面板开着时会更密）：窗口按时间算，不按调用次数。
+ * `bytes` 为 null = 这条路量不出字节（直出且不知道源码率）：没有读数，那一格不显示。
+ */
+export function sampleLoadingMeter(
+  meter: LoadingMeter,
+  input: { bytes: number | null; at: number },
+): LoadingMeter {
+  const { bytes, at } = input;
+  if (bytes === null || !Number.isFinite(bytes)) return createLoadingMeter();
+  const last = meter.points[meter.points.length - 1];
+  // 计数倒退只会是换了取流对象（走缓存的分片被扣回去）：从头量，不许出现负速度
+  const points = last && bytes < last.bytes ? [] : meter.points.slice();
+  if (points.length === 0) return { points: [{ at, bytes }], bps: null };
+  points.push({ at, bytes });
+  // 窗口起点：至少早 2 秒的最后一个点（留 250ms 给计时器抖动）；起播不满 2 秒时用最早的点，但至少隔 900ms
+  const cutoff = at - LOADING_WINDOW_MS + 250;
+  let ref = -1;
+  for (let i = points.length - 1; i >= 0; i -= 1) {
+    if (points[i].at <= cutoff) {
+      ref = i;
+      break;
+    }
+  }
+  if (ref < 0 && at - points[0].at >= 900) ref = 0;
+  if (ref < 0) return { points, bps: meter.bps };
+  const base = points[ref];
+  return { points: points.slice(ref), bps: ((bytes - base.bytes) * 8 * 1000) / (at - base.at) };
+}
+
+/** 加载速度的文案：没在加载时明确写「0 KB/s」（要让人一眼看出现在没在下），没有读数时不显示 */
+export function formatLoadingSpeed(bps: number | null): string | null {
+  if (bps === null || !Number.isFinite(bps) || bps < 0) return null;
+  return formatBandwidth(bps) ?? "0 KB/s";
 }
 
 /**
@@ -269,11 +365,24 @@ export function sampleFromProgress(input: {
   if (!previous) return null;
   // 两头都得在取数据
   if (!previous.loading || !current.loading) return null;
+  const transferMs = current.at - previous.at;
+  if (transferMs <= 0 || transferMs > PROGRESS_MAX_GAP_MS) return null;
+  const grownSeconds = continuedGrowthSeconds(previous, current);
+  if (grownSeconds === null || grownSeconds <= 0) return null;
+  return { at: current.at, bytes: (grownSeconds * sourceBitrateBps) / 8, transferMs };
+}
+
+/**
+ * 两次缓冲现场之间，播放头所在那段连续缓冲**又长了几秒**；两次量的不是同一段（跳转、段被合并）时返回 null。
+ *
+ * 带宽（上面的 `sampleFromProgress`）与实时加载速度都靠它：带宽另外要求两头都在取数据、间隔不超过 2 秒，
+ * 加载速度不看 networkState——Chrome 直出时 `networkState` 早早就报空闲，之后照样一阵一阵地取数据
+ * （实测报空闲期间缓冲从 20.7 秒涨到 28.6 秒），缓冲涨了就是有数据到了。
+ */
+export function continuedGrowthSeconds(previous: BufferedProbe, current: BufferedProbe): number | null {
   const before = previous.active;
   const after = current.active;
   if (!before || !after) return null;
-  const transferMs = current.at - previous.at;
-  if (transferMs <= 0 || transferMs > PROGRESS_MAX_GAP_MS) return null;
   // **上一次量到的末端必须仍落在这一段连续缓冲之内**，才谈得上「这一段又长了
   // 多少」。往前跳会新开一段落在远处（起点已经越过上次的末端），往回跳会落回
   // 更靠前的一段（末端够不到上次的末端），两种都在这里被挡下。头部被回收让
@@ -281,9 +390,7 @@ export function sampleFromProgress(input: {
   if (!(after.start <= before.end && after.end >= before.end)) return null;
   // 这一段把后面那段吃掉了：末端跳到被吃掉那段的末端，而那些内容是之前下好的
   if (previous.nextStart !== null && after.end >= previous.nextStart) return null;
-  const grownSeconds = after.end - before.end;
-  if (grownSeconds <= 0) return null;
-  return { at: current.at, bytes: (grownSeconds * sourceBitrateBps) / 8, transferMs };
+  return after.end - before.end;
 }
 
 // ---------------------------------------------------------------------------

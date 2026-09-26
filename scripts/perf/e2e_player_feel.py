@@ -8,7 +8,8 @@
 2. **双击左右跳转**：右三分之一连点两下 = 前进十秒。
 3. **长按倍速**：按住 0.7 秒 → 2×，松手还原，且保音高。
 4. **拖动跟手**：跳转不要钱时（档 0 直出 / 落点已缓冲）拖动中画面跟随。
-5. **章节刻度**：轨道上有刻度，气泡里有章节名。
+5. **章节名在气泡里、不在轨道上**：轨道上不画刻度（2026-09-27 起，见 player-feel.md §2.C1），
+   悬停 / 拖动气泡里有章节名。
 6. **iOS 伪横屏下坐标不串轴**：容器整体转 90° 之后，进度条与双击分区仍按
    用户眼里的左右走（2026-09-08 实测这里错过一次，见 player-feel.md §10）。
 7. **触屏拖动时控制条不淡出**：拖着不动超过自动隐藏的倒计时，进度条不能在
@@ -158,7 +159,7 @@ async def run(args: argparse.Namespace) -> dict:
         """
         )
 
-        # ---- 5. 章节刻度 + 气泡里的章节名 ----
+        # ---- 5. 轨道上没有章节刻度 + 气泡里有章节名 ----
         report["chapter_marks"] = await page.evaluate(
             "() => Array.from(document.querySelectorAll('.player-scrub-track > span'))"
             ".map(s => s.style.left)"
@@ -466,8 +467,9 @@ def verdicts(r: dict) -> list[tuple[bool, str]]:
             f"拖动跟手：拖动中画面走到 {follow}",
         ),
         (
-            len(r.get("chapter_marks") or []) > 0,
-            f"章节刻度：{r.get('chapter_marks')}，气泡 {r.get('bubble')}",
+            # 气泡里是「章节名 + 时间」两行（测试片要带章节）；轨道上不该再有刻度
+            not r.get("chapter_marks") and len(r.get("bubble") or []) >= 2,
+            f"章节：轨道刻度 {r.get('chapter_marks')}（应为空），气泡 {r.get('bubble')}",
         ),
         (
             # 转过来之后进度条的外接矩形是「厚 × 长」，拿 clientX 算会把整部片

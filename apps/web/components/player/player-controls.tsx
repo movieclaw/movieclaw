@@ -460,16 +460,6 @@ export function PlayerControls(props: PlayerControlsProps) {
   // 每一次重渲染（4Hz 的 timeupdate、1Hz 的速度读数……）都会重跑一次
   // `offsetWidth` / `clientWidth`，那是一次强制同步回流。
   const previewTile = useMemo(() => (hover ? tileAt(trickplay, hover.ms) : null), [hover, trickplay]);
-  /** 刻度位置。0 秒那条不画——片头永远在最左端，画出来只是一条噪音 */
-  const chapterMarks = useMemo(
-    () =>
-      durationMs
-        ? chapters
-            .filter((mark) => mark.start_ms > 0 && mark.start_ms < durationMs)
-            .map((mark) => ({ start_ms: mark.start_ms, ratio: progressRatio(mark.start_ms, durationMs) }))
-        : [],
-    [chapters, durationMs],
-  );
   /** 悬停/拖动位置落在哪一章：取最后一个起点不晚于它的章节 */
   const hoverChapter = useMemo(() => {
     if (!hover) return null;
@@ -751,15 +741,9 @@ export function PlayerControls(props: PlayerControlsProps) {
               data-player-played=""
               className="absolute inset-y-0 left-0 w-0 bg-[var(--player-accent)]"
             />
-            {/* 章节刻度：压在已播段之上，两侧留白靠 2px 宽的暗色竖条本身。
-                画在轨道内部（overflow-hidden）所以不用再夹一次边界。 */}
-            {chapterMarks.map((mark) => (
-              <span
-                key={mark.start_ms}
-                className="absolute inset-y-0 w-[2px] -translate-x-1/2 bg-black/55"
-                style={{ left: `${mark.ratio * 100}%` }}
-              />
-            ))}
+            {/* 轨道上不画章节刻度（2026-09-27）：按每章起点切暗色竖条，章节一多整条就像断成了十几截；
+                电影的章节多是按编号随手分的，位置不对应剧情，刻度没有信息量。章节名只在气泡里显示
+                （hoverChapter），见 player-feel.md §2.C1 */}
           </div>
           <input
             type="range"

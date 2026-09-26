@@ -2,19 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BANDWIDTH_MIN_SAMPLES,
   BANDWIDTH_WINDOW_MS,
   BITRATE_SAMPLE_COUNT,
+  LOADING_WINDOW_MS,
   PROGRESS_MAX_GAP_MS,
   bandwidthBps,
   bitrateBps,
+  continuedGrowthSeconds,
   createBandwidthWindow,
+  createLoadingMeter,
   formatBandwidth,
+  formatLoadingSpeed,
   pushBandwidthSample,
+  peakBandwidthBps,
   peakBitrateBps,
   pushBitrateSample,
   readBufferedProbe,
   sampleFromProgress,
   sampleFromResourceTiming,
+  sampleLoadingMeter,
 } from "../lib/player/bandwidth.ts";
 
 /** 1MB，够跨过最小样本量的门槛 */
@@ -368,4 +375,122 @@ test("直通档线路够不够：低于源码率的 1.2 倍算不够，缺读数
   assert.equal(directDownlinkShort({ downlinkBps: null, sourceBitrateBps: 8e6 }), false);
   assert.equal(directDownlinkShort({ downlinkBps: 5e6, sourceBitrateBps: null }), false);
   assert.equal(directDownlinkShort({ downlinkBps: 5e6, sourceBitrateBps: 0 }), false);
+});
+
+// ---------------------------------------------------------------------------
+// 实时加载速度（顶栏「↓」）：在下载报实际速度、没在下载报 0、量不出字节不显示
+// ---------------------------------------------------------------------------
+
+/** 按顺序喂一串采样点，返回每一步的读数 */
+function feedLoading(points) {
+  let meter = createLoadingMeter();
+  return points.map(([at, bytes]) => {
+    meter = sampleLoadingMeter(meter, { at, bytes });
+    return meter.bps;
+  });
+}
+
+test("加载速度：量不出字节时没有读数，不报 0", () => {
+  assert.deepEqual(feedLoading([[0, null], [1000, null]]), [null, null]);
+});
+
+test("加载速度：第一个点只当起点，满 900ms 才给第一个读数", () => {
+  const [first, early, ready] = feedLoading([[0, 200_000], [500, 700_000], [1000, 200_000 + MB]]);
+  assert.equal(first, null);
+  assert.equal(early, null);
+  assert.equal(Math.round(ready), MB * 8);
+});
+
+test("加载速度：稳定下载报实际速度，缓冲喂饱停下来后归零", () => {
+  const points = [[0, 0]];
+  for (let second = 1; second <= 5; second += 1) points.push([second * 1000, second * MB]);
+  // 停下：第一秒窗口里还有一半在下，满 2 秒后归零，之后一直是 0
+  points.push([6000, 5 * MB], [7000, 5 * MB], [30_000, 5 * MB]);
+  const readings = feedLoading(points);
+  for (const bps of readings.slice(1, 6)) assert.equal(Math.round(bps), MB * 8);
+  assert.equal(Math.round(readings[6]), (MB * 8) / 2);
+  assert.equal(readings[7], 0);
+  assert.equal(readings[8], 0);
+});
+
+test(`加载速度：计数攒一坨再到时按 ${LOADING_WINDOW_MS / 1000} 秒窗口摊平`, () => {
+  // 实际一直 1MB/s，进度回调这一秒只到了 0.2MB、下一秒补到 1.8MB：两次都按 2 秒窗口读
+  const readings = feedLoading([
+    [0, 0],
+    [1000, MB],
+    [2000, 2 * MB],
+    [3000, 2.2 * MB],
+    [4000, 4 * MB],
+  ]);
+  assert.equal(Math.round(readings[3]), Math.round(MB * 8 * 0.6));
+  assert.equal(Math.round(readings[4]), MB * 8);
+});
+
+test("加载速度：一秒问两次时窗口按时间算，读数不因调用次数变化", () => {
+  const points = [[0, 0]];
+  for (let step = 1; step <= 10; step += 1) points.push([step * 500, step * 0.5 * MB]);
+  const readings = feedLoading(points);
+  assert.equal(Math.round(readings.at(-1)), MB * 8);
+});
+
+test("加载速度：计数倒退（换了取流对象）从头量，不出负数", () => {
+  const readings = feedLoading([[0, 0], [1000, 10 * MB], [2000, 100_000], [3000, 100_000 + MB]]);
+  assert.equal(readings[2], null);
+  assert.equal(Math.round(readings[3]), MB * 8);
+});
+
+test("加载速度的文案：没在下载写 0 KB/s，没有读数不显示", () => {
+  assert.equal(formatLoadingSpeed(null), null);
+  assert.equal(formatLoadingSpeed(0), "0 KB/s");
+  assert.equal(formatLoadingSpeed(MB * 8 * 3.2), "3.2 MB/s");
+  assert.equal(formatLoadingSpeed(512 * 1024 * 8), "512 KB/s");
+});
+
+test("直出的缓冲增长：不看 networkState，只认同一段连续缓冲", () => {
+  const probe = (at, loading, start, end, nextStart = null) => ({ at, loading, active: { start, end }, nextStart });
+  // Chrome 直出早早报空闲，之后照样一阵一阵取数据：报空闲期间缓冲从 20.7 涨到 28.6，要算进加载速度
+  assert.equal(
+    Math.round(continuedGrowthSeconds(probe(0, false, 0, 20.7), probe(1000, false, 0, 28.6)) * 10) / 10,
+    7.9,
+  );
+  // 往前跳到远处新开一段：不是同一段，量不了
+  assert.equal(continuedGrowthSeconds(probe(0, true, 0, 20), probe(1000, true, 600, 605)), null);
+  // 这一段吃掉了后面那段：末端跳过去的那些是之前下好的
+  assert.equal(continuedGrowthSeconds(probe(0, true, 0, 20, 30), probe(1000, true, 0, 40)), null);
+  // 没涨就是 0
+  assert.equal(continuedGrowthSeconds(probe(0, false, 0, 20), probe(1000, false, 0, 20)), 0);
+});
+
+test("HLS 带宽取最快一片：接收端读慢的那几片不把带宽拖低", () => {
+  let w = createBandwidthWindow();
+  // 线路 1MB/s；个别片被读慢到三成、五成（实测过）——平均会掉到 0.6 左右，最快一片才是线路
+  for (const [at, transferMs] of [[0, 1000], [2000, 3400], [4000, 2000], [6000, 1030]]) {
+    w = pushBandwidthSample(w, { at, bytes: MB, transferMs });
+  }
+  assert.equal(Math.round(peakBandwidthBps(w)), MB * 8);
+  assert.ok(bandwidthBps(w) < MB * 8 * 0.7);
+});
+
+test("HLS 带宽：几 KB 的 init 分片算出来的速度是噪声，不算", () => {
+  let w = createBandwidthWindow();
+  w = pushBandwidthSample(w, { at: 0, bytes: 8 * 1024, transferMs: 1 });
+  assert.equal(peakBandwidthBps(w), null);
+  w = pushBandwidthSample(w, { at: 100, bytes: MB, transferMs: 1000 });
+  assert.equal(Math.round(peakBandwidthBps(w)), MB * 8);
+});
+
+test(`HLS 带宽：分片稀疏时窗口外也至少留最近 ${BANDWIDTH_MIN_SAMPLES} 片`, () => {
+  let w = createBandwidthWindow();
+  const push = (at, transferMs) => {
+    w = pushBandwidthSample(w, { at, bytes: MB, transferMs }, { minSamples: BANDWIDTH_MIN_SAMPLES });
+  };
+  // 转码会话隔十几秒才到一片，最新那片又被读慢了：仍按最近三片里最快的算
+  push(0, 1000);
+  push(17_000, 14_000);
+  assert.equal(Math.round(peakBandwidthBps(w)), MB * 8);
+  push(31_000, 8_300);
+  assert.equal(Math.round(peakBandwidthBps(w)), MB * 8);
+  // 第四片到了，最老那片（已在窗口外）才被挤掉
+  push(45_000, 4_000);
+  assert.equal(w.samples.length, BANDWIDTH_MIN_SAMPLES);
 });

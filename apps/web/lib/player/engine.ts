@@ -11,6 +11,7 @@
  */
 
 import type Hls from "hls.js";
+import type { LoaderStats } from "hls.js";
 
 import type { MseKind } from "@/lib/api/playback";
 import { reportPlaybackClientLog } from "@/lib/api/playback";
@@ -19,15 +20,21 @@ import {
   type BandwidthWindow,
   type BitrateSample,
   type BufferedProbe,
+  type LoadingMeter,
   bandwidthBps,
   bitrateBps,
+  BANDWIDTH_MIN_SAMPLES,
+  continuedGrowthSeconds,
   createBandwidthWindow,
+  createLoadingMeter,
+  peakBandwidthBps,
   peakBitrateBps,
   pushBandwidthSample,
   pushBitrateSample,
   readBufferedProbe,
   sampleFromProgress,
   sampleFromResourceTiming,
+  sampleLoadingMeter,
 } from "./bandwidth";
 import { backBufferSeconds } from "./buffer-budget";
 import { type MediaRecoverState, nextMediaRecovery } from "./media-recover";
@@ -69,12 +76,19 @@ export interface EngineStats {
   /** 实时码率（bps）；直出档拿不到，为 null */
   bitrate: number | null;
   /**
-   * 实测取流速度（bps，传输期口径见 bandwidth.ts）；样本不够时为 null。
+   * 带宽：实测取流速度（bps，传输期口径见 bandwidth.ts）；样本不够时为 null。HLS 取窗口内最快一片
+   * （`peakBandwidthBps`），直出取平均。诊断面板里叫「带宽」，也喂着开会话时申报的 downlink_bps 与
+   * 按带宽重开 / 降档 / 直通提示的决策。
    *
    * 它和 `bitrate` 是**一对**才有意义：速度贴着码率跑 = 线路吃得下，卡的是
    * 服务端；速度远低于码率 = 带宽不够，该降画质。单看任何一个都会误诊。
    */
   downlinkBps: number | null;
+  /**
+   * 此刻的加载速度（bps，最近 2 秒墙钟口径见 bandwidth.ts 的 LOADING_WINDOW_MS）：在下载就是实际
+   * 下载速度，没在下载就是 0；量不出字节时为 null。顶栏与转圈下方那行「↓」只用它。
+   */
+  loadingBps: number | null;
   /** 累计掉帧数：判断「能解但解不动」的唯一硬指标 */
   droppedFrames: number | null;
   totalFrames: number | null;
@@ -153,7 +167,7 @@ function clientLog(options: EngineOptions, event: string, detail: Record<string,
 /** 掉帧与缓冲读数：三种引擎共用一份取法。 */
 function readCommonStats(
   video: HTMLVideoElement,
-): Omit<EngineStats, "engine" | "bitrate" | "downlinkBps"> {
+): Omit<EngineStats, "engine" | "bitrate" | "downlinkBps" | "loadingBps"> {
   const quality = video.getVideoPlaybackQuality?.();
   // Safari 老前缀回退：标准 getVideoPlaybackQuality 在部分 WebKit 上缺失或
   // 返回全零，但 webkitDroppedFrameCount / webkitDecodedFrameCount 一直在。
@@ -272,6 +286,13 @@ function describeMediaError(video: HTMLVideoElement): string {
 class DirectEngine implements PlaybackEngine {
   private stopStallWatch: (() => void) | null = null;
   private bandwidth: BandwidthWindow = createBandwidthWindow();
+  /**
+   * 实时加载速度：`<video src>` 量不到网络字节，每次读数时按「播放头那段连续缓冲又长了几秒 × 源码率」累计；
+   * 缓冲不涨了读数自然回到 0。不跟 progress / networkState 走，理由见 bandwidth.ts 的 continuedGrowthSeconds。
+   */
+  private loading: LoadingMeter = createLoadingMeter();
+  private loadedBytes = 0;
+  private loadingProbe: BufferedProbe | null = null;
   /** 上一次 progress 量到的缓冲现场，用来做差（判据全在 bandwidth.ts） */
   private lastProbe: BufferedProbe | null = null;
   private readonly onProgress = () => {
@@ -375,10 +396,22 @@ class DirectEngine implements PlaybackEngine {
   }
 
   stats(): EngineStats {
+    const { video, sourceBitrateBps } = this.options;
+    const now = performance.now();
+    const probe = readBufferedProbe(video, now);
+    const grown = this.loadingProbe ? continuedGrowthSeconds(this.loadingProbe, probe) : null;
+    if (grown !== null && grown > 0 && sourceBitrateBps) this.loadedBytes += (grown * sourceBitrateBps) / 8;
+    this.loadingProbe = probe;
+    // 不知道源码率就量不出字节：没有读数，不显示（而不是报 0）
+    this.loading = sampleLoadingMeter(this.loading, {
+      bytes: sourceBitrateBps ? this.loadedBytes : null,
+      at: now,
+    });
     return {
       engine: this.label,
       bitrate: null,
       downlinkBps: bandwidthBps(this.bandwidth),
+      loadingBps: this.loading.bps,
       ...readCommonStats(this.options.video),
     };
   }
@@ -429,6 +462,16 @@ class HlsEngine implements PlaybackEngine {
   private bitrateSamples: BitrateSample[] = [];
   /** 实测取流速度的滑动窗口（口径见 bandwidth.ts） */
   private bandwidth: BandwidthWindow = createBandwidthWindow();
+  /** 实时加载速度（口径见 bandwidth.ts 的 LOADING_WINDOW_MS） */
+  private loading: LoadingMeter = createLoadingMeter();
+  /**
+   * 在途下载的统计对象：hls.js 的 XHR 在下载途中不断更新 `stats.loaded`，数它才知道「此刻」收到了多少。
+   * 记统计对象而不是分片：同一个分片重新请求时 hls.js 会换一个新的统计对象（在 FRAG_LOADING 之前就换好了），
+   * 旧那次收过的字节不能跟着丢。
+   */
+  private readonly inflight = new Set<LoaderStats>();
+  /** 已经收完（或中途放弃）的下载走过网络的字节合计 */
+  private settledBytes = 0;
   /** 连续网络恢复计数；任何一个分片成功落地就清零 */
   private networkRecoveries = 0;
   /** 摘掉 Resource Timing 缓冲守卫（见 guardResourceTimingBuffer） */
@@ -483,6 +526,8 @@ class HlsEngine implements PlaybackEngine {
     });
 
     this.hls.on(HlsCtor.Events.ERROR, (_event, data) => {
+      // 分片下载出错 / 超时：收过的字节照样算，然后结账（分片早已收完的其他错误这里是空操作）
+      this.settle(data.frag?.stats);
       if (!data.fatal) return;
       // 网络类致命错误先就地重试：转码会话是边转边给的，客户端偶尔会抢在
       // 分片写完之前拉到 404，这类不该触发降档（降了也一样）。但重试必须有
@@ -548,6 +593,14 @@ class HlsEngine implements PlaybackEngine {
       });
     };
 
+    // 实时加载速度的字节来源：分片（含 init 段）开始下载时记下它的统计对象，收完 / 出错 / 被掐掉时结账
+    this.hls.on(HlsCtor.Events.FRAG_LOADING, (_event, data) => {
+      if (data.frag?.stats) this.inflight.add(data.frag.stats);
+    });
+    this.hls.on(HlsCtor.Events.FRAG_LOAD_EMERGENCY_ABORTED, (_event, data) => {
+      this.settle(data.stats ?? data.frag?.stats);
+    });
+
     // 任何一个分片成功到手都说明链路是通的，连续失败计数从头数
     this.hls.on(HlsCtor.Events.FRAG_LOADED, (_event, data) => {
       this.networkRecoveries = 0;
@@ -566,11 +619,20 @@ class HlsEngine implements PlaybackEngine {
       // 取流速度：口径与「为什么不能用 data.frag.stats.loading 的时刻」见
       // bandwidth.ts —— 一句话，那是 XHR 回调排到主线程的时间，卡顿时会把
       // 几 MB 的分片算成传了十几毫秒，读数飙到带宽的上百倍。
-      const sample = sampleFromResourceTiming(
-        readResourceTiming(data.frag?.url),
-        performance.now(),
-      );
-      if (sample) this.bandwidth = pushBandwidthSample(this.bandwidth, sample);
+      const timing = readResourceTiming(data.frag?.url);
+      const sample = sampleFromResourceTiming(timing, performance.now());
+      if (sample) {
+        this.bandwidth = pushBandwidthSample(this.bandwidth, sample, {
+          minSamples: BANDWIDTH_MIN_SAMPLES,
+        });
+      }
+      // 走浏览器缓存的分片（回跳到下过的地方）一个字节都没走网络，不算进加载速度；
+      // 没有计时信息（跨源且没给 Timing-Allow-Origin，字段全是 0）时照常算
+      const fromCache =
+        !!timing &&
+        timing.responseStart > 0 &&
+        (timing.transferSize === 0 || timing.encodedBodySize > timing.transferSize);
+      this.settle(data.frag?.stats, fromCache);
     });
 
     this.hls.loadSource(streamUrl);
@@ -607,11 +669,38 @@ class HlsEngine implements PlaybackEngine {
     this.hls = null;
   }
 
+  /** 一次下载结账：从在途里拿掉，走过网络的字节记进合计 */
+  private settle(stats: LoaderStats | undefined, fromCache = false): void {
+    if (!stats || !this.inflight.delete(stats)) return;
+    if (!fromCache) this.settledBytes += stats.loaded;
+  }
+
+  /** 此刻累计收到的网络字节：已结账的 + 在途的已收部分 */
+  private loadedBytes(): number {
+    const now = performance.now();
+    for (const stats of [...this.inflight]) {
+      // 被 seek / stopLoad 掐掉的请求不会再有 FRAG_LOADED：先把它们结账。
+      // 收完了却迟迟没等到 FRAG_LOADED（hls.js 因播放上下文变了把这片丢掉）的，5 秒后也结账，免得集合越攒越大；
+      // 不立刻结是为了不抢在 FRAG_LOADED 前面——走缓存的分片要在那里剔掉
+      const finishedLongAgo = stats.loading.end > 0 && now - stats.loading.end > 5_000;
+      if (stats.aborted || finishedLongAgo) this.settle(stats);
+    }
+    let bytes = this.settledBytes;
+    for (const stats of this.inflight) bytes += stats.loaded;
+    return bytes;
+  }
+
   stats(): EngineStats {
+    this.loading = sampleLoadingMeter(this.loading, {
+      bytes: this.loadedBytes(),
+      at: performance.now(),
+    });
     return {
       engine: "hls.js",
       bitrate: bitrateBps(this.bitrateSamples),
-      downlinkBps: bandwidthBps(this.bandwidth),
+      // 取最快一片而不是平均：接收端忙时读慢的那几片不代表线路（理由见 peakBandwidthBps）
+      downlinkBps: peakBandwidthBps(this.bandwidth),
+      loadingBps: this.loading.bps,
       ...readCommonStats(this.options.video),
     };
   }
