@@ -9,7 +9,7 @@ import SwiftUI
 /// - 账号：切换账号 / 退出登录；
 /// - 最近会话（管理员）：首行「新会话」（顶栏的「+」已去掉，这里是发起新会话的入口），下面是 AI 会话，
 ///   每页 20 条、滑到末尾自动加载下一页（用户决定不要「显示全部 / 收起」，与 Web 的差异）；
-///   操作走 iOS 列表惯例：左滑删除 / 重命名、右滑在新会话中继续、长按出完整菜单（与会话页右上角同图标、同顺序）。
+///   操作走 iOS 列表惯例：左滑出续接 / 删除两个图标按钮（都先确认），长按出完整菜单（与会话页右上角同图标、同顺序）。
 ///
 /// 原先是点左上角头像弹出的 sheet（右上「完成」关闭），2026-09-26 头像挪进标签栏后改为标签根页；
 /// 站内链接 `/my` 也切到这个标签（Router.tabRoot）。
@@ -131,9 +131,9 @@ struct MorePage: View {
         .polling(every: 30, immediately: true) { await loadNotices() }
     }
 
-    /// 会话行按 iOS 列表惯例处理操作（同邮件 / 信息）：行上不放「⋯」，左滑出「删除 / 重命名」，
-    /// 右滑出「在新会话中继续」，长按出完整菜单（与会话页右上角同图标、同顺序）。
-    /// 删除不允许一滑到底直接触发——删除要二次确认，全滑手势容易误触。
+    /// 会话行按 iOS 列表惯例处理操作（同邮件 / 信息）：行上不放「⋯」，左滑出两个纯图标按钮——
+    /// 分支图标（在新会话中继续）与垃圾桶（删除），两者点了都先弹确认，所以不带文字也不怕误触；
+    /// 长按出完整菜单（含重命名，与会话页右上角同图标、同顺序）。删除不允许一滑到底直接触发。
     private func sessionRow(_ item: API.SessionSummary) -> some View {
         MoreRouteRow(routes: [.session(id: item.id)]) {
             HStack(spacing: 10) {
@@ -145,14 +145,12 @@ struct MorePage: View {
         }
         .accessibilityIdentifier("more-session-row")
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button("删除", systemImage: "trash", role: .destructive) { Task { await remove(item) } }
+            Button(role: .destructive) { Task { await remove(item) } } label: { Image(systemName: "trash") }
                 .tint(.red)
-            Button("重命名", systemImage: "pencil") { Task { await rename(item) } }
-                .tint(.gray)
-        }
-        .swipeActions(edge: .leading, allowsFullSwipe: false) {
-            Button("在新会话中继续", systemImage: "arrow.triangle.branch") { Task { await fork(item) } }
+                .accessibilityLabel("删除会话")
+            Button { Task { await fork(item) } } label: { Image(systemName: "arrow.triangle.branch") }
                 .tint(.blue)
+                .accessibilityLabel("在新会话中继续")
         }
         .contextMenu { sessionActions(item) }
     }
@@ -198,6 +196,11 @@ struct MorePage: View {
     }
 
     private func fork(_ item: API.SessionSummary) async {
+        guard await feedback.confirm(
+            "在新会话中继续「\(title(of: item))」？",
+            message: "会带上这段对话的上下文开一个新会话接着聊，原会话保留不变。",
+            confirmTitle: "创建新会话"
+        ) else { return }
         do {
             let forked = try await api.sessionFork(sessionId: item.id)
             router.open(.session(id: forked.session.id))

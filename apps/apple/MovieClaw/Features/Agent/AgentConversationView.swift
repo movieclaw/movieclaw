@@ -279,6 +279,11 @@ struct AgentConversationView: View {
 
     /// 从此处创建新会话：服务端带上本会话的上下文开一个新会话（同 Web「在新会话中继续」），打开后接着聊
     private func fork() async {
+        guard await feedback.confirm(
+            "从此处创建新会话？",
+            message: "会带上这段对话的上下文开一个新会话接着聊，原会话保留不变。",
+            confirmTitle: "创建新会话"
+        ) else { return }
         do {
             let forked = try await api.sessionFork(sessionId: sessionId)
             router.open(.session(id: forked.session.id))
