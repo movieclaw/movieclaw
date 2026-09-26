@@ -150,36 +150,73 @@ public final class MPVPlayer {
         }
     }
 
-    /// 等尺寸稳定（旋转动画结束）后核对 mpv 输出尺寸，对不上就关开一次视频轨重建 VO。
+    /// 核对 mpv 输出尺寸，对不上就重建视频输出（VO），让它按新尺寸排布画面。
     ///
-    /// 为什么用关开视频轨：iOS 版 libmpv 没有 android-surface-size 之类的外部尺寸通知（设置返回 -12），
-    /// video-reload 在参数不变时跳过配置、切换 video-aspect-override 也不重算输出尺寸（逐一实测过）。
-    /// 关开视频轨会销毁并重建 VO，重建时读到的就是当前尺寸——与进出后台的 setVideoOutputEnabled 同一机制，
-    /// 代价是瞬间黑一下，只在尺寸真的对不上时才做。
-    private func scheduleVideoRelayout(after delay: Duration = .milliseconds(250)) {
+    /// 为什么要重建：iOS 版 libmpv 没有 android-surface-size 之类的外部尺寸通知（设置返回 -12），
+    /// video-reload 在参数不变时跳过配置，改 video-aspect-override / video-rotate 也不重算输出尺寸
+    /// （真机逐一实测过）。可行的只有重建 VO，两种做法真机测速（iPhone Air，4K 杜比视界）：
+    /// - 切 vo 到 null 再切回：只重建输出、保留解码器，约 0.6 秒——默认用它；
+    /// - 关开视频轨：连解码器一起重启、要从关键帧重新拉 4K 数据，约 1.2 秒——作为兜底。
+    /// 旋转时不等动画结束（校正与动画并行），期间把画面层隐藏、校正完成再淡入，
+    /// 用户看到的是短暂黑一下，而不是压扁/偏位的过渡画面。
+    private func scheduleVideoRelayout(after delay: Duration = .zero) {
         guard metalViewForResize != nil else { return }
         resizeTask?.cancel()
         resizeTask = Task { [weak self] in
-            try? await Task.sleep(for: delay)
-            guard !Task.isCancelled, let self, let layer = self.metalViewForResize?.metalLayer else { return }
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard !Task.isCancelled, let self, let metalView = self.metalViewForResize else { return }
+            let layer = metalView.metalLayer
             // 没有在放视频（未加载、已关视频输出、VO 还没初始化）时不用管，初始化时自然读到当前尺寸
-            guard let vid = self.string("vid"), vid != "no", self.string("path") != nil else { return }
-            let target = layer.drawableSize
+            guard let vid = self.string("vid"), vid != "no", self.string("path") != nil else {
+                metalView.setPictureHidden(false)
+                return
+            }
+            let target = (width: Int(layer.drawableSize.width), height: Int(layer.drawableSize.height))
             let width = self.int("osd-width") ?? 0, height = self.int("osd-height") ?? 0
+            guard width > 0, height > 0, width != target.width || height != target.height else {
+                metalView.setPictureHidden(false)
+                return
+            }
             #if DEBUG
-            MPVDiag.log("核对：视图 \(self.view.bounds.size) drawable \(target) osd \(width)x\(height) 视频 \(self.int("video-params/w") ?? -1)x\(self.int("video-params/h") ?? -1) dw \(self.int("video-params/dw") ?? -1)x\(self.int("video-params/dh") ?? -1) rotate \(self.int("video-params/rotate") ?? -1) hwdec \(self.string("hwdec-current") ?? "?")")
+            let started = Date()
             #endif
-            guard width > 0, height > 0, width != Int(target.width) || height != Int(target.height) else { return }
+            metalView.setPictureHidden(true)
             self.onVideoOutputRebuild?()
-            self.setString("vid", "no")
-            try? await Task.sleep(for: .milliseconds(60))
+
+            // 快路径：只重建视频输出
+            let vo = self.string("vo").flatMap { $0.isEmpty ? nil : $0 } ?? "gpu-next"
+            self.setString("vo", "null")
+            try? await Task.sleep(for: .milliseconds(30))
             guard !Task.isCancelled else { return }
-            self.setString("vid", vid)
+            self.setString("vo", vo)
+            var fixed = await self.waitForOutput(target, timeout: .milliseconds(1500))
+
+            // 兜底：关开视频轨（连解码器一起重启）
+            if !fixed, !Task.isCancelled {
+                self.onVideoOutputRebuild?()
+                self.setString("vid", "no")
+                try? await Task.sleep(for: .milliseconds(60))
+                guard !Task.isCancelled else { return }
+                self.setString("vid", vid)
+                fixed = await self.waitForOutput(target, timeout: .milliseconds(3000))
+            }
             #if DEBUG
-            try? await Task.sleep(for: .seconds(1.5))
-            MPVDiag.log("重建后：osd \(self.int("osd-width") ?? -1)x\(self.int("osd-height") ?? -1) drawable \(layer.drawableSize)")
+            MPVDiag.log("尺寸校正\(fixed ? "完成" : "未完成")：\(Int(Date().timeIntervalSince(started) * 1000)) 毫秒，目标 \(target.width)x\(target.height)")
             #endif
+            guard !Task.isCancelled else { return }
+            metalView.setPictureHidden(false)
         }
+    }
+
+    /// 轮询 mpv 输出尺寸直到等于目标（每 30 毫秒一次）
+    private func waitForOutput(_ target: (width: Int, height: Int), timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(30))
+            if Task.isCancelled { return false }
+            if int("osd-width") == target.width, int("osd-height") == target.height { return true }
+        }
+        return false
     }
 
     // MARK: - 播放控制

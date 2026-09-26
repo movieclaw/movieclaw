@@ -23,6 +23,16 @@ final class MPVMetalView: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// 隐藏/显示画面层（尺寸校正期间隐藏，避免露出压扁或偏位的过渡帧）；显示时短暂淡入
+    func setPictureHidden(_ hidden: Bool) {
+        guard (metalLayer.opacity == 0) != hidden else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(hidden)
+        CATransaction.setAnimationDuration(0.15)
+        metalLayer.opacity = hidden ? 0 : 1
+        CATransaction.commit()
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let scale = window?.screen.nativeScale ?? traitCollection.displayScale
@@ -36,11 +46,11 @@ final class MPVMetalView: UIView {
         let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
         metalLayer.drawableSize = size
         CATransaction.commit()
-        #if DEBUG
-        MPVDiag.log("布局：bounds \(bounds.size) scale \(scale) drawable \(size)")
-        #endif
         guard size.width > 1, size.height > 1, size != lastDrawableSize else { return }
+        let resized = lastDrawableSize != .zero
         lastDrawableSize = size
+        // 尺寸真的变了（旋转）：mpv 还按旧尺寸出图，先把画面藏起来，校正完成后再淡入
+        if resized { setPictureHidden(true) }
         onDrawableSizeChange?(size)
     }
 }
