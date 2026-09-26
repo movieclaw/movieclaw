@@ -115,11 +115,11 @@ final class DiscoverUITests: XCTestCase {
         subscribed.tap()
         XCTAssertTrue(app.staticTexts["subscribe-existing"].waitForExistence(timeout: 20) || app.otherElements["subscribe-existing"].exists, "应进入订阅弹层管理态")
         snapshot("订阅管理态")
-        // 只点「好的」关闭，绝不点「取消订阅」
-        let ok = app.buttons["subscribe-ok"]
-        XCTAssertTrue(ok.isHittable)
-        ok.tap()
-        XCTAssertFalse(app.buttons["subscribe-ok"].waitForExistence(timeout: 3))
+        // 只点左上 ✕ 关闭，绝不点「取消订阅」
+        let close = app.buttons["sheet-close"]
+        XCTAssertTrue(close.isHittable)
+        close.tap()
+        XCTAssertFalse(app.buttons["subscribe-unsubscribe"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.otherElements["subscription-detail"].exists, "不应跳到订阅详情")
     }
 

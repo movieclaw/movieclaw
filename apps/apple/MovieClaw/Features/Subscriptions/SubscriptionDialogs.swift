@@ -14,14 +14,19 @@ struct SeasonPickRow: View {
     let checked: Bool
     let onToggle: () -> Void
 
-    private var progress: String {
+    private var progress: String { Self.progress(season) }
+    private var owned: String? { Self.owned(season) }
+
+    /// 播出进度文案（订阅弹层的原生季行也用这一套）
+    static func progress(_ season: API.SeasonOverview) -> String {
         let total = season.episodeCount ?? 0
         if total > 0, season.airedCount >= total { return "全 \(total) 集已播完" }
         if total > 0 { return "已播 \(season.airedCount)/\(total) 集" }
         return season.airedCount > 0 ? "已播 \(season.airedCount) 集" : "未播出"
     }
 
-    private var owned: String? {
+    /// 库存文案；库里一集都没有时为 nil
+    static func owned(_ season: API.SeasonOverview) -> String? {
         let total = season.episodeCount ?? 0
         guard season.ownedCount > 0 else { return nil }
         return total > 0 && season.ownedCount >= total ? "整季已在库" : "库里已有 \(season.ownedCount) 集"
@@ -63,12 +68,14 @@ struct SeasonPickRow: View {
 struct DispatchPreviewNote: View {
     let preview: API.DispatchPreviewView
     var adjusting = false
+    /// 放在毛玻璃弹层的脚注里时字号与对比度提一档，否则虚化背景上看不清
+    var emphasized = false
 
     var body: some View {
         if preview.ok {
             Text(text)
-                .font(.caption)
-                .foregroundStyle(Theme.textFaint)
+                .font(emphasized ? .footnote : .caption)
+                .foregroundStyle(emphasized ? Theme.textMuted : Theme.textFaint)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("dispatch-preview")
         } else {

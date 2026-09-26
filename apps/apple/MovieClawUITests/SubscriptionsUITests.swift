@@ -149,23 +149,17 @@ final class SubscriptionsUITests: XCTestCase {
         let submit = app.buttons["subscribe-submit"]
         XCTAssertTrue(submit.waitForExistence(timeout: 40), "未订阅作品应进入订阅表单")
         XCTAssertTrue(app.buttons["season-1"].exists, "剧集应列出可勾选的季")
-        XCTAssertTrue(app.staticTexts["资源规则"].exists, "管理员应能选规则组")
-        XCTAssertTrue(app.staticTexts["subscribe-ruleset-summary"].exists || app.otherElements["subscribe-ruleset-summary"].exists || app.staticTexts["2160p > 1080p"].exists, "所选规则组应显示条件摘要")
+        let ruleset = app.buttons["subscribe-ruleset"]
+        XCTAssertTrue(ruleset.exists, "管理员应能选规则组")
+        // 条件摘要在规则组行内，读屏标签 = 行名 + 组名 + 摘要
+        XCTAssertTrue(ruleset.label.hasPrefix("资源规则") && ruleset.label.count > "资源规则".count + 4, "所选规则组应在行内显示条件摘要：\(ruleset.label)")
         snapshot("订阅弹层-ready")
 
-        // 快捷新建规则组：只打开编辑器、展开分段，不保存。
-        // 安全护栏：「+ 新建规则组」在长表单下方，可能被常驻底栏的「确认订阅」盖住——
-        // XCUITest 按坐标点击，盖住时会误点到确认订阅（真实创建订阅）。所以先把它滚到底栏上方、
-        // 确认两者不重叠再点，做不到就直接失败，绝不冒险点击。
-        let newRuleset = app.buttons["subscribe-new-ruleset"]
-        XCTAssertTrue(newRuleset.waitForExistence(timeout: 10))
-        for _ in 0 ..< 6 where newRuleset.frame.maxY > submit.frame.minY - 24 {
-            app.swipeUp(velocity: .slow)
-        }
-        guard newRuleset.isHittable, newRuleset.frame.maxY < submit.frame.minY - 24 else {
-            XCTFail("「+ 新建规则组」无法滚到底栏上方，为避免误点确认订阅，停止本用例")
-            return
-        }
+        // 快捷新建规则组收在「资源规则」菜单末尾：只打开编辑器、展开分段，不保存。
+        // 确认订阅在右上角工具栏，与规则组菜单不重叠，不会误点
+        app.buttons["subscribe-ruleset"].tap()
+        let newRuleset = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label == %@", "subscribe-new-ruleset", "新建规则组…")).firstMatch
+        XCTAssertTrue(newRuleset.waitForExistence(timeout: 10), "规则组菜单末尾应有「新建规则组…」")
         newRuleset.tap()
         XCTAssertTrue(app.buttons["ruleset-save"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["ruleset-save"].isEnabled, "未填名称时保存键应禁用")
@@ -183,7 +177,7 @@ final class SubscriptionsUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["subscribe-existing"].waitForExistence(timeout: 40) || app.otherElements["subscribe-existing"].waitForExistence(timeout: 5), "已订阅作品应进入管理态")
         XCTAssertTrue(app.buttons["subscribe-unsubscribe"].exists)
         snapshot("订阅弹层-已订阅")
-        app.buttons["subscribe-ok"].tap()
+        closeTopSheet(app)
         XCTAssertTrue(app.buttons["subscription-cell"].firstMatch.waitForExistence(timeout: 10))
     }
 
