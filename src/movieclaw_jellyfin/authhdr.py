@@ -1,6 +1,6 @@
 """``Authorization: MediaBrowser ...`` 头解析（设计文档 4.1）。
 
-照抄 Jellyfin AuthorizationContext.cs:229-317 的状态机语义，而非简单 split：
+按 Jellyfin 客户端实际发送的头格式解析，而非简单 split：
 - 头值无空格 → 整头作废；scheme 取第一个空格前部分，MediaBrowser/Emby
   大小写不敏感；
 - 引号内的逗号不是分隔符（``x="123,123"`` → 值 ``123,123``）；
@@ -53,28 +53,29 @@ def parse_authorization_header(header: str | None) -> AuthorizationInfo | None:
 
 
 def _split_parts(value: str) -> dict[str, str]:
-    """键值对切分状态机（AuthorizationContext.GetParts 的 Python 移植）。
+    """把 ``k1="v1", k2=v2`` 切成字典。
 
-    `escaped` 在遇到引号时翻转、在引号内遇到逗号时保持——引号内的逗号
-    不作分隔符；键区分大小写。
+    先按引号外的逗号切段，再在每段第一个 ``=`` 处分出键和值：键去空白、
+    区分大小写；值去空白和首尾引号后做 URL 解码；键或值为空的段丢弃。
     """
+    segments: list[str] = []
+    current: list[str] = []
+    quoted = False
+    for ch in value:
+        if ch == '"':
+            quoted = not quoted
+        if ch == "," and not quoted:
+            segments.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    segments.append("".join(current))
+
     result: dict[str, str] = {}
-    escaped = False
-    key = ""
-    start = 0
-    for i, ch in enumerate(value):
-        if ch in ('"', ","):
-            # 引号翻转 escape 态；引号内的逗号维持 escape 态（原文的 XOR 写法）
-            escaped = (not escaped) == (ch == '"')
-            if ch == "," and not escaped:
-                # key 只在真正产出一个值后重置（空片段保留 key，对齐 GetParts）
-                if start < i and key:
-                    result[key.strip()] = unquote_plus(value[start:i].strip('"'))
-                    key = ""
-                start = i + 1
-        elif not escaped and ch == "=":
-            key = value[start:i]
-            start = i + 1
-    if start < len(value) and key:
-        result[key.strip()] = unquote_plus(value[start:].strip('"'))
+    for segment in segments:
+        key, sep, raw = segment.partition("=")
+        key = key.strip()
+        raw = raw.strip().strip('"')
+        if sep and key and raw:
+            result[key] = unquote_plus(raw)
     return result
