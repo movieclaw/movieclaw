@@ -287,3 +287,197 @@ async def test_scheduling_an_unsupported_track_is_refused(video: Path) -> None:
 def test_scheduling_without_an_event_loop_is_refused(video: Path) -> None:
     """同步上下文（扫描脚本、CLI）没有事件循环可挂后台任务，如实返回 False。"""
     assert media_extract.schedule_extraction(make_file(video), 0) is False
+
+
+# ---------------------------------------------------------------------------
+# 一个文件只通读一遍、全局串行、超时按体积、失败记住（2026-09 NAS 白读几百 GB）
+# ---------------------------------------------------------------------------
+
+_SRT = "1\n00:00:01,000 --> 00:00:02,000\nhi\n\n"
+
+
+def make_multi_file(video: Path, codecs: list[str], file_id: int = 7) -> LibraryFile:
+    file = make_file(video)
+    file.id = file_id
+    file.subtitle_streams = [{"codec": c} for c in codecs]
+    return file
+
+
+def _outputs(argv) -> list[str]:
+    """假 ffmpeg 要写出的产物：多路输出时每条轨一个 .part 临时文件。"""
+    return [a for a in argv if ".part." in str(a)]
+
+
+class _DoneProcess:
+    pid = 1
+
+    def __init__(self, returncode: int = 0) -> None:
+        self.returncode: int | None = None
+        self._rc = returncode
+
+    async def communicate(self):
+        self.returncode = self._rc
+        return b"", b"" if self._rc == 0 else b"boom"
+
+
+@pytest.mark.asyncio
+async def test_one_ffmpeg_extracts_every_track_of_the_file(video: Path, monkeypatch) -> None:
+    """一部带三条字幕的 Remux，逐轨抽等于从头读三遍；一趟多路输出全部落缓存。"""
+    calls = []
+
+    async def fake_exec(*argv, **_kwargs):
+        calls.append(argv)
+        for out in _outputs(argv):
+            Path(out).write_text(_SRT, encoding="utf-8")
+        return _DoneProcess()
+
+    monkeypatch.setattr(media_extract.shutil, "which", lambda _n: "/fake/ffmpeg")
+    monkeypatch.setattr(media_extract.asyncio, "create_subprocess_exec", fake_exec)
+
+    file = make_multi_file(video, ["subrip", "ass", "hdmv_pgs_subtitle", "dvd_subtitle"])
+    track = await media_extract.extract_track_async(file, 1)
+
+    assert track is not None and track.format == "ass"
+    assert len(calls) == 1, f"一个文件起了 {len(calls)} 个 ffmpeg"
+    assert calls[0].count("-i") == 1 and calls[0].count("-map") == 3  # VobSub 不支持，不抽
+    for index, fmt in ((0, "srt"), (2, "sup")):
+        cached = media_extract.cached_track(file, index)
+        assert cached is not None and cached.format == fmt
+
+
+@pytest.mark.asyncio
+async def test_different_tracks_of_one_file_share_one_ffmpeg(video: Path, monkeypatch) -> None:
+    """播放器要轨 0、AI 生成要轨 1，同时到达也只通读一遍。"""
+    starts = 0
+    release = asyncio.Event()
+
+    class SlowProcess(_DoneProcess):
+        async def communicate(self):
+            await release.wait()
+            return await super().communicate()
+
+    async def fake_exec(*argv, **_kwargs):
+        nonlocal starts
+        starts += 1
+        for out in _outputs(argv):
+            Path(out).write_text(_SRT, encoding="utf-8")
+        return SlowProcess()
+
+    monkeypatch.setattr(media_extract.shutil, "which", lambda _n: "/fake/ffmpeg")
+    monkeypatch.setattr(media_extract.asyncio, "create_subprocess_exec", fake_exec)
+
+    file = make_multi_file(video, ["subrip", "subrip"])
+    first = asyncio.create_task(media_extract.extract_track_async(file, 0))
+    second = asyncio.create_task(media_extract.extract_track_async(file, 1))
+    await asyncio.sleep(0)
+    release.set()
+
+    assert all(r is not None for r in await asyncio.gather(first, second))
+    assert starts == 1, f"同一个文件被通读了 {starts} 遍"
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_file_is_not_read_again(video: Path, monkeypatch) -> None:
+    """超时白读一遍已经够亏；不记住的话每次打开播放器都再白读一遍。"""
+    starts = 0
+
+    class HangingProcess(_DoneProcess):
+        async def communicate(self):
+            await asyncio.Event().wait()
+
+    async def fake_exec(*_argv, **_kwargs):
+        nonlocal starts
+        starts += 1
+        return HangingProcess()
+
+    monkeypatch.setattr(media_extract.shutil, "which", lambda _n: "/fake/ffmpeg")
+    monkeypatch.setattr(media_extract.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(media_extract, "_extract_timeout", lambda _v: 0.01)
+    monkeypatch.setattr(media_extract, "_PROCESS_TERM_TIMEOUT", 0.01)
+    monkeypatch.setattr(media_extract, "_PROCESS_KILL_TIMEOUT", 0.01)
+
+    file = make_multi_file(video, ["subrip", "ass"])
+    assert await media_extract.extract_track_async(file, 0) is None
+    assert media_extract.extraction_failed(file, 0) and media_extract.extraction_failed(file, 1)
+
+    assert await media_extract.extract_track_async(file, 1) is None
+    assert starts == 1, f"超时过的文件又被读了 {starts - 1} 遍"
+
+
+@pytest.mark.asyncio
+async def test_whole_file_reads_are_serialized_across_files(tmp_path: Path, monkeypatch) -> None:
+    """几个 ffmpeg 并发读 NFS 只会平分带宽、一起撞超时；同一时刻只放行一个。"""
+    monkeypatch.setattr(media_extract, "cache_dir", lambda: tmp_path / "cache")
+    running = 0
+    peak = 0
+
+    class CountingProcess(_DoneProcess):
+        async def communicate(self):
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            return await super().communicate()
+
+    async def fake_exec(*argv, **_kwargs):
+        for out in _outputs(argv):
+            Path(out).write_text(_SRT, encoding="utf-8")
+        return CountingProcess()
+
+    monkeypatch.setattr(media_extract.shutil, "which", lambda _n: "/fake/ffmpeg")
+    monkeypatch.setattr(media_extract.asyncio, "create_subprocess_exec", fake_exec)
+
+    files = []
+    for i in range(4):
+        path = tmp_path / f"movie{i}.mkv"
+        path.write_bytes(b"source")
+        files.append(make_multi_file(path, ["subrip"], file_id=100 + i))
+
+    results = await asyncio.gather(
+        *(media_extract.extract_track_async(f, 0) for f in files)
+    )
+    assert all(r is not None for r in results)
+    assert peak == 1, f"同时有 {peak} 个整文件通读在跑"
+
+
+def test_timeout_scales_with_file_size(tmp_path: Path) -> None:
+    """固定 120 秒读不完 60 GB 的 Remux；按保守吞吐放宽，封顶一小时。"""
+    small = tmp_path / "small.mkv"
+    small.write_bytes(b"x")
+    assert media_extract._extract_timeout(small) == media_extract.EXTRACT_TIMEOUT
+
+    remux = tmp_path / "remux.mkv"
+    with remux.open("wb") as fh:
+        fh.truncate(20 * 1024**3)  # 稀疏文件，不占真实磁盘
+    assert media_extract._extract_timeout(remux) == pytest.approx(1024.0)
+
+    huge = tmp_path / "huge.mkv"
+    with huge.open("wb") as fh:
+        fh.truncate(200 * 1024**3)
+    assert media_extract._extract_timeout(huge) == media_extract._MAX_EXTRACT_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_a_bad_track_does_not_sink_the_good_ones(video: Path, monkeypatch) -> None:
+    """多轨一趟 ffmpeg 报错时退回逐轨：好轨照常出产物，只有坏轨记失败。"""
+    calls = []
+
+    async def fake_exec(*argv, **_kwargs):
+        calls.append(argv)
+        maps = [argv[i + 1] for i, a in enumerate(argv) if a == "-map"]
+        if len(maps) > 1 or maps == ["0:s:1"]:
+            return _DoneProcess(returncode=1)  # 坏轨 1 连累整趟
+        for out in _outputs(argv):
+            Path(out).write_text(_SRT, encoding="utf-8")
+        return _DoneProcess()
+
+    monkeypatch.setattr(media_extract.shutil, "which", lambda _n: "/fake/ffmpeg")
+    monkeypatch.setattr(media_extract.asyncio, "create_subprocess_exec", fake_exec)
+
+    file = make_multi_file(video, ["subrip", "subrip"])
+    assert await media_extract.extract_track_async(file, 0) is not None
+    assert len(calls) == 3  # 一趟多路失败 + 逐轨两趟
+    assert media_extract.extraction_failed(file, 1) is True
+    assert media_extract.extraction_failed(file, 0) is False
+    assert not list((video.parent / "cache").glob("*.part*")), "失败留下了半成品"

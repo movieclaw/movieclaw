@@ -12,13 +12,23 @@ extract``），缓存目录还不同，同一个 16 GB 的 MKV 被通读两遍�
 ASS/SSA 原样 copy 出来交 JASSUB，纯文本轨才转 SRT。生成端要的纯文本由
 pysubs2 从 ASS 里取（``plaintext``），不需要为它再抽一份 SRT。
 
-抽取是长时间 IO（大文件分钟级），三条纪律：
+抽取是长时间 IO（大文件分钟级，媒体库在 NFS 上时还要走一遍网络），纪律如下：
 
-1. **单飞**：同一条轨并发只跑一个 ffmpeg。详情页预热、播放器请求、字幕预检
-   会同时命中同一条轨，各抽各的等于把最贵的一步做了 N 遍。
-2. **可取消**：异步入口使用可取消的子进程，取消时连同整个进程组一起回收；
-   只有最后一个等待者离开才真的取消，避免预热与播放互相误杀。
-3. **不留残片**：先写临时文件再原子替换，失败/超时/取消都不会把半成品留成
+1. **一个文件只通读一遍**：异步入口按文件单飞，一趟 ffmpeg 用多路输出把
+   这个文件所有还没缓存的轨一起抽出来（与 Jellyfin 的
+   ExtractAllExtractableSubtitles 同一做法）。逐轨抽等于一部带 N 条字幕的
+   Remux 被从头读 N 遍；播放器请求、字幕预检、AI 生成同时要同一个文件的
+   不同轨，也只跑一个进程。
+2. **全局串行**：整文件通读同一时刻只放行一个。几个 ffmpeg 并发读 NFS 只会
+   平分带宽，谁都读不完，一起撞超时，已读的全部作废（2026-09 NAS 实测：
+   UI 测试批量打开详情页，一天白读几百 GB）。
+3. **超时按体积估**：固定 120 秒读不完一部 60 GB 的 Remux，超时即白读；
+   按保守吞吐估算上限，只拿它兜住真正卡死的进程。
+4. **失败要记住**：超时或 ffmpeg 报错的轨记下当时视频的 mtime，视频没换就
+   不再重抽——否则每次打开播放器都把同一个读不出来的文件再通读一遍。
+5. **可取消**：子进程可取消，取消时连同整个进程组一起回收；只有最后一个
+   等待者离开才真的取消，避免播放器与预检互相误杀。
+6. **不留残片**：先写临时文件再原子替换，失败/超时/取消都不会把半成品留成
    下一次的「缓存命中」。
 """
 
@@ -41,8 +51,13 @@ from movieclaw_db.models import LibraryFile
 
 logger = logging.getLogger("movieclaw_api.media_extract")
 
-#: 抽取要通读整个容器，大文件是分钟级，比探测慢得多。
+#: 抽取要通读整个容器，大文件是分钟级，比探测慢得多。异步入口以它为下限按
+#: 体积放宽（见 ``_extract_timeout``）；同步入口与内嵌字体抽取仍直接用它。
 EXTRACT_TIMEOUT = 120.0
+#: 估算通读耗时的保守吞吐：千兆网上的 NFS、繁忙的机械盘阵列都跑得到。
+_ASSUMED_READ_BYTES_PER_SEC = 20 * 1024 * 1024
+#: 体积估算的封顶：再大的文件也不该让一个卡死的 ffmpeg 挂上几个小时。
+_MAX_EXTRACT_TIMEOUT = 3600.0
 # 先给 ffmpeg 一个正常退出窗口，超时或取消后再强制杀掉整个进程组。
 _PROCESS_TERM_TIMEOUT = 2.0
 _PROCESS_KILL_TIMEOUT = 5.0
@@ -79,18 +94,22 @@ class _ExtractionSpec:
 
 @dataclass
 class _ExtractionJob:
-    """同一字幕轨的共享抽取任务及当前等待者数量。"""
+    """同一视频文件的共享抽取任务（一趟抽出全部缺缓存的轨）及当前等待者数量。"""
 
-    task: asyncio.Task[ExtractedTrack | None]
+    task: asyncio.Task[None]
     waiters: int = 0
 
 
-#: 抽取任务的身份：同一个视频的同一条轨、同一个产物路径即同一件活。
+#: 单条轨的身份：同一个视频的同一条轨、同一个产物路径即同一件活。
+#: 失败记忆与后台调度按它记账。
 _JobKey = tuple[str, int, str]
 
-# 详情页预热、播放器请求与字幕预检可能同时命中同一条内封轨；共享任务既避免
-# 重复读盘，也让最后一个请求离开时能取消仍在进行的 ffmpeg。
-_EXTRACTION_JOBS: dict[_JobKey, _ExtractionJob] = {}
+# 播放器请求、字幕预检与 AI 生成可能同时要同一个文件的轨（同一条或不同条）；
+# 按视频路径共享一个任务，既只通读一遍，也让最后一个请求离开时能取消
+# 仍在进行的 ffmpeg。
+_EXTRACTION_JOBS: dict[str, _ExtractionJob] = {}
+# 整文件通读的全局闸门（与创建它的事件循环绑定，测试里每个用例一个新循环）。
+_READ_GATE: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
 # 预检发起的后台抽取：用户关掉对话框也要把产物抽完落缓存，所以它自己就是
 # 一个等待者，不随请求取消；这里只为「已经在抽了吗」提供同步答案。
 _BACKGROUND_TASKS: dict[_JobKey, asyncio.Task[None]] = {}
@@ -147,8 +166,43 @@ def _extraction_spec(file: LibraryFile, index: int) -> _ExtractionSpec | None:
     )
 
 
+def _file_specs(file: LibraryFile) -> list[tuple[int, _ExtractionSpec]]:
+    """这个文件所有能抽的内封轨——一趟通读顺手全抽，下次换轨直接命中缓存。"""
+    specs = []
+    for index in range(len(file.subtitle_streams or [])):
+        spec = _extraction_spec(file, index)
+        if spec is not None:
+            specs.append((index, spec))
+    return specs
+
+
 def _job_key(spec: _ExtractionSpec, index: int) -> _JobKey:
     return (str(spec.video), index, str(spec.out_path))
+
+
+def _extract_timeout(video: Path) -> float:
+    """按体积估算通读上限：下限 EXTRACT_TIMEOUT，封顶 _MAX_EXTRACT_TIMEOUT。"""
+    try:
+        size = video.stat().st_size
+    except OSError:
+        return EXTRACT_TIMEOUT
+    return min(_MAX_EXTRACT_TIMEOUT, max(EXTRACT_TIMEOUT, size / _ASSUMED_READ_BYTES_PER_SEC))
+
+
+def _read_gate() -> asyncio.Semaphore:
+    """整文件通读的全局闸门：同一时刻只放行一个抽取进程。"""
+    global _READ_GATE
+    loop = asyncio.get_running_loop()
+    if _READ_GATE is None or _READ_GATE[0] is not loop:
+        _READ_GATE = (loop, asyncio.Semaphore(1))
+    return _READ_GATE[1]
+
+
+def _remember_failure(spec: _ExtractionSpec, index: int) -> None:
+    """记下这条轨在当前视频版本上抽不出来；视频换了（mtime 变）自然作废。"""
+    stamp = _video_stamp(spec)
+    if stamp is not None:
+        _FAILED_EXTRACTIONS[_job_key(spec, index)] = stamp
 
 
 def _is_fresh(out_path: Path, video: Path) -> bool:
@@ -202,16 +256,27 @@ def _new_tmp_path(out_path: Path) -> Path:
     return out_path.with_name(f".{out_path.stem}.{uuid.uuid4().hex}.part{out_path.suffix}")
 
 
-def _extract_command(spec: _ExtractionSpec, index: int, tmp_path: Path) -> list[str]:
+def _codec_args(spec: _ExtractionSpec) -> list[str]:
     # ASS/PGS 用 copy 保住格式；文本轨统一转 SRT，抹平 mov_text 等差异。
-    codec_args = ["-c:s", "copy"] if spec.fmt in ("ass", "sup") else ["-c:s", "srt"]
+    return ["-c:s", "copy"] if spec.fmt in ("ass", "sup") else ["-c:s", "srt"]
+
+
+def _extract_command(spec: _ExtractionSpec, index: int, tmp_path: Path) -> list[str]:
     return [
         "ffmpeg", "-nostdin", "-v", "error", "-y",
         "-i", str(spec.video),
         "-map", f"0:s:{index}",
-        *codec_args,
+        *_codec_args(spec),
         str(tmp_path),
     ]
+
+
+def _batch_command(video: Path, outputs: list[tuple[int, _ExtractionSpec, Path]]) -> list[str]:
+    """一次读入、多路输出：每条轨一组 ``-map … 输出文件``，ffmpeg 只通读一遍。"""
+    argv = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(video)]
+    for index, spec, tmp_path in outputs:
+        argv += ["-map", f"0:s:{index}", *_codec_args(spec), str(tmp_path)]
+    return argv
 
 
 def _finish_extraction(
@@ -291,8 +356,9 @@ def extract_track(file: LibraryFile, index: int) -> ExtractedTrack | None:
 async def extract_track_async(file: LibraryFile, index: int) -> ExtractedTrack | None:
     """异步抽出内封轨，并在请求取消时回收对应的 ffmpeg 进程。
 
-    同一条轨的调用共享一个任务。调用方取消只释放自己的等待者；没有其它
-    等待者时才取消底层任务，避免详情页预热与播放器请求互相误杀。
+    同一个文件的调用共享一个任务。调用方取消只释放自己的等待者；没有其它
+    等待者时才取消底层任务，避免播放器请求与字幕预检互相误杀。上次已经
+    失败过（且视频没换）的轨直接返回 None，不再通读一遍。
     """
     spec = _extraction_spec(file, index)
     if spec is None:
@@ -300,15 +366,22 @@ async def extract_track_async(file: LibraryFile, index: int) -> ExtractedTrack |
     cached = _cached_track(spec)
     if cached is not None:
         return cached
-    return await _shared_extract(spec, index)
+    if extraction_failed(file, index):
+        return None
+    return await _shared_extract(_file_specs(file), spec, index)
 
 
-async def _shared_extract(spec: _ExtractionSpec, index: int) -> ExtractedTrack | None:
-    """单飞入口：同一条轨的并发调用共享一个 ffmpeg 进程。"""
-    key = _job_key(spec, index)
+async def _shared_extract(
+    batch: list[tuple[int, _ExtractionSpec]], spec: _ExtractionSpec, index: int
+) -> ExtractedTrack | None:
+    """单飞入口：同一个文件的并发调用共享一趟 ffmpeg，完事后各取各的轨。
+
+    ``batch`` 在调用方手里就算好（不在后台任务里碰 ORM 对象）。
+    """
+    key = str(spec.video)
     job = _EXTRACTION_JOBS.get(key)
     if job is None or job.task.done():
-        task = asyncio.create_task(_extract_async_uncached(spec, index))
+        task = asyncio.create_task(_extract_batch(batch))
         job = _ExtractionJob(task=task)
         _EXTRACTION_JOBS[key] = job
         task.add_done_callback(lambda done: _forget_extraction_job(key, done))
@@ -316,7 +389,8 @@ async def _shared_extract(spec: _ExtractionSpec, index: int) -> ExtractedTrack |
     try:
         # 请求取消不能直接取消共享任务；finally 会在最后一个等待者离开时
         # 负责取消它，并由子进程协程完成 SIGTERM/SIGKILL 清理。
-        return await asyncio.shield(job.task)
+        await asyncio.shield(job.task)
+        return _cached_track(spec)
     finally:
         job.waiters -= 1
         if job.waiters == 0 and not job.task.done():
@@ -337,8 +411,10 @@ def extraction_failed(file: LibraryFile, index: int) -> bool:
     视频换了就忘掉旧结论——洗版之后值得再试一次。
     """
     spec = _extraction_spec(file, index)
-    if spec is None:
-        return False
+    return spec is not None and _known_failed(spec, index)
+
+
+def _known_failed(spec: _ExtractionSpec, index: int) -> bool:
     key = _job_key(spec, index)
     stamp = _FAILED_EXTRACTIONS.get(key)
     if stamp is None:
@@ -377,12 +453,13 @@ def schedule_extraction(file: LibraryFile, index: int) -> bool:
         loop = asyncio.get_running_loop()
     except RuntimeError:  # 没有事件循环（同步上下文）时不调度
         return False
+    batch = _file_specs(file)
 
     async def _run() -> None:
-        # spec 在调度时已算好：后台任务不再触碰 ORM 对象，避免请求的会话
-        # 关闭后读属性抛 DetachedInstanceError。
+        # spec/batch 在调度时已算好：后台任务不再触碰 ORM 对象，避免请求的
+        # 会话关闭后读属性抛 DetachedInstanceError。
         try:
-            produced = await _shared_extract(spec, index)
+            produced = await _shared_extract(batch, spec, index)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 -- 后台抽取失败只影响下一次预检
@@ -436,50 +513,85 @@ async def _terminate_async_process(
         await asyncio.wait_for(asyncio.shield(communicate), _PROCESS_KILL_TIMEOUT)
 
 
-async def _extract_async_uncached(
-    spec: _ExtractionSpec, index: int
-) -> ExtractedTrack | None:
-    # 共享任务创建后再次检查，避免并发调用之间有一个刚刚完成缓存写入。
-    cached = _cached_track(spec)
-    if cached is not None:
-        return cached
-    if not _can_extract(spec):
-        return None
+async def _extract_batch(batch: list[tuple[int, _ExtractionSpec]]) -> None:
+    """排队过全局闸门，一趟 ffmpeg 抽出这个文件所有还缺缓存的轨。"""
+    async with _read_gate():
+        # 排队期间可能已有别人抽完，也可能刚被判了失败：到手再筛一遍。
+        pending = [
+            (index, spec)
+            for index, spec in batch
+            if _cached_track(spec) is None and not _known_failed(spec, index)
+        ]
+        if not pending or not _can_extract(pending[0][1]):
+            return
+        if await _run_extraction(pending) or len(pending) == 1:
+            return
+        # 多轨一趟失败，多半是某一条坏轨连累了整趟：退回逐轨抽，好轨照常出
+        # 产物、坏轨单独记失败。多读几遍，但只发生在罕见的坏片上。
+        logger.warning("多轨一次抽取失败，改为逐轨重试：%s", pending[0][1].video)
+        for item in pending:
+            await _run_extraction([item])
 
-    tmp_path = _new_tmp_path(spec.out_path)
+
+async def _run_extraction(pending: list[tuple[int, _ExtractionSpec]]) -> bool:
+    """跑一趟 ffmpeg 抽出 pending 的全部轨，产物原子落缓存。
+
+    返回 False 仅表示多轨一趟时 ffmpeg 报错退出（产物已清掉、未记失败，交给
+    调用方逐轨重试）；其余结局（成功、超时、单轨失败）都已就地记账。
+    """
+    video = pending[0][1].video
+    outputs = [(index, spec, _new_tmp_path(spec.out_path)) for index, spec in pending]
+    timeout = _extract_timeout(video)
+
+    def _discard(*, remember: bool) -> None:
+        for index, spec, tmp_path in outputs:
+            _cleanup(tmp_path)
+            if remember:
+                _remember_failure(spec, index)
+
     started_at = time.monotonic()
     try:
         proc = await asyncio.create_subprocess_exec(
-            *_extract_command(spec, index, tmp_path),
+            *_batch_command(video, outputs),
             stdin=subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
     except OSError as exc:
-        _cleanup(tmp_path)
-        logger.warning("内封字幕抽取进程启动失败：%s（%s）", spec.video, exc)
-        return None
+        _discard(remember=True)
+        logger.warning("内封字幕抽取进程启动失败：%s（%s）", video, exc)
+        return True
 
     communicate = asyncio.create_task(proc.communicate())
     try:
-        _, stderr = await asyncio.wait_for(asyncio.shield(communicate), EXTRACT_TIMEOUT)
+        _, stderr = await asyncio.wait_for(asyncio.shield(communicate), timeout)
     except asyncio.CancelledError:
         await asyncio.shield(_terminate_async_process(proc, communicate))
-        _cleanup(tmp_path)
-        logger.info("内封字幕抽取已取消：%s 轨 %d", spec.video, index)
+        _discard(remember=False)
+        logger.info("内封字幕抽取已取消：%s（%d 条轨）", video, len(outputs))
         raise
     except TimeoutError:
         await _terminate_async_process(proc, communicate)
-        _cleanup(tmp_path)
+        # 超时也要记住：不记的话每次打开播放器都会把这个文件再白读一遍。
+        _discard(remember=True)
         logger.warning(
-            "内封字幕抽取超时（%.0f 秒）：%s 轨 %d", EXTRACT_TIMEOUT, spec.video, index
+            "内封字幕抽取超时（%.0f 秒）：%s（%d 条轨），视频文件不变就不再重试",
+            timeout, video, len(outputs),
         )
-        return None
-    return _finish_extraction(spec, index, tmp_path, proc.returncode, stderr, started_at)
+        return True
+
+    if proc.returncode != 0 and len(outputs) > 1:
+        _discard(remember=False)
+        return False
+    for index, spec, tmp_path in outputs:
+        _finish_extraction(spec, index, tmp_path, proc.returncode, stderr, started_at)
+        if _cached_track(spec) is None:
+            _remember_failure(spec, index)
+    return True
 
 
-def _forget_extraction_job(key: _JobKey, task: asyncio.Task[ExtractedTrack | None]) -> None:
+def _forget_extraction_job(key: str, task: asyncio.Task[None]) -> None:
     job = _EXTRACTION_JOBS.get(key)
     if job is not None and job.task is task:
         _EXTRACTION_JOBS.pop(key, None)
