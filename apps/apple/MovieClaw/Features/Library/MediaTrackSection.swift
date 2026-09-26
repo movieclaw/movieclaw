@@ -13,7 +13,7 @@ import SwiftUI
 /// 多文件（多版本 / 多分集）时先选物理文件再看轨道，避免不同版本的语言与格式混在一起；
 /// 只认在位文件（`state == in_place`），缺失与待回收的版本不出现在选择器里。
 ///
-/// 字幕行可点开预览（含一键校准时间轴）；外挂字幕（含 AI 生成）管理员可就地删除；
+/// 字幕行可点开预览（在列表弹层里推进一页，含一键校准时间轴）；外挂字幕（含 AI 生成）管理员可左滑删除；
 /// 字幕行尾挂「AI 生成字幕」入口（仅管理员，见 `TrackSubtitleGenButton`）。
 struct MediaTrackSection: View {
     /// 详情接口 `LibraryItemDetailView.files`（当前选中单元对应的文件集合，由调用方传入）
@@ -28,9 +28,6 @@ struct MediaTrackSection: View {
 
     /// 展开中的轨道列表（音轨或字幕）
     @State private var listTarget: TrackListTarget?
-    /// 在列表里点了一条字幕：先收起列表，收起完成后再弹预览（两个 sheet 不能同时切换）
-    @State private var queuedPreview: TrackPreviewTarget?
-    @State private var previewTarget: TrackPreviewTarget?
 
     private var availableFiles: [API.LibraryFileView] { files.filter { $0.state == "in_place" } }
 
@@ -87,13 +84,8 @@ struct MediaTrackSection: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .sheet(item: $listTarget, onDismiss: {
-            if let queued = queuedPreview {
-                queuedPreview = nil
-                previewTarget = queued
-            }
-        }) { target in
-            // 列表内容取自当前（可能已重拉过的）文件：删除一条字幕后列表就地刷新
+        .sheet(item: $listTarget) { target in
+            // 列表内容取自当前（可能已重拉过的）文件：删除 / 校准一条字幕后列表就地刷新
             let currentFile = selectedFile ?? file
             let groups = target.kind == .audio
                 ? TrackModel.groupByLanguage(TrackModel.audioEntries(currentFile.audioStreams ?? []))
@@ -105,26 +97,14 @@ struct MediaTrackSection: View {
                 groups: groups,
                 focusLanguage: target.focusLanguage,
                 footer: target.kind == .subtitle
-                    ? (permissions.canManageLibraries ? "点任意一条打开字幕预览；外挂字幕可就地删除" : "点任意一条打开字幕预览")
+                    ? (permissions.canManageLibraries ? "点任意一条打开字幕预览；外挂字幕可左滑删除" : "点任意一条打开字幕预览")
                     : nil,
                 canDelete: permissions.canManageLibraries,
-                videoPath: currentFile.filePath,
-                onSelect: { entry in
-                    guard let preview = entry.preview else { return }
-                    queuedPreview = TrackPreviewTarget(file: currentFile, preview: preview)
-                    listTarget = nil
-                },
+                file: currentFile,
+                onChanged: onChanged,
                 onDelete: { entry in await delete(entry, in: currentFile) }
             )
-        }
-        .sheet(item: $previewTarget) { target in
-            TrackSubtitlePreviewSheet(
-                file: target.file,
-                stream: target.preview.stream,
-                track: target.preview.track,
-                label: target.preview.label,
-                onChanged: onChanged
-            )
+            .sheetFeedback()
         }
     }
 
@@ -224,10 +204,8 @@ struct MediaTrackReadOnlyRows: View {
                 focusLanguage: target.focusLanguage,
                 footer: nil,
                 canDelete: false,
-                videoPath: "",
-                onSelect: { _ in },
-                onDelete: { _ in },
-                allowsPreview: false
+                file: nil,
+                onDelete: { _ in }
             )
             .sheetFeedback()
         }
@@ -252,12 +230,6 @@ private struct TrackPreviewInfo {
     var stream: API.SubtitleStreamView
     var track: String
     var label: String
-}
-
-private struct TrackPreviewTarget: Identifiable {
-    var file: API.LibraryFileView
-    var preview: TrackPreviewInfo
-    var id: String { "\(file.id)-\(preview.track)" }
 }
 
 /// 格式色块的色调：只承担格式识别，刻意保持低饱和，避免重新变成徽章墙
@@ -703,58 +675,88 @@ private struct TrackChipStyle: ViewModifier {
 
 // MARK: - 展开态：按语言分组的完整列表（底部弹层）
 
+/// 按语言分组的完整轨道列表。与订阅类弹层同一套 iOS 26 原生形态（见 `SubsSheetScaffold` 的说明）：
+/// - 不自设弹层背景，停在贴合高度时是系统悬浮的液态玻璃；左上 ✕ 关闭；
+/// - 正文是原生分组列表，一种语言一个 Section，「共几条 · 内封/外挂各几条」放导航栏副标题；
+/// - 点字幕在**同一个弹层里推进**到预览页（左上角返回列表），而不是先收起列表再弹第二个弹层；
+///   推进时弹层自动拉到全高——字幕对白动辄上千条，贴合高度下只露几行；
+/// - 删除外挂字幕用系统的左滑删除，确认框列出完整路径（删除不进回收站、无法撤销）。
 private struct TrackListSheet: View {
     let kind: TrackKind
     let groups: [TrackLanguageGroup]
     let focusLanguage: String
     let footer: String?
     let canDelete: Bool
-    /// 视频完整路径：外挂字幕与它同目录，据此还原要删文件的完整路径
-    let videoPath: String
-    let onSelect: (TrackEntry) -> Void
+    /// 轨道所属的视频文件；nil = 访客页的只读列表（不给预览，外挂字幕的完整路径也无从还原）
+    let file: API.LibraryFileView?
+    /// 预览页里校准时间轴成功后回调，调用方重拉详情
+    var onChanged: () async -> Void = {}
     let onDelete: (TrackEntry) async -> Void
-    /// 字幕行可点开预览（访客页的只读版不给预览）
-    var allowsPreview = true
 
     @Environment(\.dismiss) private var dismiss
     /// 待确认删除的一条；确认框就挂在列表弹层上（全局确认框在根视图，会被弹层挡住）
     @State private var pendingDelete: TrackEntry?
+    /// 推进中的字幕预览（条目 id）
+    @State private var path: [String] = []
 
     private var entries: [TrackEntry] { groups.flatMap(\.entries) }
-    private var total: Int { entries.count }
+
+    /// 导航栏副标题：总条数，字幕再拆内封 / 外挂（音轨没有这个区分，不占位）
+    private var summary: String {
+        let total = entries.count
+        guard entries.contains(where: { $0.external != nil }) else { return "共 \(total) 条" }
+        let external = entries.filter { $0.external == true }.count
+        return "共 \(total) 条 · 内封 \(total - external) · 外挂 \(external)"
+    }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                header
-                Divider().overlay(Theme.line)
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 2) {
-                            ForEach(groups) { group in
-                                groupView(group).id(group.language)
+        NavigationStack(path: $path) {
+            ScrollViewReader { proxy in
+                Form {
+                    ForEach(groups) { group in
+                        Section {
+                            ForEach(group.entries) { entry in
+                                row(entry)
+                            }
+                        } header: {
+                            HStack(spacing: 6) {
+                                Text(group.language)
+                                Text("· \(group.entries.count)").monospacedDigit()
+                            }
+                            // 被点的那一组标题用强调色：滚过去之后依然认得出
+                            .foregroundStyle(group.language == focusLanguage ? Theme.accentStrong : Theme.textMuted)
+                        } footer: {
+                            if let footer, group.id == groups.last?.id {
+                                Text(footer)
                             }
                         }
-                        .padding(6)
+                        .id(group.language)
                     }
-                    // 被点的语言组滚进视野
-                    .onAppear { proxy.scrollTo(focusLanguage, anchor: .top) }
                 }
-                if let footer {
-                    Divider().overlay(Theme.line)
-                    Text(footer)
-                        .font(.caption)
-                        .foregroundStyle(Theme.textFaint)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                }
+                .subsFormStyle()
+                // 量的是这张列表的内容高度，所以挂在 Form 上而不是外层
+                .modifier(SubsFittedDetents(fullHeight: !path.isEmpty))
+                // 被点的语言组滚进视野（内容超过弹层高度时才有意义）
+                .onAppear { proxy.scrollTo(focusLanguage, anchor: .top) }
             }
-            .navigationTitle("\(kind.title)列表")
+            .navigationTitle(kind.title)
+            .navigationSubtitle(summary)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
+                    Button("关闭", systemImage: "xmark", role: .close) { dismiss() }
+                        .accessibilityIdentifier("sheet-close")
+                }
+            }
+            .navigationDestination(for: String.self) { id in
+                if let file, let entry = entries.first(where: { $0.id == id }), let preview = entry.preview {
+                    TrackSubtitlePreviewPage(
+                        file: file,
+                        stream: preview.stream,
+                        track: preview.track,
+                        label: preview.label,
+                        onChanged: onChanged
+                    )
                 }
             }
             .alert(
@@ -770,85 +772,35 @@ private struct TrackListSheet: View {
                 }
             } message: { entry in
                 // 列真实路径而不是「这条字幕」：同一部影片常有一堆同语言字幕，只有路径能确认删的是哪个
-                Text("将从磁盘直接删除下面的文件，删除后无法恢复：\n\(TrackModel.siblingPath(videoPath, entry.deletable ?? ""))")
+                Text("将从磁盘直接删除下面的文件，删除后无法恢复：\n\(TrackModel.siblingPath(file?.filePath ?? "", entry.deletable ?? ""))")
             }
         }
-        .presentationDetents([.medium, .large])
-        .presentationBackground(.regularMaterial)
     }
 
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("\(kind.title) · 共 \(total) 条")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(Theme.text)
-            Spacer(minLength: 12)
-            // 音轨没有内封/外挂之分，表头就不占这一格
-            if entries.contains(where: { $0.external != nil }) {
-                let external = entries.filter { $0.external == true }.count
-                Text("内封 \(total - external) · 外挂 \(external)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(Theme.textFaint)
+    /// 列表里的一条轨。字幕推进到预览页（行尾是系统的 ›），音轨只是一条信息；
+    /// 可删的外挂字幕（含 AI 生成）挂系统左滑删除。
+    @ViewBuilder
+    private func row(_ entry: TrackEntry) -> some View {
+        let selectable = file != nil && entry.preview != nil && kind == .subtitle
+        Group {
+            if selectable {
+                NavigationLink(value: entry.id) { lineContent(entry) }
+                    .accessibilityLabel("预览字幕：\(entry.language) · \(entry.format) · \(entry.primary)")
+            } else {
+                lineContent(entry)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-    }
-
-    private func groupView(_ group: TrackLanguageGroup) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Text(group.language)
-                Text("· \(group.entries.count)").monospacedDigit()
-            }
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(Theme.textFaint)
-            .padding(.horizontal, 10)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
-            ForEach(group.entries) { entry in
-                lineView(entry)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if canDelete, entry.deletable != nil {
+                // 不用 role: .destructive：那会让系统先把行删掉动画走，而这里还要等确认框
+                Button("删除", systemImage: "trash") { pendingDelete = entry }
+                    .tint(.red)
+                    .accessibilityLabel("删除字幕文件：\(entry.primary)")
             }
         }
-        .padding(2)
-        // 被点的那一组常亮一层淡底：滚过去之后依然认得出
-        .background(group.language == focusLanguage ? Theme.accent.opacity(0.07) : .clear, in: .rect(cornerRadius: 10))
     }
 
-    /// 列表里的一条轨。音轨没有可点动作，只是一条信息；
-    /// 删除键只挂在外挂字幕（含 AI 生成）上，是独立按钮而不是整行的第二种点击语义。
-    private func lineView(_ entry: TrackEntry) -> some View {
-        let selectable = allowsPreview && entry.preview != nil && kind == .subtitle
-        let deletable = canDelete && entry.deletable != nil
-        return HStack(spacing: 10) {
-            Group {
-                if selectable {
-                    Button { onSelect(entry) } label: { lineContent(entry, showsChevron: !deletable) }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("预览字幕：\(entry.language) · \(entry.format) · \(entry.primary)")
-                } else {
-                    lineContent(entry, showsChevron: false)
-                }
-            }
-            if deletable {
-                Button {
-                    pendingDelete = entry
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.footnote)
-                        .foregroundStyle(Color.white.opacity(0.45))
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle().inset(by: -8))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("删除字幕文件：\(entry.primary)")
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-    }
-
-    private func lineContent(_ entry: TrackEntry, showsChevron: Bool) -> some View {
+    private func lineContent(_ entry: TrackEntry) -> some View {
         HStack(spacing: 10) {
             Text(entry.format)
                 .font(.caption2.weight(.bold))
@@ -858,13 +810,14 @@ private struct TrackListSheet: View {
                 .background(entry.tone.background, in: .rect(cornerRadius: 5))
             Text(entry.primary)
                 .font(.subheadline)
-                .foregroundStyle(Color.white.opacity(0.88))
+                .foregroundStyle(Theme.text)
                 .lineLimit(1)
+                .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 6) {
                 Text(entry.secondary)
                     .font(.caption)
-                    .foregroundStyle(Theme.textFaint)
+                    .foregroundStyle(Theme.textMuted)
                 ForEach(entry.flags, id: \.self) { flag in
                     Text(flag)
                         .font(.caption2.weight(.semibold))
@@ -873,15 +826,9 @@ private struct TrackListSheet: View {
                         .padding(.vertical, 2)
                         .background(Color.white.opacity(0.07), in: .rect(cornerRadius: 5))
                 }
-                if showsChevron {
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(Theme.accent)
-                }
             }
             .fixedSize()
         }
-        .contentShape(.rect)
     }
 }
 

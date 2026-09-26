@@ -648,7 +648,11 @@ private extension String {
 
 // MARK: - 弹层
 
-/// 预检 / 任务状态弹层（Web 的同一个 Modal 两种模式）
+/// 预检 / 任务状态弹层（Web 的同一个 Modal 两种模式）。
+///
+/// 与订阅类弹层同一套骨架（`SubsSheetScaffold`）：不自设背景、高度贴合内容，停在贴合高度时是系统悬浮的液态玻璃；
+/// 左上 ✕ 关闭，唯一的主动作（确认生成 / 开始识别并生成）放右上 ✓；
+/// 其余动作（重新检查、交给 Agent、停止生成）是列表末尾的一组行按钮，停止是红色——与「取消订阅」同一形态。
 private struct TrackGenSheet: View {
     @Bindable var model: TrackGenModel
     let file: API.LibraryFileView
@@ -656,40 +660,25 @@ private struct TrackGenSheet: View {
     @Environment(\.api) private var api
     @Environment(Router.self) private var router
 
-    private static let errorRed = Color(red: 1, green: 0.71, blue: 0.71)
-    private static let okGreen = Color(red: 0.49, green: 0.94, blue: 0.64)
-
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(subtitle)
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.textMuted)
-                    if model.mode == .status {
-                        statusContent
-                    } else {
-                        previewContent
-                    }
-                }
-                .padding(.horizontal, Theme.pagePadding)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        SubsSheetScaffold(
+            title: title,
+            subtitle: subtitle,
+            closeTitle: closeTitle,
+            onClose: { model.mode = nil },
+            // 启动中关掉弹层会让用户以为没发出去，✕ 暂时收起（下拉关闭同理被禁用）
+            closable: !(model.starting || model.agentStarting),
+            confirm: confirm,
+            // 预检加载中停在半高，免得先缩成一条再随结果涨回来
+            ready: model.mode == .status || !model.previewing
+        ) {
+            if model.mode == .status {
+                statusContent
+            } else {
+                previewContent
             }
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(cancelTitle) { model.mode = nil }
-                        .disabled(model.starting || model.agentStarting)
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                actionBar
-            }
+            actionRows
         }
-        .presentationDetents([.large])
-        .presentationBackground(.regularMaterial)
         .interactiveDismissDisabled(model.starting || model.agentStarting)
     }
 
@@ -707,9 +696,30 @@ private struct TrackGenSheet: View {
         return "确认后才调用 AI，并在后台生成。"
     }
 
-    private var cancelTitle: String {
+    private var closeTitle: String {
         if model.mode == .status { return "关闭" }
         return model.blockedWithoutPgs || model.requestError != nil ? "关闭" : "取消"
+    }
+
+    /// 右上 ✓：只在预检通过（或图片字幕可以先识别）时出现，读屏名说清楚要生成哪种语言
+    private var confirm: SubsSheetConfirm? {
+        guard model.mode != .status, !model.previewing else { return nil }
+        if model.canPreparePgs {
+            return SubsSheetConfirm(
+                title: "开始生成\(model.currentOutputLabel)",
+                enabled: model.canConvertPgs,
+                busy: model.starting,
+                identifier: "track-gen-start"
+            ) { Task { await model.start(api: api, fileId: file.id) } }
+        }
+        if let preview = model.preview, preview.blocker == nil, model.chosen != nil {
+            return SubsSheetConfirm(
+                title: "确认生成\(model.currentOutputLabel)",
+                busy: model.starting,
+                identifier: "track-gen-start"
+            ) { Task { await model.start(api: api, fileId: file.id) } }
+        }
+        return nil
     }
 
     // MARK: 状态模式
@@ -717,29 +727,31 @@ private struct TrackGenSheet: View {
     @ViewBuilder
     private var statusContent: some View {
         if model.running, let progress = model.progress {
-            TrackGenProgressView(progress: progress)
-                .padding(16)
-                .background(Theme.info.opacity(0.07), in: .rect(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.info.opacity(0.25)))
-            errorBox
+            Section {
+                TrackGenProgressView(progress: progress)
+                    .padding(.vertical, 4)
+            }
         } else {
             let succeeded = model.jobSucceeded
-            let color = succeeded ? Self.okGreen : Self.errorRed
-            VStack(alignment: .leading, spacing: 6) {
-                // 结束态也报一句目标输出：Agent、CLI 发起的任务用户没在这里选过语言
-                Text("\(model.activeOutputLabel)\(succeeded ? "字幕生成完成" : "字幕生成未完成")")
-                    .font(.callout.weight(.semibold))
-                Text(resultMessage)
-                    .font(.subheadline)
-                    .opacity(0.85)
+            Section {
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        // 结束态也报一句目标输出：Agent、CLI 发起的任务用户没在这里选过语言
+                        Text("\(model.activeOutputLabel)\(succeeded ? "字幕生成完成" : "字幕生成未完成")")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Theme.text)
+                        Text(resultMessage)
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.text.opacity(0.8))
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: succeeded ? "checkmark.circle.fill" : "exclamationmark.octagon.fill")
+                        .foregroundStyle((succeeded ? SubsTone.ok : SubsTone.error).color)
+                }
             }
-            .foregroundStyle(color)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background((succeeded ? Theme.success : Theme.danger).opacity(0.08), in: .rect(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder((succeeded ? Theme.success : Theme.danger).opacity(0.3)))
-            errorBox
         }
+        errorSection
     }
 
     private var resultMessage: String {
@@ -753,111 +765,81 @@ private struct TrackGenSheet: View {
 
     @ViewBuilder
     private var previewContent: some View {
-        outputLanguageCard
+        outputLanguageSection
 
         if model.previewing {
-            HStack(alignment: .top, spacing: 12) {
-                ProgressView()
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.pendingNotice ?? "正在检查参考字幕，不会调用 AI…")
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(Theme.text)
-                    // 内封字幕要把整个视频通读一遍，大文件是分钟级；说清楚为什么慢
-                    if model.pendingNotice != nil {
-                        Text("首次读取内封字幕需要通读整个视频文件，读好后会自动继续；这一步不会调用 AI，也不产生费用。")
-                            .font(.caption)
-                            .foregroundStyle(Theme.textFaint)
+            Section {
+                HStack(alignment: .top, spacing: 12) {
+                    ProgressView()
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.pendingNotice ?? "正在检查参考字幕，不会调用 AI…")
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.text)
+                        // 内封字幕要把整个视频通读一遍，大文件是分钟级；说清楚为什么慢
+                        if model.pendingNotice != nil {
+                            Text("首次读取内封字幕需要通读整个视频文件，读好后会自动继续；这一步不会调用 AI，也不产生费用。")
+                                .font(.caption)
+                                .foregroundStyle(Theme.textMuted)
+                        }
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .modifier(TrackGenCard())
         } else {
             if let preview = model.preview, !preview.candidates.isEmpty {
-                sourceCard(preview)
+                sourceSection(preview)
             }
-            if model.requestError != nil { errorBox }
+            if model.requestError != nil { errorSection }
             if model.canPreparePgs, let conversion = model.preview?.pgsConversion {
-                pgsCard(conversion)
+                pgsSections(conversion)
             }
             if model.blockedWithoutPgs, let blocker = model.preview?.blocker {
-                blockerCard(blocker)
+                blockerSections(blocker)
             }
             if let preview = model.preview, preview.blocker == nil, let chosen = model.chosen {
-                chosenCard(preview, chosen: chosen)
+                chosenSections(preview, chosen: chosen)
             }
         }
     }
 
-    private var outputLanguageCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("输出语言")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(0.85))
-            languageMenu(
-                caption: model.bilingual ? "第一行语言" : "目标语言",
-                selection: model.targetLanguage,
-                options: TrackGenText.outputLanguages
-            ) { model.changeTarget($0, api: api, fileId: file.id) }
+    private var outputLanguageSection: some View {
+        Section {
+            Picker(model.bilingual ? "第一行语言" : "目标语言", selection: Binding(
+                get: { model.targetLanguage },
+                set: { model.changeTarget($0, api: api, fileId: file.id) }
+            )) {
+                ForEach(TrackGenText.outputLanguages, id: \.token) { Text($0.label).tag($0.token) }
+            }
             if model.bilingual {
-                languageMenu(
-                    caption: "第二行语言",
-                    selection: model.secondaryLanguage,
-                    options: TrackGenText.outputLanguages.filter { $0.token != model.targetLanguage }
-                ) { model.changeSecondary($0, api: api, fileId: file.id) }
+                Picker("第二行语言", selection: Binding(
+                    get: { model.secondaryLanguage },
+                    set: { model.changeSecondary($0, api: api, fileId: file.id) }
+                )) {
+                    ForEach(TrackGenText.outputLanguages.filter { $0.token != model.targetLanguage }, id: \.token) {
+                        Text($0.label).tag($0.token)
+                    }
+                }
             }
             Toggle("生成双语字幕", isOn: Binding(
                 get: { model.bilingual },
                 set: { model.changeBilingual($0, api: api, fileId: file.id) }
             ))
-            .font(.subheadline)
-            .tint(Theme.info)
-            .disabled(model.starting)
+        } header: {
+            Text("输出语言")
+        } footer: {
             if model.bilingual {
                 Text("每条字幕固定两行，上下顺序按这里的选择生成。")
-                    .font(.caption)
-                    .foregroundStyle(Theme.textFaint)
             }
         }
-        .padding(14)
-        .modifier(TrackGenCard())
+        .pickerStyle(.menu)
+        .tint(Theme.textMuted)
+        .disabled(model.starting)
     }
 
-    private func languageMenu(
-        caption: String, selection: String, options: [(token: String, label: String)],
-        onSelect: @escaping (String) -> Void
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(caption)
-                .font(.caption)
-                .foregroundStyle(Theme.textMuted)
-            Menu {
-                ForEach(options, id: \.token) { option in
-                    Button {
-                        onSelect(option.token)
-                    } label: {
-                        if option.token == selection {
-                            Label(option.label, systemImage: "checkmark")
-                        } else {
-                            Text(option.label)
-                        }
-                    }
-                }
-            } label: {
-                TrackGenMenuLabel(text: TrackGenText.outputLanguageLabel(selection))
-            }
-            .disabled(model.starting)
-        }
-    }
-
-    private func sourceCard(_ preview: API.GenPreviewView) -> some View {
+    /// 参考字幕用 Menu 而不是 Picker：不可用的候选也要列出来并说明原因，Picker 做不到逐项禁用
+    private func sourceSection(_ preview: API.GenPreviewView) -> some View {
         let anySelectable = preview.candidates.contains { $0.selectable }
         let current = preview.candidates.first { TrackGenText.candidateKey($0) == model.sourceCandidateKey }
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("参考字幕")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(0.85))
+        return Section {
             Menu {
                 ForEach(preview.candidates, id: \.self) { candidate in
                     let key = TrackGenText.candidateKey(candidate)
@@ -875,102 +857,81 @@ private struct TrackGenSheet: View {
                     .disabled(!candidate.selectable)
                 }
             } label: {
-                TrackGenMenuLabel(text: current.map(TrackGenText.candidateLabel) ?? "没有可用的参考字幕")
+                HStack {
+                    Text(current.map(TrackGenText.candidateLabel) ?? "没有可用的参考字幕")
+                        .foregroundStyle(Theme.text)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textMuted)
+                }
+                .contentShape(.rect)
             }
             .disabled(model.starting || !anySelectable)
-            Text("默认优先英语。也可以指定其他内封或外挂字幕；选择 PGS 时会先识别文字，再开始 AI 翻译。")
-                .font(.caption)
-                .foregroundStyle(Theme.textFaint)
             if model.selectedCandidate?.requiresOcr == true {
-                Text("当前选择的是图片字幕，需要先完成文字识别。")
-                    .font(.caption)
-                    .foregroundStyle(Theme.warning.opacity(0.85))
+                SubsNoticeRow(text: "当前选择的是图片字幕，需要先完成文字识别。", tone: .warn)
             }
+        } header: {
+            Text("参考字幕")
+        } footer: {
+            Text("默认优先英语。也可以指定其他内封或外挂字幕；选择 PGS 时会先识别文字，再开始 AI 翻译。")
         }
-        .padding(14)
-        .modifier(TrackGenCard())
     }
 
-    private func pgsCard(_ conversion: API.PgsConversionView) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(conversion.languageConfirmationRequired ? "请选择原字幕语言" : "先识别图片字幕")
-                    .font(.callout.weight(.semibold))
-                Text("这份字幕是图片。MovieClaw 会先识别其中的文字，确认内容完整后再生成\(model.currentOutputLabel)字幕。")
-                    .font(.subheadline)
-                    .opacity(0.85)
-            }
-            .foregroundStyle(Theme.warning)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(Theme.warning.opacity(0.08), in: .rect(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.warning.opacity(0.3)))
-
-            VStack(alignment: .leading, spacing: 8) {
-                if conversion.languageConfirmationRequired {
-                    Text("原字幕语言")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(Color.white.opacity(0.85))
-                    Menu {
-                        ForEach(conversion.languageOptions, id: \.code) { option in
-                            Button {
-                                model.pgsOcrLanguage = option.code
-                            } label: {
-                                if option.code == model.pgsOcrLanguage {
-                                    Label(option.label, systemImage: "checkmark")
-                                } else {
-                                    Text(option.label)
-                                }
-                            }
-                        }
-                    } label: {
-                        TrackGenMenuLabel(text: conversion.languageOptions.first { $0.code == model.pgsOcrLanguage }?.label ?? "请选择字幕语言")
+    @ViewBuilder
+    private func pgsSections(_ conversion: API.PgsConversionView) -> some View {
+        Section {
+            SubsNoticeRow(
+                text: "这份字幕是图片。MovieClaw 会先识别其中的文字，确认内容完整后再生成\(model.currentOutputLabel)字幕。",
+                tone: .warn
+            )
+        } header: {
+            Text(conversion.languageConfirmationRequired ? "请选择原字幕语言" : "先识别图片字幕")
+        }
+        Section {
+            if conversion.languageConfirmationRequired {
+                Picker("原字幕语言", selection: $model.pgsOcrLanguage) {
+                    if !conversion.languageOptions.contains(where: { $0.code == model.pgsOcrLanguage }) {
+                        Text("请选择").tag(model.pgsOcrLanguage)
                     }
-                    Text("请选择画面中实际显示的语言。")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textFaint)
-                } else {
-                    Text("原字幕语言：\(conversion.ocrLanguageLabel ?? "已自动识别")")
-                        .foregroundStyle(Color.white.opacity(0.75))
+                    ForEach(conversion.languageOptions, id: \.code) { Text($0.label).tag($0.code) }
                 }
-                Divider().overlay(Color.white.opacity(0.07))
-                Text("原影片和字幕不会被修改。识别结果可能有少量错字，完成后建议抽查人名与特殊字体。")
+                .pickerStyle(.menu)
+                .tint(Theme.textMuted)
+            } else {
+                LabeledContent("原字幕语言", value: conversion.ocrLanguageLabel ?? "已自动识别")
             }
-            .font(.subheadline)
-            .foregroundStyle(Theme.textMuted)
-            .padding(14)
-            .modifier(TrackGenCard())
+        } footer: {
+            Text((conversion.languageConfirmationRequired ? "请选择画面中实际显示的语言。" : "")
+                + "原影片和字幕不会被修改。识别结果可能有少量错字，完成后建议抽查人名与特殊字体。")
         }
     }
 
-    private func blockerCard(_ blocker: API.GenPreviewBlockerView) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(blocker.title).font(.callout.weight(.semibold))
-                Text(blocker.message).font(.subheadline).opacity(0.85)
+    @ViewBuilder
+    private func blockerSections(_ blocker: API.GenPreviewBlockerView) -> some View {
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(blocker.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                    Text(blocker.message).font(.subheadline).foregroundStyle(Theme.text.opacity(0.8))
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(SubsTone.error.color)
             }
-            .foregroundStyle(Self.errorRed)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(Theme.danger.opacity(0.08), in: .rect(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.danger.opacity(0.3)))
-
-            if !blocker.suggestions.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("可以这样处理")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(Color.white.opacity(0.85))
-                    ForEach(blocker.suggestions, id: \.self) { suggestion in
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text("•")
-                            Text(suggestion)
-                        }
+        }
+        if !blocker.suggestions.isEmpty {
+            Section("可以这样处理") {
+                ForEach(blocker.suggestions, id: \.self) { suggestion in
+                    Text(suggestion)
                         .font(.subheadline)
-                        .foregroundStyle(Color.white.opacity(0.75))
-                    }
+                        .foregroundStyle(Theme.text.opacity(0.85))
                 }
             }
-            if let conversion = model.preview?.pgsConversion {
+        }
+        if let conversion = model.preview?.pgsConversion {
+            Section {
                 DisclosureGroup("查看诊断信息") {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("运行环境：\(conversion.platform) \(conversion.architecture)" + (conversion.engine.map { " · \($0)" } ?? " · 未找到可用识别引擎"))
@@ -978,150 +939,100 @@ private struct TrackGenSheet: View {
                             Text(conversion.message)
                         }
                     }
+                    .font(.footnote)
+                    .foregroundStyle(Theme.textMuted)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 6)
                 }
-                .font(.subheadline)
-                .foregroundStyle(Theme.textMuted)
-                .tint(Color.white.opacity(0.7))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .modifier(TrackGenCard())
+                .tint(Theme.textMuted)
             }
         }
     }
 
-    private func chosenCard(_ preview: API.GenPreviewView, chosen: API.SourceCandidateView) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
+    @ViewBuilder
+    private func chosenSections(_ preview: API.GenPreviewView, chosen: API.SourceCandidateView) -> some View {
+        Section {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("\(Text(TrackGenText.candidateLabel(chosen)).foregroundStyle(Theme.text))\(Text("  →  ").foregroundStyle(Theme.textFaint))\(Text(model.currentOutputLabel).foregroundStyle(Theme.info))")
-                    .font(.callout.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                 Text("\(TrackGenText.grouped(preview.eventCount)) 条对白 · \(TrackGenText.tokenEstimate(preview.estimatedTokens))")
                     .font(.subheadline.monospacedDigit())
                     .foregroundStyle(Theme.textMuted)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .modifier(TrackGenCard())
-
-            Text("生成同目录 \(Text(preview.outputFilename ?? "规范命名的 AI 字幕文件").foregroundStyle(Color.white.opacity(0.8)))，原字幕不变；离开页面不影响生成。")
-                .font(.subheadline)
-                .foregroundStyle(Theme.textMuted)
-
-            if preview.alreadyGenerated {
-                Text("已有 AI 字幕，将被覆盖。")
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.warning.opacity(0.9))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Theme.warning.opacity(0.07), in: .rect(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.warning.opacity(0.25)))
+        } footer: {
+            Text("生成同目录 \(preview.outputFilename ?? "规范命名的 AI 字幕文件")，原字幕不变；离开页面不影响生成。")
+        }
+        if preview.alreadyGenerated {
+            Section {
+                SubsNoticeRow(text: "已有 AI 字幕，将被覆盖。", tone: .warn)
             }
         }
     }
 
     @ViewBuilder
-    private var errorBox: some View {
+    private var errorSection: some View {
         if let error = model.requestError {
-            Text(error)
-                .font(.subheadline)
-                .foregroundStyle(Self.errorRed)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Theme.danger.opacity(0.08), in: .rect(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.danger.opacity(0.3)))
+            Section {
+                SubsNoticeRow(text: error, tone: .error)
+            }
         }
     }
 
-    // MARK: 底部动作条（「取消 / 关闭」在导航栏左上角）
+    // MARK: 列表末尾的行按钮（主动作在右上 ✓，关闭在左上 ✕）
 
     @ViewBuilder
-    private var actionBar: some View {
-        let buttons = actionButtons
-        if !buttons.isEmpty {
-            HStack(spacing: 10) {
-                Spacer(minLength: 0)
-                ForEach(buttons) { $0.view }
-            }
-            .padding(.horizontal, Theme.pagePadding)
-            .padding(.vertical, 10)
-        }
-    }
-
-    private struct ActionButton: Identifiable {
-        let id: String
-        let view: AnyView
-    }
-
-    private var actionButtons: [ActionButton] {
-        var buttons: [ActionButton] = []
+    private var actionRows: some View {
         if model.mode == .status {
             if model.running {
-                buttons.append(ActionButton(id: "stop", view: AnyView(
-                    Button(model.stopping ? "正在请求停止…" : "停止生成", role: .destructive) {
+                Section {
+                    Button(role: .destructive) {
                         Task { await model.stop(api: api) }
+                    } label: {
+                        busyLabel(model.stopping ? "正在请求停止…" : "停止生成", busy: model.stopping)
                     }
-                    .buttonStyle(.glass)
                     .disabled(model.stopping)
-                )))
+                }
             } else if !model.jobSucceeded {
-                buttons.append(ActionButton(id: "recheck", view: AnyView(
+                Section {
                     Button("重新预检") { model.loadPreview(api: api, fileId: file.id) }
-                        .buttonStyle(.glassProminent)
-                )))
-                buttons.append(agentButton(reason: resultMessage))
+                    agentRow(reason: resultMessage)
+                }
             }
-            return buttons
-        }
-        guard !model.previewing else { return [] }
-        let blocked = model.blockedWithoutPgs
-        if blocked || (model.preview == nil && model.requestError != nil) {
-            buttons.append(ActionButton(id: "recheck", view: AnyView(
-                Button("重新检查") { model.loadPreview(api: api, fileId: file.id) }
-                    .buttonStyle(.glass)
-            )))
-        }
-        if blocked || model.requestError != nil {
-            buttons.append(agentButton(
-                reason: model.requestError ?? model.preview?.blocker?.message ?? "字幕生成预检没有通过"
-            ))
-        }
-        if model.canPreparePgs {
-            buttons.append(ActionButton(id: "start-pgs", view: AnyView(
-                Button(model.starting ? "正在启动…" : "开始生成\(model.currentOutputLabel)") {
-                    Task { await model.start(api: api, fileId: file.id) }
+        } else if !model.previewing {
+            let blocked = model.blockedWithoutPgs
+            let recheck = blocked || (model.preview == nil && model.requestError != nil)
+            let agent = blocked || model.requestError != nil
+            if recheck || agent {
+                Section {
+                    if recheck {
+                        Button("重新检查") { model.loadPreview(api: api, fileId: file.id) }
+                    }
+                    if agent {
+                        agentRow(reason: model.requestError ?? model.preview?.blocker?.message ?? "字幕生成预检没有通过")
+                    }
                 }
-                .buttonStyle(.glassProminent)
-                .disabled(model.starting || !model.canConvertPgs)
-            )))
+            }
         }
-        if let preview = model.preview, preview.blocker == nil, model.chosen != nil {
-            buttons.append(ActionButton(id: "start", view: AnyView(
-                Button(model.starting ? "正在启动…" : "确认生成\(model.currentOutputLabel)") {
-                    Task { await model.start(api: api, fileId: file.id) }
-                }
-                .buttonStyle(.glassProminent)
-                .disabled(model.starting)
-            )))
-        }
-        return buttons
     }
 
-    private func agentButton(reason: String) -> ActionButton {
-        ActionButton(id: "agent", view: AnyView(
-            Button(model.agentStarting ? "正在交给 Agent…" : "交给 Agent 处理") {
-                Task {
-                    if let sessionId = await model.handOffToAgent(api: api, file: file, reason: reason) {
-                        router.open(.session(id: sessionId))
-                    }
+    private func agentRow(reason: String) -> some View {
+        Button {
+            Task {
+                if let sessionId = await model.handOffToAgent(api: api, file: file, reason: reason) {
+                    router.open(.session(id: sessionId))
                 }
             }
-            .buttonStyle(.glass)
-            .tint(Theme.info)
-            .disabled(model.agentStarting)
-        ))
+        } label: {
+            busyLabel(model.agentStarting ? "正在交给 Agent…" : "交给 Agent 处理", busy: model.agentStarting)
+        }
+        .disabled(model.agentStarting)
+    }
+
+    private func busyLabel(_ text: String, busy: Bool) -> some View {
+        HStack {
+            Text(text)
+            Spacer()
+            if busy { ProgressView() }
+        }
     }
 }
 
@@ -1203,37 +1114,6 @@ private struct TrackGenProgressView: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("字幕生成阶段")
         }
-    }
-}
-
-/// 下拉菜单的触发外观：当前值 + 上下箭头，占满一行
-private struct TrackGenMenuLabel: View {
-    let text: String
-
-    var body: some View {
-        HStack {
-            Text(text)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-            Spacer(minLength: 8)
-            Image(systemName: "chevron.up.chevron.down").font(.caption)
-        }
-        .font(.callout)
-        .foregroundStyle(Theme.text)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity)
-        .background(Color.white.opacity(0.06), in: .rect(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.white.opacity(0.1)))
-    }
-}
-
-/// 弹层里的普通信息卡底
-private struct TrackGenCard: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .background(Color.white.opacity(0.035), in: .rect(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.08)))
     }
 }
 

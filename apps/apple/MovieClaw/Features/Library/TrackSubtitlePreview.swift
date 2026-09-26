@@ -1,16 +1,17 @@
 import SwiftUI
 
-/// 字幕预览弹层（对应 Web `components/subtitle-preview-dialog.tsx`）。
+/// 字幕预览页（对应 Web `components/subtitle-preview-dialog.tsx`），从字幕列表弹层里推进过来，
+/// 不单独起弹层：左上角返回列表，弹层的液态玻璃、关闭都归列表管（见 `TrackListSheet`）。
 ///
 /// 设计要点（与 Web 保持一致）：
 /// - 对白用「时间轴 + 纯文本」呈现，不暴露 SRT 序号或 ASS 样式：用户点一条字幕是为了
-///   快速核对语言、内容与同步位置，不是编辑原始文件。长字幕交给 `LazyVStack` 按需布局。
+///   快速核对语言、内容与同步位置，不是编辑原始文件。对白放原生列表，长字幕按需布局。
 /// - 内封轨首次预览要 ffmpeg 通读整个容器（大文件分钟级）。后端不把请求挂住等，
-///   而是回 `pending` 并转后台抽取，这里按它给的 `retry_after_ms` 重拉；关掉弹层只中断
+///   而是回 `pending` 并转后台抽取，这里按它给的 `retry_after_ms` 重拉；返回列表只中断
 ///   轮询（`.task` 随视图消失自动取消），后台抽取会继续做完落缓存，下次打开秒开。
-/// - 外挂字幕可以「一键校准时间轴」：以影片音轨为基准校准，成功后覆盖当前这个字幕文件，
+/// - 外挂字幕可以「一键校准时间轴」（右上角）：以影片音轨为基准校准，成功后覆盖当前这个字幕文件，
 ///   不产生副本；成功后重拉预览，并通知详情页重拉条目（字幕台账可能随之变化）。
-struct TrackSubtitlePreviewSheet: View {
+struct TrackSubtitlePreviewPage: View {
     let file: API.LibraryFileView
     let stream: API.SubtitleStreamView
     /// 预览接口的中性轨引用：`embedded:{序号}` / `external:{文件名}`
@@ -20,7 +21,6 @@ struct TrackSubtitlePreviewSheet: View {
     var onChanged: () async -> Void = {}
 
     @Environment(\.api) private var api
-    @Environment(\.dismiss) private var dismiss
 
     @State private var data: API.SubtitlePreviewView?
     @State private var error: String?
@@ -30,33 +30,41 @@ struct TrackSubtitlePreviewSheet: View {
     @State private var calibrating = false
     @State private var calibrationNotice: String?
 
+    /// 只有外挂字幕能校准（内封轨长在容器里，改不了）
+    private var calibratable: Bool { stream.external && stream.fileName != nil }
+
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
+        Form {
+            Section {
                 header
-                Divider().overlay(Theme.line)
-                content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if let data {
-                    Divider().overlay(Theme.line)
-                    footer(data)
+            }
+            if let calibrationNotice {
+                Section {
+                    SubsNoticeRow(text: calibrationNotice, tone: .info)
                 }
             }
-            .navigationTitle("字幕预览")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
-                        .accessibilityLabel("关闭字幕预览")
+            content
+        }
+        .subsFormStyle()
+        .navigationTitle(label)
+        .navigationSubtitle(data.map { "共 \($0.eventCount) 条对白" } ?? "")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if calibratable, data != nil {
+                ToolbarItem(placement: .primaryAction) {
+                    if calibrating {
+                        ProgressView().accessibilityLabel("正在校准时间轴")
+                    } else {
+                        // 以影片音轨校准时间轴，成功后覆盖当前这一个字幕文件，不会产生副本
+                        Button("校准时间轴") { Task { await calibrate() } }
+                    }
                 }
             }
         }
-        .presentationDetents([.large, .medium])
-        .presentationBackground(.regularMaterial)
         .task(id: retryKey) { await load() }
     }
 
-    // MARK: - 头部：来源（外挂/内封）+ 格式 + 「标签 · 文件名」
+    // MARK: - 头部：来源（外挂/内封）+ 格式 + 文件名
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -66,15 +74,12 @@ struct TrackSubtitlePreviewSheet: View {
                     TrackPreviewBadge(text: format.uppercased())
                 }
             }
-            Text("\(label) · \(stream.fileName ?? file.fileName)")
+            Text(stream.fileName ?? file.fileName)
                 .font(.subheadline)
                 .foregroundStyle(Theme.textMuted)
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.middle)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
     }
 
     // MARK: - 主体：加载中 / 失败 / 空 / 对白列表
@@ -82,52 +87,38 @@ struct TrackSubtitlePreviewSheet: View {
     @ViewBuilder
     private var content: some View {
         if let error {
-            VStack(spacing: 12) {
-                Text("无法预览这条字幕")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(Color(red: 1, green: 0.71, blue: 0.71))
-                Text(error)
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.textMuted)
-                    .multilineTextAlignment(.center)
+            Section {
+                SubsNoticeRow(text: "无法预览这条字幕：\(error)", tone: .error)
                 Button("重新加载") { retryKey += 1 }
-                    .buttonStyle(.glass)
             }
-            .padding(24)
         } else if let data {
-            if data.cues.isEmpty {
-                Text("字幕已成功解析，但没有可显示的对白")
-                    .font(.callout)
-                    .foregroundStyle(Theme.textMuted)
-                    .padding(.vertical, 80)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(data.cues.enumerated()), id: \.offset) { index, cue in
-                            cueRow(cue)
-                            if index < data.cues.count - 1 {
-                                Divider().overlay(Color.white.opacity(0.06))
-                            }
-                        }
+            Section {
+                if data.cues.isEmpty {
+                    Text("字幕已成功解析，但没有可显示的对白")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.textMuted)
+                } else {
+                    ForEach(Array(data.cues.enumerated()), id: \.offset) { _, cue in
+                        cueRow(cue)
                     }
-                    .padding(.vertical, 8)
                 }
             }
         } else {
-            VStack(spacing: 12) {
-                ProgressView()
-                Text(pending ?? (stream.external ? "正在读取字幕…" : "正在抽取内封字幕…"))
-                    .font(.callout)
-                    .foregroundStyle(Theme.textMuted)
-                    .multilineTextAlignment(.center)
-                if pending != nil {
-                    Text("首次读取内封字幕需要通读整个视频文件，读好后会自动显示。")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textFaint)
-                        .multilineTextAlignment(.center)
+            Section {
+                HStack(alignment: .top, spacing: 12) {
+                    ProgressView()
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(pending ?? (stream.external ? "正在读取字幕…" : "正在抽取内封字幕…"))
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.text)
+                        if pending != nil {
+                            Text("首次读取内封字幕需要通读整个视频文件，读好后会自动显示。")
+                                .font(.caption)
+                                .foregroundStyle(Theme.textMuted)
+                        }
+                    }
                 }
             }
-            .padding(24)
         }
     }
 
@@ -135,56 +126,19 @@ struct TrackSubtitlePreviewSheet: View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(Self.timestamp(cue.startMs))
-                    .foregroundStyle(Theme.textFaint)
+                    .foregroundStyle(Theme.textMuted)
                 Text("→ \(Self.timestamp(cue.endMs))")
-                    .foregroundStyle(Color.white.opacity(0.3))
+                    .foregroundStyle(Theme.textFaint)
             }
             .font(.caption.monospacedDigit())
             .frame(width: 104, alignment: .leading)
             .padding(.top, 2)
             Text(cue.text)
                 .font(.callout)
-                .foregroundStyle(Color.white.opacity(0.88))
+                .foregroundStyle(Theme.text)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-    }
-
-    // MARK: - 底部：校准回执 + 对白条数 + 校准 / 完成
-
-    private func footer(_ data: API.SubtitlePreviewView) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let calibrationNotice {
-                Text(calibrationNotice)
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.textMuted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.035), in: .rect(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.white.opacity(0.1)))
-            }
-            HStack(spacing: 10) {
-                Text("共 \(data.eventCount) 条对白")
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.textMuted)
-                Spacer(minLength: 8)
-                if stream.external, stream.fileName != nil {
-                    // 以影片音轨校准时间轴，成功后覆盖当前这一个字幕文件，不会产生副本
-                    Button(calibrating ? "正在校准…" : "校准时间轴") {
-                        Task { await calibrate() }
-                    }
-                    .buttonStyle(.glass)
-                    .disabled(calibrating)
-                }
-                Button("完成") { dismiss() }
-                    .buttonStyle(.glass)
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
     }
 
     // MARK: - 数据
