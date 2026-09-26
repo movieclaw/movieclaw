@@ -624,7 +624,10 @@ struct DiscoverRowSkeleton: View {
                 }
             }
             .padding(.horizontal, Theme.pagePadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // minWidth: 0 不能省：4 张占位共 572pt，宽过手机屏。只写 maxWidth 时外框会沿用
+            // 子视图的 572，把整页 VStack 撑宽、居中后左右各溢出一截（首启时整页像被拉宽，
+            // 等行数据到了才弹回）；两端都给才会老实取屏宽，多出的占位靠 clipped 裁掉
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .clipped()
         }
         .accessibilityLabel("「\(title)」加载中")
