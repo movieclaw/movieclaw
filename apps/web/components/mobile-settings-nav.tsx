@@ -95,11 +95,10 @@ export function MobileSettingsNav({
           {title}
         </h1>
         {/* 本条认领顶栏后，全局顶栏（含搜索键）被撤掉——搜索是其中唯一
-            无处安放的入口，在这里补一颗（PageNav 对同一局面的既定做法）；
-            底栏已带搜索圆钮时不补。
+            无处安放的入口，在这里补一颗（PageNav 对同一局面的既定做法）。
             必须条件渲染而不是 CSS 隐藏：SearchCommand 自带全局 ⌘K 监听，
             再挂一份会让一次快捷键把面板开了又关。 */}
-        {chrome && !chrome.searchInTabBar && (
+        {chrome && (
           <SearchCommand
             onSearch={chrome.onSearch}
             triggerClassName={`${PAGE_NAV_BUTTON_CLASS} ml-auto`}

@@ -12,9 +12,10 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 
+import { usePendingUpdate } from "@/components/app-update-entry";
+import { AvatarBadge } from "@/components/avatar-badge";
 import { ActivityIcon, BookmarkIcon, HomeIcon, LibraryStackIcon } from "@/components/icons";
 import { mediaLiveCount, useMediaActivity } from "@/components/media-activity-section";
-import { SearchCommand } from "@/components/search-command";
 import { GlassRim, type RimTarget } from "@/lib/glass-rim";
 import {
   liquidKeyframes,
@@ -25,6 +26,7 @@ import {
 } from "@/lib/liquid-spring";
 import { usePageChrome } from "@/lib/page-chrome";
 import { usePermissions } from "@/lib/permissions";
+import { useSession } from "@/lib/session";
 import { taskActivityBadge, useTaskActivity, type TaskActivityBadge } from "@/lib/task-activity";
 
 /**
@@ -43,14 +45,15 @@ import { taskActivityBadge, useTaskActivity, type TaskActivityBadge } from "@/li
  *   - **按压辉光**：手指落点处玻璃由内发亮再缓缓熄灭（HIG：从触点照亮）；
  *   - **下滑收缩**：内容向下滚时收成只剩当前页签图标的圆钮，反向滚、回到顶部
  *     或点它即展开（对应 tabBarMinimizeBehavior = .onScrollDown）。收缩时页签向
- *     当前页签收拢、糊掉淡出，圆钮在左端弹出；展开时页签自左向右依次浮现；
- *   - **搜索独立**：搜索不占页签，作为尾端单独的圆钮（对应 Tab(role: .search)），
- *     点开沿用全站 SearchCommand 面板。
+ *     当前页签收拢、糊掉淡出，圆钮在左端弹出；展开时页签自左向右依次浮现。
  *
- * 页签：发现 / 媒体库 / 订阅 / 更多。「订阅」按 canSubscribe 显隐；「更多」
- * 落到 /my（主题 pages.my 坑位，基础实现 = components/more-page.tsx），收纳
- * 活动、设置、AI 会话、切换账号等低频入口；「新会话」不占页签，入口在「更多」
- * 面板里的一行（进 /new 整页，那一页与会话页同样不显示底栏）。
+ * 页签（纯图标，参照 Instagram iOS 底栏）：发现 / 媒体库 / 订阅 / 活动 / 头像。
+ * 「订阅」按 canSubscribe 显隐，「活动」仅管理员；最右的头像是当前用户头像，
+ * 落到 /my「更多」页（主题 pages.my 坑位，基础实现 = components/more-page.tsx），
+ * 收纳个人信息、设置、切换账号、AI 会话等低频入口，/settings 下的页面也算在它名下。
+ * 与原生 App 同一形态（2026-09-26 用户要求两端一致）：头像原先在顶栏左上角、点开
+ * 半屏面板，搜索原先是底栏尾端的独立圆钮（Tab(role: .search)），现在搜索挪到了
+ * 顶栏右上角（app-shell 的 MobileTopBar / 详情页的 PageNav），底栏只剩页签。
  *
  * 玻璃分两层（docs/design/web-themes-mobile/04 §3.7）：
  *   - 胶囊中心是清透的 CSS 层（不模糊不染色），透出真实的滚动内容（WebGL 读不到网页内容，
@@ -72,10 +75,22 @@ const SUBSCRIPTION_TAB = {
 } as const;
 /** 活动（任务中心）：高频入口，从「更多」页提到底栏（2026-09-24 用户要求）；
  *  Agent 能力，管理员专属——与侧栏 memberNavItems 同口径。iOS 标签栏上限 5 个，
- *  375pt 机型上胶囊内每格约 51pt，五格仍在 44pt 触控下限之上。 */
+ *  管理员加上头像正好 5 格；搜索挪到顶栏后胶囊铺满整宽，375pt 机型上每格约 65pt。 */
 const ACTIVITY_TAB = { id: "activity", label: "活动", href: "/activity", Icon: ActivityIcon } as const;
-// 「更多」不再是页签（2026-09-24）：五格太挤，而它装的是账号/设置/会话这些非内容
-// 入口——按 Apple 自家 App 的惯例改由顶栏右上角头像弹出半屏面板（app-shell）。
+
+/** 「更多」页签的图标：当前用户头像（没上传过头像时是昵称首字徽标） */
+function MoreTabAvatar() {
+  const { session } = useSession();
+  return (
+    <AvatarBadge
+      nickname={session.nickname}
+      avatarUrl={session.avatar_url}
+      className="glass-tabbar__avatar text-[10px]"
+    />
+  );
+}
+
+const MORE_TAB = { id: "more", label: "更多", href: "/my", Icon: MoreTabAvatar } as const;
 
 /** pathname → 当前页签 id（详情等子页落在所属的顶层页签上；无归属返回空串） */
 function activeTabId(pathname: string): string {
@@ -85,7 +100,8 @@ function activeTabId(pathname: string): string {
   // 活动有自己的页签；非管理员看不到该页签时这里返回的 id 匹配不到任何格，
   // 页签全灭（他们本来也进不了活动页）
   if (pathname.startsWith("/activity") || pathname.startsWith("/tasks")) return "activity";
-  // /my 与 /settings 是从头像面板进的，不属于任何页签（iOS 账号页也不点亮页签）
+  // 设置从「更多」页进，归在头像页签名下（原生 App 的设置栈同样在「更多」页签里）
+  if (pathname.startsWith("/my") || pathname.startsWith("/settings")) return "more";
   return "";
 }
 
@@ -135,12 +151,14 @@ export function GlassTabBar() {
   const router = useRouter();
   const chrome = usePageChrome();
   const accessory = chrome?.tabBarAccessory ?? null;
-  const { canSubscribe, canSearch, isAdmin } = usePermissions();
+  const { canSubscribe, isAdmin } = usePermissions();
+  const { session } = useSession();
   const tabs = [
     DISCOVER_TAB,
     LIBRARY_TAB,
     ...(canSubscribe ? [SUBSCRIPTION_TAB] : []),
     ...(isAdmin ? [ACTIVITY_TAB] : []),
+    MORE_TAB,
   ];
   // 活动页签的任务圆点（iOS 页签红点惯例）：告警红 / 否则提示蓝；数据来自全站 Provider
   const activityBadge = taskActivityBadge(useTaskActivity());
@@ -148,6 +166,8 @@ export function GlassTabBar() {
   // 接口，按同一个权限门控轮询，成员不会打出 403
   const liveCount = mediaLiveCount(useMediaActivity(isAdmin).snapshot);
   const activityDot = pickActivityDot(activityBadge, liveCount);
+  // 头像页签的蓝点：有待安装的新版本 / 模型（原先画在顶栏左上角的头像上；成员不查更新）
+  const pendingUpdate = usePendingUpdate(session.role !== "member");
   const count = tabs.length;
   const activeIndex = tabs.findIndex((tab) => tab.id === activeTabId(pathname));
   const ActiveIcon = activeIndex >= 0 ? tabs[activeIndex].Icon : null;
@@ -203,7 +223,6 @@ export function GlassTabBar() {
 
   // ———— WebGL 玻璃厚边 ————
   const barRef = useRef<HTMLDivElement>(null);
-  const searchRef = useRef<HTMLDivElement>(null);
   const accessoryRef = useRef<HTMLDivElement>(null);
   const rimRef = useRef<GlassRim | null>(null);
   useEffect(() => {
@@ -217,7 +236,7 @@ export function GlassTabBar() {
     }
     rimRef.current = rim;
     rim.start(() =>
-      [barRef, searchRef, accessoryRef].flatMap((ref): RimTarget[] => {
+      [barRef, accessoryRef].flatMap((ref): RimTarget[] => {
         const capsule = ref.current;
         const canvas = capsule?.querySelector<HTMLCanvasElement>(":scope > canvas.glass-rim");
         return capsule && canvas ? [{ capsule, canvas }] : [];
@@ -228,10 +247,10 @@ export function GlassTabBar() {
       rimRef.current = null;
     };
   }, []);
-  // 换页、收缩 / 展开、附件与搜索键显隐：重新出几帧（新页面的海报、胶囊新形状）
+  // 换页、收缩 / 展开、附件显隐：重新出几帧（新页面的海报、胶囊新形状）
   useEffect(() => {
     rimRef.current?.wake();
-  }, [pathname, isMinimized, hasAccessory, canSearch]);
+  }, [pathname, isMinimized, hasAccessory]);
 
   // ———— 液态选中胶囊 ————
   const navRef = useRef<HTMLElement>(null);
@@ -392,14 +411,13 @@ export function GlassTabBar() {
       {/* 滚动边缘效果：内容滚到底栏下方时渐暗渐糊，把玻璃托起来（iOS 26
           scroll edge effect）。属于内容层之上、玻璃之下，不与玻璃叠玻璃 */}
       <div className="glass-tabbar-edge" data-minimized={isMinimized} aria-hidden="true" />
-      {/* 底部附件（iOS 26 tab bar bottom accessory）：常驻在收起圆钮与搜索圆钮之间，
+      {/* 底部附件（iOS 26 tab bar bottom accessory）：常驻在收起圆钮右侧，
           主菜单展开时隐藏（样式见 .glass-tabbar-accessory） */}
       {accessory != null && (
         <div
           ref={accessoryRef}
           className="glass-tabbar-accessory glass-capsule"
           data-minimized={isMinimized}
-          data-search={Boolean(canSearch && chrome)}
           onPointerDown={glowAt}
           onPointerUp={glowOff}
           onPointerCancel={glowOff}
@@ -481,6 +499,9 @@ export function GlassTabBar() {
                     aria-label={activityDot.hint}
                   />
                 )}
+                {id === "more" && pendingUpdate && (
+                  <span className="glass-tabbar__badge" title="有可用更新" aria-label="有可用更新" />
+                )}
               </Link>
             ))}
           </div>
@@ -497,21 +518,6 @@ export function GlassTabBar() {
             {ActiveIcon && <ActiveIcon />}
           </button>
         </div>
-        {/* 搜索圆钮：条件渲染而非 CSS 隐藏——SearchCommand 自带全局 ⌘K 监听，
-            外壳在挂底栏的形态下不再在顶栏渲染搜索键，全站只此一份 */}
-        {canSearch && chrome && (
-          <div
-            ref={searchRef}
-            className="glass-tabbar__search glass-capsule"
-            onPointerDown={glowAt}
-            onPointerUp={glowOff}
-            onPointerCancel={glowOff}
-            onPointerLeave={glowOff}
-          >
-            <canvas className="glass-rim" aria-hidden="true" />
-            <SearchCommand onSearch={chrome.onSearch} triggerClassName="glass-tabbar__search-btn" />
-          </div>
-        )}
       </nav>
     </>
   );
