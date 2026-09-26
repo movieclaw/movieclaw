@@ -78,13 +78,16 @@ private struct ActivityTasksPage: View {
 
 // MARK: - 刷流
 
-/// 刷流做种：页头实时汇总，下面逐种子一行（按上行速度倒序，正在出力的在前）
+/// 刷流做种：页头实时汇总 → 按站点（开着 / 已暂停 / 已关闭）→ 逐种子一行（按上行速度倒序，正在出力的在前）
 private struct ActivityBoostPage: View {
     @Environment(ShellBadges.self) private var badges
+    @Environment(\.api) private var api
+    @State private var configured: [API.ConfiguredSite]?
 
     var body: some View {
         let tasks = badges.tasks.activity.boostTasks
         let totals = ActivityBoostTotals(tasks)
+        let sites = ActivityBoostSites(tasks: tasks, configured: configured)
         List {
             Section {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
@@ -103,8 +106,17 @@ private struct ActivityBoostPage: View {
                 .padding(.vertical, 4)
             } header: {
                 Text("\(totals.count) 个种子").textCase(nil)
-            } footer: {
-                Text("刷流种子由引擎自动汰换，这里只看不删；种子名可点开站点页面。")
+            }
+            if !sites.sites.isEmpty {
+                Section {
+                    ForEach(sites.sites) { site in siteRow(site) }
+                } header: {
+                    Text("按站点").textCase(nil)
+                } footer: {
+                    if sites.count(.off) > 0 {
+                        Text("关闭刷流不会删除已有种子：它们会继续满速做种，引擎也不再自动汰换。")
+                    }
+                }
             }
             if !tasks.isEmpty {
                 Section {
@@ -118,10 +130,35 @@ private struct ActivityBoostPage: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
-        .refreshable { badges.tasks.refreshDownloads() }
+        .refreshable {
+            badges.tasks.refreshDownloads()
+            configured = (try? await api.siteList()) ?? configured
+        }
         .navigationTitle("刷流做种")
         .navigationBarTitleDisplayMode(.inline)
         .appBackground()
+        .task { configured = (try? await api.siteList()) ?? configured }
+    }
+
+    private func siteRow(_ site: ActivityBoostSites.Site) -> some View {
+        let totals = ActivityBoostTotals(site.tasks)
+        let size = site.tasks.reduce(0) { $0 + ($1.sizeBytes ?? 0) }
+        let (label, color): (String, Color) = switch site.mode {
+        case .running: ("刷流中", Theme.success)
+        case .paused: ("已暂停", Theme.warning)
+        case .off: ("已关闭", Theme.textFaint)
+        }
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(site.name).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                Text(WatchFormat.metaLine([
+                    "\(site.tasks.count) 个种子", ActivityFormat.bytes(Double(size)), "↑ \(ActivityFormat.rate(Double(totals.upSpeed)))",
+                ]))
+                .font(.footnote).monospacedDigit().foregroundStyle(Theme.textMuted)
+            }
+            Spacer(minLength: 8)
+            Text(label).font(.footnote.weight(.medium)).foregroundStyle(color)
+        }
     }
 }
 

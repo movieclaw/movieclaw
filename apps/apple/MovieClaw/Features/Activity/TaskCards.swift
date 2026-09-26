@@ -597,6 +597,45 @@ struct ActivityBoostTotals {
     }
 }
 
+/// 刷流种子按来源站点的开关状态分组。
+///
+/// 关掉刷流不会删种：已下好的种子留在下载器里继续满速做种（暂停只是每种限速 1 KiB/s），
+/// 引擎也不再汰换它们——所以「还有刷流种子」不等于「刷流开着」，总览与刷流页都按站点把状态说清楚。
+/// `configured` 为 nil（站点列表还没取到或取失败）时一律当作运行中，不替用户下「已关闭」的结论。
+struct ActivityBoostSites {
+    enum Mode { case running, paused, off }
+
+    struct Site: Identifiable {
+        var id: String
+        var name: String
+        var mode: Mode
+        var tasks: [API.DownloadTaskView]
+    }
+
+    let sites: [Site]
+
+    init(tasks: [API.DownloadTaskView], configured: [API.ConfiguredSite]?) {
+        let bySite = Dictionary(grouping: tasks) { $0.siteId ?? "" }
+        let config = Dictionary((configured ?? []).map { ($0.siteId, $0) }, uniquingKeysWith: { first, _ in first })
+        sites = bySite.map { siteId, tasks in
+            let mode: Mode
+            if configured == nil {
+                mode = .running
+            } else if let site = config[siteId], site.boostEnabled {
+                mode = site.boostPaused ? .paused : .running
+            } else {
+                mode = .off
+            }
+            return Site(id: siteId, name: tasks.first?.siteName ?? (siteId.isEmpty ? "未知站点" : siteId), mode: mode, tasks: tasks)
+        }
+        .sorted { $0.tasks.count > $1.tasks.count }
+    }
+
+    func count(_ mode: Mode) -> Int {
+        sites.filter { $0.mode == mode }.reduce(0) { $0 + $1.tasks.count }
+    }
+}
+
 /// 刷流单行：站点 + 名称（可点开种子页）占一行，数字列（↑速度 / 累计上传 / 体积）另起一行逐行对齐；
 /// 下载中的少数种子再补一行进度与下行速度
 struct BoostTaskRow: View {

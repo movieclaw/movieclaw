@@ -25,6 +25,8 @@ struct ActivityView: View {
     @State private var deviceActions = ActivityDeviceActions()
     @State private var recentPlays: [API.PlaybackLogEntryView] = []
     @State private var weekly: API.PlaybackWatchStatsView?
+    /// 已配置站点（刷流行要按站点开关状态写文案）；只在有刷流种子时取
+    @State private var sites: [API.ConfiguredSite]?
 
     /// 总览上「进行中」最多露几条，其余进二级页
     private static let activeLimit = 5
@@ -124,7 +126,7 @@ struct ActivityView: View {
                     }
                     if !activity.boostTasks.isEmpty {
                         NavigationLink(value: AppRoute.activityPage(.boost)) {
-                            ActivityBoostSummaryRow(tasks: activity.boostTasks)
+                            ActivityBoostSummaryRow(tasks: activity.boostTasks, configured: sites)
                         }
                     }
                 } header: {
@@ -192,6 +194,9 @@ struct ActivityView: View {
         .taskDeleteSheet(taskActions, store: tasks)
         .task(id: ExtrasKey(scope: media.scope, live: snapshot.sessions.count + snapshot.hiddenSessionCount)) {
             await loadExtras(scope: media.scope)
+        }
+        .task(id: activity.boostTasks.isEmpty) {
+            if !activity.boostTasks.isEmpty { sites = (try? await api.siteList()) ?? sites }
         }
         .onChange(of: router.rootParameter, initial: true) { _, parameter in
             // 站内链接 /activity?view=…：点名二级页的（plays / stats / history / active）接着压栈打开，
@@ -304,5 +309,6 @@ struct ActivityView: View {
         async let stats = api.playbackStatsWatch(days: 7, tzOffset: offset, memberId: nil, scope: scope)
         if let page = try? await plays { recentPlays = page.entries }
         if let result = try? await stats { weekly = result }
+        if !badges.tasks.activity.boostTasks.isEmpty { sites = (try? await api.siteList()) ?? sites }
     }
 }
