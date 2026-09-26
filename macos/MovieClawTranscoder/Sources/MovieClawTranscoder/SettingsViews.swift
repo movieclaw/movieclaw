@@ -122,8 +122,13 @@ final class GroupView: NSView {
     private func applyColors() {
         // 解析颜色必须在本视图的外观上下文里做，否则拿到的是 App 当前外观，
         // 窗口单独设了 appearance 时会串色。
+        //
+        // 底色不用 controlBackgroundColor：macOS 27 上它和窗口底色是同一个值（深色
+        // 都是 30,30,30、浅色都是纯白），分组又去掉了描边，整块分组就「隐形」了，
+        // 只剩行间一条发丝线。改用前景色的一层薄罩，深浅色下都比窗口底色跳出一档。
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            layer?.backgroundColor = NSColor.labelColor.translucent(dark ? 0.06 : 0.04).cgColor
             layer?.borderColor = NSColor.separatorColor.cgColor
         }
     }

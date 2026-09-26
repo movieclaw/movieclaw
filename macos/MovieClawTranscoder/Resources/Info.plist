@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>MovieClaw Transcoder</string>
+	<string>MovieClaw 转码器</string>
 	<key>CFBundleExecutable</key>
 	<string>movieclaw-transcoder</string>
 	<key>CFBundleIconFile</key>
@@ -13,7 +13,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>MovieClawTranscoder</string>
+	<string>MovieClaw 转码器</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

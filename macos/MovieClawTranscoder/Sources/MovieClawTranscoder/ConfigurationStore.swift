@@ -5,11 +5,24 @@ import Foundation
 /// **没有令牌字段**：令牌不是用户填的，是配对流程拿回来的
 /// （docs/design/device-auth.md §5），由 `saveToken` 单独写进钥匙串。
 struct WorkerSettingsDraft: Sendable {
-    let nasURL: String
-    let workerID: String
-    let ffmpegPath: String
-    let maxJobs: Int
-    let autoConnect: Bool
+    var nasURL: String
+    var workerID: String
+    var ffmpegPath: String
+    var maxJobs: Int
+    var autoConnect: Bool
+}
+
+extension WorkerSettingsDraft {
+    /// 以当前设置为底稿：设置页每次只改一项，其余照旧。
+    init(_ snapshot: WorkerSettingsSnapshot) {
+        self.init(
+            nasURL: snapshot.nasURL,
+            workerID: snapshot.workerID,
+            ffmpegPath: snapshot.ffmpegPath,
+            maxJobs: snapshot.maxJobs,
+            autoConnect: snapshot.autoConnect
+        )
+    }
 }
 
 struct WorkerSettingsSnapshot: Sendable {
@@ -76,13 +89,16 @@ final class ConfigurationStore: @unchecked Sendable {
     }
 
     /// 读令牌明文，一个进程内只真读一次。
-    private func readTokenOnce() throws -> String? {
+    ///
+    /// - Parameter interactive: false 时不让系统弹授权窗，需要授权就抛
+    ///   ``KeychainStore/ApprovalRequired``（见 AppMain 的 `ensureConfiguration`）。
+    private func readTokenOnce(interactive: Bool = true) throws -> String? {
         lock.lock()
         defer { lock.unlock() }
         if cachedTokenLoaded {
             return cachedToken
         }
-        let token = try KeychainStore.readToken()
+        let token = try KeychainStore.readToken(interactive: interactive)
         cachedToken = token
         cachedTokenLoaded = true
         // 顺手校正标记。用户在「钥匙串访问」里手工删掉那条记录时，标记会停在
@@ -128,12 +144,12 @@ final class ConfigurationStore: @unchecked Sendable {
         )
     }
 
-    func loadConfiguration() throws -> WorkerConfiguration? {
+    func loadConfiguration(interactive: Bool = true) throws -> WorkerConfiguration? {
         let snapshot = try snapshot()
         guard !snapshot.nasURL.isEmpty, snapshot.tokenConfigured else {
             return nil
         }
-        guard let token = try readTokenOnce() else {
+        guard let token = try readTokenOnce(interactive: interactive) else {
             return nil
         }
         return try WorkerConfiguration.make(

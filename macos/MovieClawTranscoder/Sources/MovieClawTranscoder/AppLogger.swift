@@ -119,31 +119,33 @@ final class AppLogger: @unchecked Sendable {
         osLogger.error("\(LogSanitizer.redact(message, secret: secret), privacy: .public)")
     }
 
+    /// 行首标记：转码内核进程写的行带「[内核]」，界面进程不带（见 ``CoreRunner``）。
+    /// 进程启动时设一次，之后只读。
+    nonisolated(unsafe) static var processTag = ""
+
     private func write(_ level: String, _ message: String, secret: String?) {
         let safeMessage = LogSanitizer.redact(message, secret: secret)
         lock.lock()
         defer { lock.unlock() }
-        let line = "[\(formatter.string(from: Date()))] [\(level)] \(safeMessage)\n"
-        do {
-            let directory = logURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            if let attributes = try? FileManager.default.attributesOfItem(atPath: logURL.path),
-               let size = attributes[.size] as? NSNumber,
-               size.intValue > 5_000_000 {
-                let rotated = logURL.appendingPathExtension("1")
-                try? FileManager.default.removeItem(at: rotated)
-                try? FileManager.default.moveItem(at: logURL, to: rotated)
-            }
-            if !FileManager.default.fileExists(atPath: logURL.path) {
-                FileManager.default.createFile(atPath: logURL.path, contents: nil)
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logURL.path)
-            }
-            let handle = try FileHandle(forWritingTo: logURL)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: Data(line.utf8))
-        } catch {
-            // 日志不能反过来阻塞 Worker；统一日志仍然已经记录了主消息。
+        let line = "[\(formatter.string(from: Date()))] [\(level)] \(Self.processTag)\(safeMessage)\n"
+        let directory = logURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: logURL.path),
+           let size = attributes[.size] as? NSNumber,
+           size.intValue > 5_000_000 {
+            let rotated = logURL.appendingPathExtension("1")
+            try? FileManager.default.removeItem(at: rotated)
+            try? FileManager.default.moveItem(at: logURL, to: rotated)
         }
+        // O_APPEND：界面进程和转码内核进程写同一个文件。「先跳到末尾再写」在两个进程
+        // 之间不是原子的，会互相覆盖对方刚写的行；追加模式由内核保证每次写入都落在末尾。
+        let fd = open(logURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+        guard fd >= 0 else {
+            // 日志不能反过来阻塞 Worker；统一日志仍然已经记录了主消息。
+            return
+        }
+        defer { close(fd) }
+        var bytes = Array(line.utf8)
+        _ = bytes.withUnsafeMutableBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
     }
 }

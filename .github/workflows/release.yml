@@ -233,7 +233,7 @@ jobs:
           # 必须用 ditto 而不是 zip：App Bundle 里有符号链接和扩展属性，
           # 普通 zip 解开后可能无法启动
           ditto -c -k --keepParent \
-            "macos/MovieClawTranscoder/dist/MovieClaw Transcoder.app" \
+            "macos/MovieClawTranscoder/dist/MovieClaw 转码器.app" \
             "MovieClawTranscoder-macos-arm64.zip"
 
       - name: 上传到 Release

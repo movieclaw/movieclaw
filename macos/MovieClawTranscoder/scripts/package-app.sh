@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="MovieClaw Transcoder.app"
+APP_NAME="MovieClaw 转码器.app"
 OUTPUT_DIR="${PROJECT_DIR}/dist"
 APP_DIR="${OUTPUT_DIR}/${APP_NAME}"
 SIGNING_IDENTITY="${MOVIECLAW_SIGNING_IDENTITY:--}"
