@@ -3,7 +3,7 @@
 # 为什么用 XcodeGen 而不是直接提交 .xcodeproj：
 # - .pbxproj 是机器生成的巨型文件，多人/多会话并行加文件时几乎必然冲突；
 # - 这里按目录收录源码，新增 Swift 文件无需改工程文件，重新 `xcodegen` 即可。
-# 生成：cd ios/MovieClaw && xcodegen generate（产物 MovieClaw.xcodeproj 已在 .gitignore）
+# 生成：cd apps/apple && xcodegen generate（产物 MovieClaw.xcodeproj 已在 .gitignore）
 name: MovieClaw
 options:
   bundleIdPrefix: io.movieclaw

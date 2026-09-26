@@ -1,5 +1,7 @@
+# 只列 JS 项目：apps/ 下还有原生 App（apple/ 是 Xcode 工程，将来的 android/ 是 Gradle 工程），不能用 apps/* 通配
 packages:
-  - "apps/*"
+  - "apps/web"
+  - "apps/extension"
 allowBuilds:
   "@tailwindcss/oxide": true
   esbuild: true

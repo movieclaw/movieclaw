@@ -1,4 +1,4 @@
-// 由 ios/MovieClaw/scripts/gen_api.py 生成，勿手改。重新生成见脚本头部说明。
+// 由 apps/apple/scripts/gen_api.py 生成，勿手改。重新生成见脚本头部说明。
 import Foundation
 
 nonisolated extension APIClient {

@@ -11,14 +11,20 @@
 | 范围 | Web 手机端全部功能原生重写（不内嵌网页） | 用户决定 |
 | 播放 | Swiftfin 式多引擎：AVPlayer + libmpv（MPVKit，LGPL 构建） | 用户决定；AVPlayer 管画中画/AirPlay/杜比视界，mpv 管 MKV/ASS/PGS 直出 |
 | 认证 | 复用 Web 同一套会话 Cookie | 后端零改动，多账号切换、吊销、改密下线与网页一致 |
-| 接口层 | 脚本生成（`ios/MovieClaw/scripts/gen_api.py`） | 340 个接口、459 个模型手写不可维护 |
+| 接口层 | 脚本生成（`apps/apple/scripts/gen_api.py`） | 340 个接口、459 个模型手写不可维护 |
 | 工程 | XcodeGen（`project.yml`，同步文件夹） | 不提交 .pbxproj，并行加文件不冲突 |
 | 外观 | 不提供网页的「外观」设置（主题、背景图、界面质感、导航顺序都只作用于网页），设置里没有这一页；底色固定纯黑（同 Apple Music），App 强制暗色（含启动屏），剧照灯箱不带「设为背景」；账号在网页的外观设置原样保留 | 用户决定（2026-09-26），列为已接受差异 |
 
 ## 2. 目录
 
+原生 App 按平台生态放在 `apps/` 下，与 `apps/web`、`apps/extension` 并列：`apps/apple/` 是一个 Xcode 工程，
+现在只有 iPhone/iPad 目标，将来的 Apple TV（tvOS）版作为同一工程的另一个目标，共用接口层、播放器与 MPV
+（届时工程内再拆 `Shared/`、`iOS/`、`tvOS/`）；将来的 Android 版放 `apps/android/`（一个 Gradle 工程，手机与
+Android TV 两个模块）。各平台共用 Bundle ID / 包名 `io.movieclaw.app`，请求标识为 `MovieClaw-<iOS|tvOS|Android>/<版本>`，
+活动页据此显示「MovieClaw iOS / Apple TV / Android」。`pnpm-workspace.yaml` 因此只列 JS 项目、不用 `apps/*` 通配。
+
 ```
-ios/MovieClaw/
+apps/apple/
   project.yml                 工程定义（xcodegen generate 生成 .xcodeproj，不入库）
   scripts/gen_api.py          生成接口层；后端改了接口就重跑
   scripts/test.sh             跑测试（兜住 xcodebuild 不退出）

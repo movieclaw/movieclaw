@@ -9,7 +9,7 @@
   MovieClaw/Core/API/Generated/Endpoints.swift  每个业务接口一个 async 函数（APIClient 扩展）
 
 用法（在仓库根目录，用后端的虚拟环境跑）：
-  .venv/bin/python ios/MovieClaw/scripts/gen_api.py
+  .venv/bin/python apps/apple/scripts/gen_api.py
 
 生成规则要点：
 - 响应模型按「序列化」口径出 schema，且所有字段视为必有（后端 ApiResponse 不做
@@ -36,7 +36,7 @@ from pydantic import BaseModel, TypeAdapter
 from pydantic.json_schema import GenerateJsonSchema
 
 ROOT = Path(__file__).resolve().parents[3]
-OUT_DIR = ROOT / "ios/MovieClaw/MovieClaw/Core/API/Generated"
+OUT_DIR = ROOT / "apps/apple/MovieClaw/Core/API/Generated"
 API_PREFIX = "/api/v1"
 
 SWIFT_KEYWORDS = {
@@ -387,7 +387,7 @@ def main() -> int:
 
     # ---- Models.swift ----
     model_lines = [
-        "// 由 ios/MovieClaw/scripts/gen_api.py 生成，勿手改。重新生成见脚本头部说明。",
+        "// 由 apps/apple/scripts/gen_api.py 生成，勿手改。重新生成见脚本头部说明。",
         "import Foundation",
         "",
         "nonisolated extension API {",
@@ -399,7 +399,7 @@ def main() -> int:
 
     # ---- Endpoints.swift ----
     ep = [
-        "// 由 ios/MovieClaw/scripts/gen_api.py 生成，勿手改。重新生成见脚本头部说明。",
+        "// 由 apps/apple/scripts/gen_api.py 生成，勿手改。重新生成见脚本头部说明。",
         "import Foundation",
         "",
         "nonisolated extension APIClient {",
@@ -465,7 +465,7 @@ def main() -> int:
 
     # ---- LiveDecodeTests.swift：对真实服务器逐个调用无必填参数的 GET，验证模型能解码 ----
     tests = [
-        "// 由 ios/MovieClaw/scripts/gen_api.py 生成，勿手改。",
+        "// 由 apps/apple/scripts/gen_api.py 生成，勿手改。",
         "// 需要一台运行中的 MovieClaw；设置环境变量 MC_LIVE=1 才会执行",
         "// （xcodebuild 传 TEST_RUNNER_MC_LIVE=1），地址/账号见 LiveServer。",
         "import Testing",
@@ -486,7 +486,7 @@ def main() -> int:
         tests.append(f"        try await LiveServer.check {{ try await $0.{op_func_name(route)}() }}")
         tests.append("    }")
     tests.append("}")
-    test_dir = ROOT / "ios/MovieClaw/MovieClawTests/Generated"
+    test_dir = ROOT / "apps/apple/MovieClawTests/Generated"
     test_dir.mkdir(parents=True, exist_ok=True)
     (test_dir / "LiveDecodeTests.swift").write_text("\n".join(tests) + "\n", encoding="utf-8")
 

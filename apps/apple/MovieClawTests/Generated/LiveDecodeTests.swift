@@ -1,4 +1,4 @@
-// 由 ios/MovieClaw/scripts/gen_api.py 生成，勿手改。
+// 由 apps/apple/scripts/gen_api.py 生成，勿手改。
 // 需要一台运行中的 MovieClaw；设置环境变量 MC_LIVE=1 才会执行
 // （xcodebuild 传 TEST_RUNNER_MC_LIVE=1），地址/账号见 LiveServer。
 import Testing
