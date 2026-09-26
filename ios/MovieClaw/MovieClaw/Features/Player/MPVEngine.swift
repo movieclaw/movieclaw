@@ -50,7 +50,14 @@ final class MPVEngine: PlayerEngine {
         #endif
         // 卡顿 / 缺粮由控制器的 StallWatch 按播放头与缓冲统一判定（两个引擎同一套口径）
         core.onEvent = { [weak self] event in self?.handle(event) }
+        // 旋转后重建视频输出：4K HEVC 解码重启要几秒，期间掉帧与画面停顿是预期内的，
+        // 不能让掉帧看门狗判成「直通放不动」而回落换引擎（真机《抓特务》实测会被连环重启）
+        core.onVideoOutputRebuild = { [weak self] in
+            self?.watchdogGraceUntil = Date().addingTimeInterval(6)
+        }
     }
+
+    private(set) var watchdogGraceUntil: Date?
 
     /// 渲染方式（诊断面板用）
     var renderBackend: String {

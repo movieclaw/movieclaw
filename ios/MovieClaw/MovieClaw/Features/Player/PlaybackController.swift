@@ -1106,6 +1106,11 @@ final class PlaybackController {
     /// 每秒一次：卡顿归因（解码卡死 / 缺粮）与直通掉帧。命中就走既有的失败回路（降档 / 带宽重开 / MPV 回落）
     private func runWatchdogs(engine: any PlayerEngine, stats: EngineStats) {
         guard session != nil, [.buffering, .playing].contains(phase), !backgrounded else { return }
+        if let grace = engine.watchdogGraceUntil, grace > Date() {
+            // 引擎在做自身维护（重建视频输出）：清空窗口，宽限期过后重新开始采样
+            resetWatchdogs()
+            return
+        }
         let starveLimit = playsOriginalFile ? StallWatch.directStarveSeconds : StallWatch.starveSeconds
         let ahead = max(0, (engine.bufferedEnd ?? engine.currentTime) - engine.currentTime)
         switch stallWatch.sample(time: engine.currentTime, bufferedAhead: ahead, paused: engine.isPaused,

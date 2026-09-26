@@ -36,6 +36,9 @@ final class MPVMetalView: UIView {
         let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
         metalLayer.drawableSize = size
         CATransaction.commit()
+        #if DEBUG
+        MPVDiag.log("布局：bounds \(bounds.size) scale \(scale) drawable \(size)")
+        #endif
         guard size.width > 1, size.height > 1, size != lastDrawableSize else { return }
         lastDrawableSize = size
         onDrawableSizeChange?(size)

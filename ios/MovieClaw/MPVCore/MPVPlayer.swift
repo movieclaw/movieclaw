@@ -28,6 +28,9 @@ public final class MPVPlayer {
     public let backend: MPVRenderBackend
     /// 事件回调（主线程）
     public var onEvent: ((MPVEvent) -> Void)?
+    /// 即将为尺寸校正重建视频输出（主线程）：重建期间解码重启会掉帧、画面短暂停住，
+    /// 上层的卡顿/掉帧看门狗要在这段时间里别误判
+    public var onVideoOutputRebuild: (() -> Void)?
 
     private let handle: MPVHandle
     /// Metal 渲染表面（OpenGL 路径为 nil）：尺寸变化时要通知 mpv 重新排布画面
@@ -163,11 +166,19 @@ public final class MPVPlayer {
             guard let vid = self.string("vid"), vid != "no", self.string("path") != nil else { return }
             let target = layer.drawableSize
             let width = self.int("osd-width") ?? 0, height = self.int("osd-height") ?? 0
+            #if DEBUG
+            MPVDiag.log("核对：视图 \(self.view.bounds.size) drawable \(target) osd \(width)x\(height) 视频 \(self.int("video-params/w") ?? -1)x\(self.int("video-params/h") ?? -1) dw \(self.int("video-params/dw") ?? -1)x\(self.int("video-params/dh") ?? -1) rotate \(self.int("video-params/rotate") ?? -1) hwdec \(self.string("hwdec-current") ?? "?")")
+            #endif
             guard width > 0, height > 0, width != Int(target.width) || height != Int(target.height) else { return }
+            self.onVideoOutputRebuild?()
             self.setString("vid", "no")
             try? await Task.sleep(for: .milliseconds(60))
             guard !Task.isCancelled else { return }
             self.setString("vid", vid)
+            #if DEBUG
+            try? await Task.sleep(for: .seconds(1.5))
+            MPVDiag.log("重建后：osd \(self.int("osd-width") ?? -1)x\(self.int("osd-height") ?? -1) drawable \(layer.drawableSize)")
+            #endif
         }
     }
 
@@ -564,3 +575,12 @@ nonisolated final class MPVHandle: @unchecked Sendable {
     }
 }
 
+
+#if DEBUG
+/// 真机排查用：写 stderr，`xcrun devicectl device process launch --console` 能收到
+enum MPVDiag {
+    static func log(_ message: String) {
+        FileHandle.standardError.write(Data("[MPVDiag] \(message)\n".utf8))
+    }
+}
+#endif

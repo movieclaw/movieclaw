@@ -277,7 +277,13 @@ struct LevelBar: View {
                 Capsule().fill(.white).frame(width: 96 * min(1, max(0, value)))
             }
             .frame(width: 96, height: 4)
-            Text("\(Int((value * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
+            // 用最宽的「100%」占位定宽：数字位数变化（9% → 100%）不再撑开读数、带动进度条跳动
+            Text("100%").monospacedDigit().hidden()
+                .overlay(alignment: .trailing) {
+                    Text("\(Int((value * 100).rounded()))%").monospacedDigit()
+                }
+                .lineLimit(1)
+                .fixedSize()
         }
     }
 }

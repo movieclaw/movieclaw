@@ -28,8 +28,17 @@ struct PlayerScreen: View {
         .accessibilityIdentifier("player-screen")
         .onAppear {
             guard controller == nil else { return }
+            // 同一次播放的视图被系统重建（旋转等）：接回原控制器，不重开会话
+            if let existing = router.activePlayback, existing.request.id == request.id {
+                controller = existing
+                #if DEBUG
+                FileHandle.standardError.write(Data("[PlayerDiag] 播放器视图重建，复用原控制器\n".utf8))
+                #endif
+                return
+            }
             let created = PlaybackController(request: request, api: api)
             controller = created
+            router.activePlayback = created
             #if DEBUG
             // 开发期：-mcPlayerDiagnostics YES 起播即打开诊断面板（截图核对用）
             if UserDefaults.standard.bool(forKey: "mcPlayerDiagnostics") { created.diagnosticsOpen = true }
@@ -44,10 +53,21 @@ struct PlayerScreen: View {
             #endif
             created.start()
             UIApplication.shared.isIdleTimerDisabled = true
+            #if DEBUG
+            // 真机排查用：-mcAutoLandscape <秒> 起播后自动切横屏
+            let autoLandscape = UserDefaults.standard.double(forKey: "mcAutoLandscape")
+            if autoLandscape > 0 {
+                Task {
+                    try? await Task.sleep(for: .seconds(autoLandscape))
+                    PlayerOrientation.request(landscape: true)
+                }
+            }
+            #endif
         }
         .onDisappear {
-            controller?.close()
-            UIApplication.shared.isIdleTimerDisabled = false
+            // 仍在呈现同一个播放请求：只是视图被重建，控制器与方向锁都保留
+            if router.player?.id == request.id { return }
+            finish()
         }
         .onChange(of: scenePhase) { _, phase in
             controller?.setBackgrounded(phase == .background)
@@ -55,9 +75,17 @@ struct PlayerScreen: View {
     }
 
     private func exit() {
-        controller?.close()
-        PlayerOrientation.request(landscape: false)
+        finish()
         dismiss()
+    }
+
+    /// 真正离开播放器：关会话、恢复亮度与常亮、解除方向锁
+    private func finish() {
+        controller?.close()
+        if router.activePlayback === controller { router.activePlayback = nil }
+        UIApplication.shared.isIdleTimerDisabled = false
+        ScreenBrightness.restore()
+        PlayerOrientation.release()
     }
 
     /// 同意弹窗里的「去设置远程转码」：关掉播放器再跳到设置的「播放」分区
@@ -79,7 +107,6 @@ private struct PlayerContent: View {
     @State private var locked = false
     @State private var lockHint = false
     @State private var lockHintTask: Task<Void, Never>?
-    @State private var brightness = 1.0
     @State private var adjust: AdjustState?
     @State private var volumeUnsupported = false
     @State private var scrubMs: Int?
@@ -120,8 +147,6 @@ private struct PlayerContent: View {
                         .ignoresSafeArea()
                     }
                 }
-                // 亮度：压暗蒙层（0.1~1，同 Web；不改系统亮度，退出即复原）
-                Color.black.opacity(1 - brightness).ignoresSafeArea().allowsHitTesting(false)
 
                 PlayerGestureLayer(
                     enabled: !isModal,
@@ -444,18 +469,18 @@ private struct PlayerContent: View {
         }
     }
 
-    /// 竖滑：左半屏亮度（压暗蒙层 0.1~1），右半屏系统音量
+    /// 竖滑：左半屏调系统屏幕亮度（退出播放器时恢复进入前的亮度），右半屏系统音量
     private func handleAdjust(_ phase: PlayerGestureLayer.GesturePhase, _ side: PlayerGestureLayer.AdjustSide, _ delta: CGFloat) {
         switch phase {
         case .began:
-            let base = side == .brightness ? brightness : Double(SystemVolume.shared.value)
+            let base = side == .brightness ? ScreenBrightness.current : Double(SystemVolume.shared.value)
             volumeUnsupported = side == .volume && !SystemVolume.shared.isAdjustable
             adjust = AdjustState(side: side, value: base, base: base)
         case .changed:
             guard var current = adjust else { return }
-            let value = min(1, max(side == .brightness ? 0.1 : 0, current.base + Double(delta)))
+            let value = min(1, max(0, current.base + Double(delta)))
             if side == .brightness {
-                brightness = value
+                ScreenBrightness.set(value)
             } else {
                 SystemVolume.shared.set(Float(value))
             }

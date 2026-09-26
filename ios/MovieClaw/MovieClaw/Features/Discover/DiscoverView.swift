@@ -141,23 +141,8 @@ struct DiscoverView: View {
             .frame(width: 124)
             .accessibilityIdentifier("discover-type")
         }
+        // 顺序：组合发现筛选在前、TMDB/豆瓣数据源切换在最右（用户要求，常规设计把全局切换放最外侧）
         ToolbarItemGroup(placement: .topBarTrailing) {
-            Menu {
-                Picker("数据源", selection: Binding(get: { source }, set: { next in
-                    // 切数据源保留类型、清空筛选（同 Web `switchSource`）
-                    guard next != source else { return }
-                    source = next
-                    filters = .empty
-                })) {
-                    Text("TMDB").tag("tmdb")
-                    Text("豆瓣").tag("douban")
-                }
-            } label: {
-                Text(source == "tmdb" ? "TMDB" : "豆瓣")
-                    .font(.subheadline.weight(.semibold))
-            }
-            .accessibilityLabel("数据源：\(source == "tmdb" ? "TMDB" : "豆瓣")")
-            .accessibilityIdentifier("discover-source")
             if source == "tmdb" {
                 Button {
                     showsFilter = true
@@ -177,6 +162,22 @@ struct DiscoverView: View {
                 .accessibilityLabel(filters.activeCount > 0 ? "筛选，已启用 \(filters.activeCount) 项" : "筛选影片")
                 .accessibilityIdentifier("discover-filter")
             }
+            Menu {
+                Picker("数据源", selection: Binding(get: { source }, set: { next in
+                    // 切数据源保留类型、清空筛选（同 Web `switchSource`）
+                    guard next != source else { return }
+                    source = next
+                    filters = .empty
+                })) {
+                    Text("TMDB").tag("tmdb")
+                    Text("豆瓣").tag("douban")
+                }
+            } label: {
+                Text(source == "tmdb" ? "TMDB" : "豆瓣")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .accessibilityLabel("数据源：\(source == "tmdb" ? "TMDB" : "豆瓣")")
+            .accessibilityIdentifier("discover-source")
         }
     }
 }

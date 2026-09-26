@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct MovieClawApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
 
     init() {
@@ -14,6 +15,13 @@ struct MovieClawApp: App {
                 .environment(model)
                 .preferredColorScheme(.dark)
         }
+    }
+}
+
+/// 应用代理：目前只负责界面方向锁（见 `OrientationLock`）。
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        OrientationLock.mask
     }
 }
 

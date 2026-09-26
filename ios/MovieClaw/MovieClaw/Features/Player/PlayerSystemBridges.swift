@@ -72,14 +72,54 @@ struct SystemVolumeHost: UIViewRepresentable {
     func updateUIView(_ uiView: MPVolumeView, context: Context) {}
 }
 
+/// 全局界面方向锁：应用代理的 supportedInterfaceOrientationsFor 返回它。
+///
+/// 为什么需要锁：只调 `requestGeometryUpdate` 是一次性的「请转过去」，App 允许的方向里仍有竖屏，
+/// 手机实际竖着拿时，系统在任何一次重新评估方向（控制条显隐改状态栏、视频输出重建等）时
+/// 都会把界面转回竖屏，接着又被转横——真机播 4K《抓特务》实测横竖来回跳、画面位置错乱。
+/// 锁住允许的方向后，系统就不会再自作主张转回去。
+@MainActor
+enum OrientationLock {
+    /// 默认跟随手机方向（不含倒置）
+    static var mask: UIInterfaceOrientationMask = .allButUpsideDown
+}
+
 /// 界面方向：播放器的「横屏」键与退出时的归还
 @MainActor
 enum PlayerOrientation {
+    /// 横屏键：锁到横屏（左右都允许，跟随手机横放的方向）；再按锁回竖屏
     static func request(landscape: Bool) {
+        apply(mask: landscape ? .landscape : .portrait, prefer: landscape ? .landscapeRight : .portrait)
+    }
+
+    /// 离开播放器：回竖屏并解除锁定，其它页面恢复跟随手机方向
+    static func release() {
+        apply(mask: .portrait, prefer: .portrait)
+        OrientationLock.mask = .allButUpsideDown
+        updateSupported()
+    }
+
+    private static func apply(mask: UIInterfaceOrientationMask, prefer: UIInterfaceOrientationMask) {
+        OrientationLock.mask = mask
+        updateSupported()
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
-        let mask: UIInterfaceOrientationMask = landscape ? .landscapeRight : .portrait
-        scene.keyWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
+        // 手机已经横着拿时用它当前的横向，避免左右颠倒
+        let current = scene.effectiveGeometry.interfaceOrientation
+        let target: UIInterfaceOrientationMask = mask == .landscape && current.isLandscape ? (current == .landscapeLeft ? .landscapeLeft : .landscapeRight) : prefer
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: target)) { _ in }
+    }
+
+    /// 通知当前所有控制器（含全屏呈现的播放器）重新读取允许的方向
+    private static func updateSupported() {
+        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
+            for window in scene.windows {
+                var controller = window.rootViewController
+                while let current = controller {
+                    current.setNeedsUpdateOfSupportedInterfaceOrientations()
+                    controller = current.presentedViewController
+                }
+            }
+        }
     }
 }
 
@@ -125,5 +165,31 @@ final class TrickplayImages {
             }
             loading.remove(path)
         }
+    }
+}
+
+/// 播放器里的屏幕亮度（左半屏竖滑）：调的是系统屏幕亮度（与控制中心的亮度条是同一个），
+/// 手势开始调节前记下原亮度，退出播放器时恢复——看片时调暗/调亮只影响这次观看（Infuse、B 站同款）。
+@MainActor
+enum ScreenBrightness {
+    private static var original: CGFloat?
+
+    private static var screen: UIScreen? {
+        UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen }.first
+    }
+
+    static var current: Double { Double(screen?.brightness ?? 1) }
+
+    static func set(_ value: Double) {
+        guard let screen else { return }
+        if original == nil { original = screen.brightness }
+        screen.brightness = CGFloat(min(1, max(0, value)))
+    }
+
+    /// 恢复进入播放器前的亮度（没调过就什么都不做）
+    static func restore() {
+        guard let original, let screen else { return }
+        screen.brightness = original
+        self.original = nil
     }
 }

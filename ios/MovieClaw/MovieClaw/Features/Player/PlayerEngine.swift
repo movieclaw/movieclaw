@@ -79,6 +79,8 @@ protocol PlayerEngine: AnyObject {
     var isPaused: Bool { get }
     var videoSize: CGSize { get }
     func stats() -> EngineStats
+    /// 引擎在做自身的维护动作（MPV 旋转后重建视频输出）：到这个时间点之前看门狗不判卡顿/掉帧
+    var watchdogGraceUntil: Date? { get }
 
     /// 能否原地换音轨（MPV 直出原文件时可以；HLS/AVPlayer 下要重开会话）
     var canSwitchAudioInPlace: Bool { get }
@@ -97,4 +99,8 @@ protocol PlayerEngine: AnyObject {
     /// App 前后台切换（后台只留声音）
     func setBackgrounded(_ background: Bool)
     func destroy()
+}
+
+extension PlayerEngine {
+    var watchdogGraceUntil: Date? { nil }
 }

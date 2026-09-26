@@ -108,6 +108,10 @@ final class Router {
     var paths: [MainTab: [AppRoute]] = [:]
     /// 全屏播放器
     var player: PlayRequest?
+    /// 正在播放的控制器：放在这里而不是播放器视图的 @State 里——iOS 26 标签栏在旋转时会重建容器，
+    /// 连带全屏呈现的播放器视图被销毁重建；控制器挂在视图上会跟着重开会话、重载 mpv，
+    /// 横屏后画面错位、又被旧视图的收尾转回竖屏（真机《抓特务》实测）。
+    var activePlayback: PlaybackController?
     /// 全局弹层
     var sheet: AppSheet?
     /// 「更多」面板（左上角头像）

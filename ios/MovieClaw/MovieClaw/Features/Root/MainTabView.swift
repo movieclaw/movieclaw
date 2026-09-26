@@ -38,7 +38,7 @@ struct MainTabView: View {
                 Tab(MainTab.activity.title, systemImage: MainTab.activity.systemImage, value: MainTab.activity) {
                     TabRoot(tab: .activity) { ActivityView(initialView: nil) }
                 }
-                .badge(badges.activityBadge)
+
             }
             if permissions.canSearch {
                 Tab(MainTab.search.title, systemImage: MainTab.search.systemImage, value: MainTab.search, role: .search) {
@@ -47,6 +47,8 @@ struct MainTabView: View {
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
+        // 活动标签的状态点（红 > 绿 > 蓝，同网页）：SwiftUI 的 .badge 只能红底文字，下到 UIKit 设彩色空角标
+        .background(TabBarDotBridge(tabTitle: MainTab.activity.title, color: badges.activityDotColor))
         .sheet(item: $router.sheet) { sheet in
             sheet.content.sheetFeedback()
         }
@@ -253,10 +255,21 @@ final class ShellBadges {
     var running: Int { tasks.activity.activeTotal }
 
     /// 活动标签角标：按优先级只表达当前最该被看见的那一件事
-    var activityBadge: Text? {
-        if needsAction > 0 { return Text("\(needsAction)") }
-        if watching > 0 { return Text("在看") }
-        if running > 0 { return Text("进行中") }
+    /// 活动标签的状态点颜色（同网页 glass-tab-bar 的优先级）：有需要处理的任务红、有人在看绿、
+    /// 只有进行中的任务蓝；都没有不显示。用户觉得红底「在看」文字太重，改成小圆点
+    var activityDotColor: UIColor? {
+        #if DEBUG
+        // 开发期：-mcActivityDot red|green|blue 强制显示状态点（截图核对用）
+        switch UserDefaults.standard.string(forKey: "mcActivityDot") {
+        case "red": return UIColor(Theme.danger)
+        case "green": return UIColor(Theme.success)
+        case "blue": return UIColor(Theme.info)
+        default: break
+        }
+        #endif
+        if needsAction > 0 { return UIColor(Theme.danger) }
+        if watching > 0 { return UIColor(Theme.success) }
+        if running > 0 { return UIColor(Theme.info) }
         return nil
     }
 
@@ -279,5 +292,41 @@ final class ShellBadges {
         await MainActor.run {
             self.pendingUpdate = (pending.appVersion != nil || pending.modelTag != nil) ? pending : nil
         }
+    }
+}
+
+/// 给系统标签栏的某个标签设彩色空角标（小圆点）。
+///
+/// SwiftUI 的 `.badge` 只能是红底数字/文字；UIKit 的 UITabBarItem 支持 `badgeColor`，
+/// 且 `badgeValue = ""` 时只画一个小圆点。这里从视图所在窗口找到标签栏控制器，按标题定位标签后设置。
+struct TabBarDotBridge: UIViewRepresentable {
+    let tabTitle: String
+    let color: UIColor?
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        let title = tabTitle, color = color
+        // 等视图进窗口、标签栏建好之后再设（首次更新时窗口可能还是 nil）
+        DispatchQueue.main.async {
+            guard let root = view.window?.rootViewController,
+                  let tabBarController = Self.findTabBarController(from: root),
+                  let item = tabBarController.tabBar.items?.first(where: { $0.title == title })
+            else { return }
+            item.badgeColor = color
+            item.badgeValue = color == nil ? nil : ""
+        }
+    }
+
+    private static func findTabBarController(from controller: UIViewController) -> UITabBarController? {
+        if let tabs = controller as? UITabBarController { return tabs }
+        for child in controller.children {
+            if let found = findTabBarController(from: child) { return found }
+        }
+        return nil
     }
 }
