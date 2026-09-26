@@ -574,69 +574,32 @@ struct DownloadTaskFeedItem: View {
 
 // MARK: - 刷流做种
 
-/// 刷流做种分组：默认折叠，头部常显实时汇总（↑/↓ 总速度、已上传、已下载）；展开后逐种子一行，
-/// 按上行速度倒序（正在出力的浮在最前）。没有入库流转语义，不提供删除入口（汰换归引擎管）。
-struct BoostTaskSection: View {
-    let tasks: [API.DownloadTaskView]
-    @State private var open = false
+/// 刷流做种的实时汇总（↑/↓ 总速度、已上传、已下载）：总览的一行与二级页页头共用。
+/// 刷流没有入库流转语义，不进时间线、不参与计数，也不提供删除入口（汰换归引擎管）。
+struct ActivityBoostTotals {
+    var count: Int
+    var upSpeed: Int
+    var downSpeed: Int
+    var uploaded: Int
+    var downloaded: Int
 
-    var body: some View {
-        let upSpeed = tasks.reduce(0) { $0 + ($1.upspeedBytes ?? 0) }
-        let downSpeed = tasks.reduce(0) { $0 + ($1.dlspeedBytes ?? 0) }
-        let uploaded = tasks.reduce(0) { $0 + ($1.uploadedBytes ?? 0) }
-        let downloaded = tasks.reduce(0) { $0 + ($1.completedBytes ?? 0) }
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.snappy(duration: 0.25)) { open.toggle() }
-            } label: {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 10) {
-                        Text("刷流做种").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.accent)
-                        Text("\(tasks.count) 个种子").font(.caption).monospacedDigit().foregroundStyle(Theme.textMuted)
-                        Spacer()
-                        Text(open ? "收起" : "展开").font(.caption).foregroundStyle(Theme.textFaint)
-                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.textFaint)
-                            .rotationEffect(.degrees(open ? 90 : 0))
-                    }
-                    Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
-                        GridRow {
-                            SpeedStat(direction: .up, bytesPerSecond: upSpeed, placeholder: "↑ 0 B/s")
-                            SpeedStat(direction: .down, bytesPerSecond: downSpeed, placeholder: "↓ 0 B/s")
-                        }
-                        GridRow {
-                            Text.activityJoin([Text("已上传 "), Text(ActivityFormat.bytes(Double(uploaded))).fontWeight(.semibold).foregroundStyle(Theme.success)])
-                            Text.activityJoin([Text("已下载 "), Text(ActivityFormat.bytes(Double(downloaded))).fontWeight(.semibold).foregroundStyle(Theme.info)])
-                        }
-                    }
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.textFaint)
-                }
-                .padding(.vertical, 12)
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("boost-section")
-            if open {
-                let sorted = tasks.sorted {
-                    (($0.upspeedBytes ?? 0), ($0.uploadedBytes ?? 0)) > (($1.upspeedBytes ?? 0), ($1.uploadedBytes ?? 0))
-                }
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(sorted.enumerated()), id: \.element.id) { index, task in
-                        if index > 0 { Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1) }
-                        BoostTaskRow(task: task)
-                    }
-                }
-                .padding(.bottom, 8)
-            }
-            Rectangle().fill(Color.white.opacity(0.07)).frame(height: 1)
-        }
+    init(_ tasks: [API.DownloadTaskView]) {
+        count = tasks.count
+        upSpeed = tasks.reduce(0) { $0 + ($1.upspeedBytes ?? 0) }
+        downSpeed = tasks.reduce(0) { $0 + ($1.dlspeedBytes ?? 0) }
+        uploaded = tasks.reduce(0) { $0 + ($1.uploadedBytes ?? 0) }
+        downloaded = tasks.reduce(0) { $0 + ($1.completedBytes ?? 0) }
+    }
+
+    /// 按上行速度倒序（正在出力的浮在最前），同速按累计上传
+    static func sorted(_ tasks: [API.DownloadTaskView]) -> [API.DownloadTaskView] {
+        tasks.sorted { (($0.upspeedBytes ?? 0), ($0.uploadedBytes ?? 0)) > (($1.upspeedBytes ?? 0), ($1.uploadedBytes ?? 0)) }
     }
 }
 
 /// 刷流单行：站点 + 名称（可点开种子页）占一行，数字列（↑速度 / 累计上传 / 体积）另起一行逐行对齐；
 /// 下载中的少数种子再补一行进度与下行速度
-private struct BoostTaskRow: View {
+struct BoostTaskRow: View {
     let task: API.DownloadTaskView
     @Environment(\.openURL) private var openURL
 

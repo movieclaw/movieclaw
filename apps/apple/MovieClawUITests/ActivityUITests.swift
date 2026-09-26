@@ -80,13 +80,16 @@ final class ActivityUITests: XCTestCase {
 
     // MARK: 观看
 
-    /// 正在播放：与后端快照一致（有会话出卡片、没有出空态）；有会话时打开「结束播放」确认框后取消
+    /// 正在播放：与后端快照一致（有会话出一行、没有时摘要写「现在没有人在看」）；有会话时长按打开「结束播放」确认框后取消
     @MainActor
     func testNowPlayingMatchesBackend() {
         let app = launch(route: "/activity")
         let sessions = backend.activitySessions()
         if sessions.isEmpty {
-            XCTAssertTrue(element(app, "watch-empty").waitForExistence(timeout: 20), "后端没有会话时应显示「现在没有人在看」")
+            let summary = element(app, "activity-summary")
+            XCTAssertTrue(summary.waitForExistence(timeout: 20))
+            expectation(for: NSPredicate(format: "label CONTAINS '现在没有人在看'"), evaluatedWith: summary)
+            waitForExpectations(timeout: 20)
             snapshot("正在播放-空态")
             return
         }
@@ -96,9 +99,9 @@ final class ActivityUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", title)).firstMatch.waitForExistence(timeout: 10),
                       "会话卡片应显示片名「\(title)」")
         snapshot("正在播放")
-        // 设备操作菜单 →「结束播放」→ 只看确认框，点「取消」
-        let deviceId = sessions[0]["device_id"] as? String ?? ""
-        safeTap(app, element(app, "device-actions-\(deviceId)"), "设备操作菜单")
+        // 长按会话行 → 菜单「结束播放」→ 只看确认框，点「取消」
+        scrollClearOfTabBar(app, card)
+        card.press(forDuration: 1.2)
         safeTap(app, app.buttons["结束播放"].firstMatch, "结束播放（菜单项，仅打开确认框）")
         let alert = app.alerts.firstMatch
         XCTAssertTrue(alert.waitForExistence(timeout: 5), "应弹出结束播放的确认框")
@@ -159,8 +162,8 @@ final class ActivityUITests: XCTestCase {
             snapshot("观看统计-热力图")
             for _ in 0 ..< 12 { app.swipeDown(velocity: .fast) }
         }
-        // 周期切到 7 天，播放场次随之变化为后端 7 天口径
-        safeTap(app, app.buttons["周期"].firstMatch, "周期筛选")
+        // 周期切到 7 天（右上角筛选菜单），播放场次随之变化为后端 7 天口径
+        safeTap(app, app.buttons["activity-filter"], "筛选菜单")
         safeTap(app, app.buttons["最近 7 天"].firstMatch, "最近 7 天")
         let plays7 = (backend.stats(days: 7)["current"] as? [String: Any])?["plays"] as? Int ?? -1
         let predicate = NSPredicate(format: "label CONTAINS %@", "\(plays7)")
@@ -170,32 +173,37 @@ final class ActivityUITests: XCTestCase {
 
     // MARK: 任务
 
-    /// 任务中心：SSE 已连上（收到 ready 事件）、四个选项卡的计数与后端口径一致、历史分组可见
+    /// 任务：SSE 已连上（收到 ready 事件）、「最近完成 · 查看全部 N 个」与后端口径一致、已结束页可见
     @MainActor
-    func testTaskCenterLiveAndTabs() {
-        let app = launch(route: "/activity?view=all")
-        let freshness = element(app, "task-freshness")
-        XCTAssertTrue(freshness.waitForExistence(timeout: 20))
+    func testTaskCenterLiveAndSections() {
+        let app = launch(route: "/activity")
+        let summary = element(app, "activity-summary")
+        XCTAssertTrue(summary.waitForExistence(timeout: 20))
         // accessibilityValue = live-<事件数>：SSE 在线且至少收到一个 ready/job 事件
         let live = NSPredicate(format: "value BEGINSWITH 'live-' AND NOT (value == 'live-0')")
-        expectation(for: live, evaluatedWith: freshness)
+        expectation(for: live, evaluatedWith: summary)
         waitForExpectations(timeout: 20)
-        snapshot("任务-全部")
+        snapshot("活动-总览")
 
         let history = backend.historicalJobCount()
-        safeTap(app, app.buttons["task-view-history"], "已结束")
+        let finished = app.buttons["activity-finished-all"]
         if history > 0 {
-            XCTAssertTrue(app.buttons["task-view-history"].label.contains("\(history)"), "已结束计数应为 \(history)")
+            XCTAssertTrue(finished.waitForExistence(timeout: 10), "有已结束任务时应出现「最近完成」")
+            scrollClearOfTabBar(app, finished)
+            XCTAssertTrue(finished.label.contains("\(history)"), "已结束计数应为 \(history)（实际：\(finished.label)）")
+            safeTap(app, finished, "最近完成 · 查看全部")
             XCTAssertTrue(element(app, "history-section").waitForExistence(timeout: 10))
+            snapshot("任务-已结束")
+            app.navigationBars.buttons.firstMatch.tap()
         } else {
-            XCTAssertTrue(element(app, "task-empty").waitForExistence(timeout: 10))
+            XCTAssertFalse(finished.waitForExistence(timeout: 3), "没有已结束任务时不应出现「最近完成」")
         }
-        snapshot("任务-已结束")
-        safeTap(app, app.buttons["task-view-active"], "进行中")
-        snapshot("任务-进行中")
-        safeTap(app, app.buttons["task-view-attention"], "需要处理")
-        XCTAssertTrue(element(app, "attention-section").waitForExistence(timeout: 5) || element(app, "task-empty").exists)
-        snapshot("任务-需要处理")
+        let active = app.buttons["activity-active-all"]
+        if active.waitForExistence(timeout: 3) {
+            safeTap(app, active, "进行中 · 查看全部")
+            XCTAssertTrue(element(app, "active-section").waitForExistence(timeout: 10) || element(app, "task-empty").exists)
+            snapshot("任务-进行中")
+        }
     }
 
     /// 删除种子任务：只打开确认弹层、检查「同时删除数据文件」开关与按钮文案，然后取消（绝不确认）
@@ -203,8 +211,12 @@ final class ActivityUITests: XCTestCase {
     func testDeleteTorrentDialogOnlyOpens() throws {
         let hash = backend.firstMediaTaskHash()
         try XCTSkipIf(hash == nil, "没有可删除的非刷流种子任务")
-        let app = launch(route: "/activity?view=all")
+        // 需要处理的种子在总览上（完整卡片），进行中的在「进行中」二级页
+        let app = launch(route: "/activity")
         let menu = element(app, "download-actions-\(hash!)")
+        if !menu.waitForExistence(timeout: 15) {
+            safeTap(app, app.buttons["activity-active-all"], "进行中 · 查看全部")
+        }
         XCTAssertTrue(menu.waitForExistence(timeout: 25))
         scrollClearOfTabBar(app, menu)
         safeTap(app, menu, "种子任务操作菜单")
@@ -223,7 +235,7 @@ final class ActivityUITests: XCTestCase {
     func testDismissThenUndismissFailedJob() throws {
         let jobId = backend.failedUndismissedJobId()
         try XCTSkipIf(jobId == nil, "服务器上没有失败且未忽略的任务，跳过忽略/撤销")
-        let app = launch(route: "/activity?view=attention")
+        let app = launch(route: "/activity")
         let menu = element(app, "job-actions-\(jobId!)")
         XCTAssertTrue(menu.waitForExistence(timeout: 25))
         scrollClearOfTabBar(app, menu)
@@ -236,8 +248,11 @@ final class ActivityUITests: XCTestCase {
         }
         safeTap(app, app.buttons["dismiss-job-confirm"], "忽略")
         XCTAssertTrue(waitUntil { self.backend.jobDismissed(jobId!) == true }, "后端应记录已忽略")
-        // 立刻撤销
-        safeTap(app, app.buttons["task-view-history"], "已结束")
+        // 立刻撤销：「最近完成 · 查看全部」进已结束页
+        let finished = app.buttons["activity-finished-all"]
+        XCTAssertTrue(finished.waitForExistence(timeout: 15))
+        scrollClearOfTabBar(app, finished)
+        safeTap(app, finished, "最近完成 · 查看全部")
         let undo = app.buttons["undismiss-\(jobId!)"]
         XCTAssertTrue(undo.waitForExistence(timeout: 15))
         scrollClearOfTabBar(app, undo)
@@ -252,7 +267,7 @@ final class ActivityUITests: XCTestCase {
         let hash = backend.attentionDownloadHash()
         try XCTSkipIf(hash == nil, "没有需要处理的下载任务")
         let before = backend.sessionCount()
-        let app = launch(route: "/activity?view=attention")
+        let app = launch(route: "/activity")
         let button = app.buttons["handoff-download-\(hash!)"]
         XCTAssertTrue(button.waitForExistence(timeout: 25))
         scrollClearOfTabBar(app, button)

@@ -51,8 +51,10 @@ enum AppRoute: Hashable {
     case subscription(id: Int, upgradeRun: Bool = false)
 
     // MARK: 活动（管理员）
-    /// /activity?view=（标签根）
+    /// /activity?view=（标签根）：view 点名二级页（plays / stats / history / active）时，总览会接着压栈打开它
     case activity(view: String? = nil)
+    /// 活动页的二级页（进行中全部 / 已结束 / 刷流做种 / 最近播放 / 观看统计），从总览分组标题的「查看全部」压栈
+    case activityPage(ActivityPage)
 
     // MARK: AI 会话（管理员）
     case newSession
@@ -285,7 +287,7 @@ extension AppRoute {
         case .discover, .discoverCollection, .mediaDetail, .person, .discoveredPerson: .discover
         case .libraryHome, .libraryCustomize, .favorites, .allCollections, .collection, .library, .libraryItem, .libraryManage: .library
         case .subscriptions, .subscription: .subscriptions
-        case .activity: .activity
+        case .activity, .activityPage: .activity
         case .my: .more
         case .searchHome, .search, .newSession, .session, .settings, .settingsSection, .share: nil
         }

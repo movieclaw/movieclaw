@@ -33,7 +33,8 @@ extension AppRoute {
         case .subscriptions: SubscriptionsView()
         case let .subscription(id, upgradeRun): SubscriptionDetailView(subscriptionId: id, openUpgradeRun: upgradeRun)
         // 活动
-        case let .activity(view): ActivityView(initialView: view)
+        case .activity: ActivityView()
+        case let .activityPage(page): ActivityPageView(page: page)
         // AI 会话
         case .newSession: AgentNewSessionView()
         case let .session(id): AgentConversationView(sessionId: id)

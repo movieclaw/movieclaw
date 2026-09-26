@@ -2,52 +2,6 @@ import SwiftUI
 
 // 活动 / 待处理事项模块沉淀的通用小件，其它模块（订阅详情的下载进度、设置页的任务状态）也可直接复用。
 
-/// 工具栏里的筛选下拉「标签 当前值 ⌄」（Web `FilterMenu`）：选项可带一句说明
-struct ActivityFilterMenu<Value: Hashable>: View {
-    struct Option: Hashable {
-        var value: Value
-        var label: String
-        var hint: String?
-    }
-
-    let label: String
-    let value: Value
-    let options: [Option]
-    let onChange: (Value) -> Void
-
-    var body: some View {
-        let current = options.first { $0.value == value } ?? options.first
-        Menu {
-            ForEach(options, id: \.self) { option in
-                Button {
-                    onChange(option.value)
-                } label: {
-                    if let hint = option.hint {
-                        Text(option.label)
-                        Text(hint)
-                    } else {
-                        Text(option.label)
-                    }
-                    if option.value == value { Image(systemName: "checkmark") }
-                }
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Text(label).foregroundStyle(Theme.textFaint)
-                Text(current?.label ?? "").fontWeight(.semibold).foregroundStyle(Theme.text.opacity(0.88))
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.textFaint)
-            }
-            .font(.footnote)
-            .padding(.horizontal, 12)
-            .frame(height: 32)
-            .background(Color.white.opacity(0.05), in: .capsule)
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.08)))
-        }
-        .accessibilityLabel(label)
-        .accessibilityValue(current?.label ?? "")
-    }
-}
-
 /// 状态圆点：可呼吸（进行中）；完整状态文字给读屏
 struct ActivityStatusDot: View {
     var color: Color
@@ -202,33 +156,5 @@ struct ActivityWarningBanner<Trailing: View>: View {
 extension ActivityWarningBanner where Trailing == EmptyView {
     init(message: String) {
         self.init(message: message) { EmptyView() }
-    }
-}
-
-/// 分区标题：「图标 标题 计数 ——」
-struct ActivitySectionHeading<Trailing: View>: View {
-    var systemImage: String?
-    var iconColor: Color = Theme.info
-    let title: String
-    var count: Int?
-    var titleColor: Color = Theme.text.opacity(0.65)
-    @ViewBuilder var trailing: () -> Trailing
-
-    var body: some View {
-        HStack(spacing: 9) {
-            if let systemImage {
-                Image(systemName: systemImage).font(.footnote).foregroundStyle(iconColor)
-            }
-            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(titleColor)
-            if let count { Text("\(count)").font(.caption).monospacedDigit().foregroundStyle(Theme.textFaint) }
-            Rectangle().fill(Color.white.opacity(0.09)).frame(height: 1).frame(minWidth: 32)
-            trailing()
-        }
-    }
-}
-
-extension ActivitySectionHeading where Trailing == EmptyView {
-    init(systemImage: String? = nil, iconColor: Color = Theme.info, title: String, count: Int? = nil) {
-        self.init(systemImage: systemImage, iconColor: iconColor, title: title, count: count) { EmptyView() }
     }
 }

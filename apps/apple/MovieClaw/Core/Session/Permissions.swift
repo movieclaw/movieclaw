@@ -27,7 +27,7 @@ struct Permissions: Equatable {
     /// 同 Web `accessiblePathFor`：成员进不了的页面落回媒体库
     func allows(_ route: AppRoute) -> Bool {
         switch route {
-        case .newSession, .session, .activity: isAdmin
+        case .newSession, .session, .activity, .activityPage: isAdmin
         case .subscriptions, .subscription: canSubscribe
         case .searchHome, .search: canSearch
         case let .settingsSection(section, _): isAdmin || section.memberVisible

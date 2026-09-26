@@ -1,224 +1,142 @@
 import SwiftUI
 
-/// 任务视角（Web `TaskCenterView`）：统一「观察入口」，不制造统一状态表。
+/// 任务区块（Web `TaskCenterView` 的三块内容），活动总览与二级页按需各取一块：
+/// - `.attention`：需要处理的完整卡片（下载组卡 / 作业卡）——每种故障的补救动作不同（换种、重试、交给 AI、删除、忽略），
+///   总览上保留完整卡片而不压成一行；
+/// - `.active`：「进行中」二级页的时间线（下载过程行 + 后台作业，可取消 / 删种 / 换种）；
+/// - `.history`：「已结束」二级页，按天分组全部展开（可撤销忽略 / 重新执行）。
 ///
 /// Job 状态来自 MovieClaw 数据库（SSE 实时推送），下载状态来自下载器实时快照（10 秒轮询），
 /// 订阅关系仅按 infohash 投影；各自的取消、重试和入库生命周期仍由原领域负责。
-/// 页面按「是否需要用户行动」组织：需要你处理（置顶红框）→ 现在（时间线）→ 刷流做种（折叠）→ 已结束（按天）。
 struct TaskCenterPanel: View {
+    enum Mode { case attention, active, history }
+
     let store: TaskActivityStore
-    @Binding var view: TaskSlice
+    let mode: Mode
+    let actions: TaskCenterActions
 
     @Environment(\.api) private var api
     @Environment(Feedback.self) private var feedback
-    @Environment(Router.self) private var router
-
-    @State private var replacingTaskId: String?
-    @State private var cancellingJobId: String?
-    @State private var retryingJobId: String?
-    @State private var undismissingJobId: String?
-    @State private var bulkDismissing = false
-    @State private var pendingDelete: API.DownloadTaskView?
 
     var body: some View {
         let activity = store.activity
-        let showAttention = view == .all || view == .attention
-        let showActive = view == .all || view == .active
-        let showHistory = view == .all || view == .history
-        let visibleCount = (showAttention ? activity.attentionTotal : 0)
-            + (showActive ? activity.activeTotal : 0)
-            + (showActive && !activity.boostTasks.isEmpty ? 1 : 0)
-            + (showHistory ? activity.historyTotal : 0)
-        let hasContentBeforeHistory = (showAttention && activity.attentionTotal > 0) || (showActive && activity.activeTotal > 0)
-
-        VStack(alignment: .leading, spacing: 0) {
-            let failedSources = store.sources.filter { $0.status != "active" }
-            if !failedSources.isEmpty || store.downloadsError != nil {
-                sourceWarning(failedSources)
-            }
-            tabs(activity)
-
-            if showAttention, activity.attentionTotal > 0 {
-                attentionSection(activity)
-            }
-            if showActive, activity.activeTotal > 0 {
-                activeSection(activity)
-            }
-            if showActive, !activity.boostTasks.isEmpty {
-                BoostTaskSection(tasks: activity.boostTasks).padding(.top, 12)
-            }
-            if showHistory, !activity.standaloneHistoricalJobs.isEmpty {
-                TaskHistorySection(
-                    jobs: activity.standaloneHistoricalJobs, initiallyOpen: view == .history,
-                    separated: hasContentBeforeHistory,
-                    retryingJobId: retryingJobId, undismissingJobId: undismissingJobId,
-                    onRetry: retry, onUndismiss: undismiss
-                )
-            }
-            if visibleCount == 0 {
-                if store.downloadsLoading || !store.jobsLoaded {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                        Text("正在汇总任务…").font(.subheadline).foregroundStyle(Theme.textMuted)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 70)
-                } else {
-                    emptyView
-                }
-            }
-        }
-        .sheet(item: $pendingDelete) { task in
-            DeleteDownloadTaskSheet(task: task) { deleteFiles in
-                await delete(task, deleteFiles: deleteFiles)
-            }
-            .sheetFeedback()
-        }
-    }
-
-    // MARK: 头部
-
-    private func sourceWarning(_ sources: [API.DownloadTaskSourceView]) -> some View {
-        let message = store.downloadsError
-            ?? sources.map { "「\($0.name)」\($0.message.flatMap { $0.isEmpty ? nil : $0 } ?? "当前不可用")" }.joined(separator: "；")
-        return ActivityWarningBanner(message: message) {
-            Button { router.open(.settingsSection(.downloaders)) } label: {
-                Text("检查设置")
-                    .font(.subheadline.weight(.semibold))
-                    .expandedHitArea(vertical: 12)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.top, 16)
-    }
-
-    private func tabs(_ activity: TaskCenter.Activity) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ActivitySliceTabs(
-                slices: TaskSlice.allCases, selection: view, label: \.label,
-                count: { slice in
-                    switch slice {
-                    case .all: nil
-                    case .active: activity.activeTotal
-                    case .attention: activity.attentionTotal
-                    case .history: activity.historyTotal
-                    }
-                },
-                identifier: { "task-view-\($0.rawValue)" },
-                onSelect: { view = $0 }
-            )
-            // 刷新时刻行（「x 前更新」）Web 手机端隐藏（max-md:hidden），App 同样不显示；
-            // 实时通道状态只作为分隔线的无障碍值留给 UI 测试核对（live-事件数 / poll-事件数）
-            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
-                .accessibilityElement()
-                .accessibilityIdentifier("task-freshness")
-                .accessibilityValue("\(store.streamConnected ? "live" : "poll")-\(store.streamEventCount)")
-        }
-        .padding(.top, 18)
-    }
-
-    // MARK: 分区
-
-    private func attentionSection(_ activity: TaskCenter.Activity) -> some View {
-        let canDismissAll = activity.standaloneAttentionJobs.contains { $0.status == "failed" }
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 9) {
-                Circle().fill(Theme.danger).frame(width: 8, height: 8)
-                    .background(Circle().fill(Theme.danger.opacity(0.12)).frame(width: 16, height: 16))
-                Text("需要你处理").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.danger)
-                Text("\(activity.attentionTotal)")
-                    .font(.caption).monospacedDigit().foregroundStyle(Theme.danger)
-                    .padding(.horizontal, 8).padding(.vertical, 2)
-                    .background(Theme.danger.opacity(0.1), in: .capsule)
-                Spacer()
-                // 故障常常成批（一次扫描几十个字幕任务一起失败），逐条忽略是灾难；
-                // 整体动作压成次要文字按钮，不跟每张卡自己的「重试」抢视觉
-                if canDismissAll {
-                    Button { dismissAllFailed() } label: {
-                        Text(bulkDismissing ? "正在忽略…" : "全部忽略")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Theme.textFaint)
-                            .expandedHitArea(vertical: 14)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(bulkDismissing)
-                    .accessibilityIdentifier("dismiss-all-failed")
-                }
-            }
+        switch mode {
+        case .attention:
             VStack(spacing: 10) {
                 ForEach(activity.attentionDownloadGroups) { group in
                     DownloadTaskGroupCard(
                         group: group, ingestJobsByHash: activity.ingestJobsByHash,
-                        replacingTaskId: replacingTaskId,
-                        onDelete: { pendingDelete = $0 }, onReplace: replace
+                        replacingTaskId: actions.replacingTaskId,
+                        onDelete: { actions.pendingDelete = $0 },
+                        onReplace: { actions.replace($0, api: api, feedback: feedback, store: store) }
                     )
                 }
                 ForEach(activity.standaloneAttentionJobs, id: \.id) { job in
                     JobCard(job: job, store: store)
                 }
             }
-            .padding(12)
-            .background(Theme.danger.opacity(0.035), in: .rect(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Theme.danger.opacity(0.2)))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("attention-section")
+        case .active:
+            if activity.activeTotal > 0 {
+                activeTimeline(activity)
+            } else {
+                placeholder(title: "当前没有进行中的任务", message: "新任务启动后会自动出现在这里。")
+            }
+        case .history:
+            if !activity.standaloneHistoricalJobs.isEmpty {
+                TaskHistorySection(
+                    jobs: activity.standaloneHistoricalJobs, initiallyOpen: true, separated: false,
+                    retryingJobId: actions.retryingJobId, undismissingJobId: actions.undismissingJobId,
+                    onRetry: { actions.retry($0, api: api, feedback: feedback, store: store) },
+                    onUndismiss: { actions.undismiss($0, api: api, feedback: feedback, store: store) }
+                )
+            } else {
+                placeholder(title: "还没有历史记录", message: "完成、取消，以及被你忽略的后台作业都会保留在这里。")
+            }
         }
-        .padding(.top, 20)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("attention-section")
     }
 
-    private func activeSection(_ activity: TaskCenter.Activity) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ActivitySectionHeading(title: "现在", count: activity.activeTotal)
-            VStack(spacing: 0) {
-                let groups = activity.activeDownloadGroups
-                let jobs = activity.standaloneActiveJobs
-                ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
-                    TaskTimelineItem(
-                        tone: TaskCenter.groupTimelineExecuting(group, ingestJobsByHash: activity.ingestJobsByHash) ? .active : .waiting,
-                        isLast: index == groups.count - 1 && jobs.isEmpty
-                    ) {
-                        DownloadTaskGroupFeed(
-                            group: group, ingestJobsByHash: activity.ingestJobsByHash,
-                            replacingTaskId: replacingTaskId,
-                            onDelete: { pendingDelete = $0 }, onReplace: replace
-                        )
-                    }
+    private func activeTimeline(_ activity: TaskCenter.Activity) -> some View {
+        VStack(spacing: 0) {
+            let groups = activity.activeDownloadGroups
+            let jobs = activity.standaloneActiveJobs
+            ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                TaskTimelineItem(
+                    tone: TaskCenter.groupTimelineExecuting(group, ingestJobsByHash: activity.ingestJobsByHash) ? .active : .waiting,
+                    isLast: index == groups.count - 1 && jobs.isEmpty
+                ) {
+                    DownloadTaskGroupFeed(
+                        group: group, ingestJobsByHash: activity.ingestJobsByHash,
+                        replacingTaskId: actions.replacingTaskId,
+                        onDelete: { actions.pendingDelete = $0 },
+                        onReplace: { actions.replace($0, api: api, feedback: feedback, store: store) }
+                    )
                 }
-                ForEach(Array(jobs.enumerated()), id: \.element.id) { index, job in
-                    TaskTimelineItem(tone: job.status == "running" ? .active : .waiting, isLast: index == jobs.count - 1) {
-                        ActiveJobFeedItem(job: job, cancelling: cancellingJobId == job.id) { cancel(job) }
+            }
+            ForEach(Array(jobs.enumerated()), id: \.element.id) { index, job in
+                TaskTimelineItem(tone: job.status == "running" ? .active : .waiting, isLast: index == jobs.count - 1) {
+                    ActiveJobFeedItem(job: job, cancelling: actions.cancellingJobId == job.id) {
+                        actions.cancel(job, api: api, feedback: feedback, store: store)
                     }
                 }
             }
         }
-        .padding(.top, 24)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("active-section")
     }
 
-    private var emptyView: some View {
-        let copy: (String, String) = switch view {
-        case .all: ("当前没有任务", "新的后台作业或下载任务会自动出现在这里。")
-        case .attention: ("当前无需处理", "异常或需要确认的任务会优先出现在这里。")
-        case .active: ("当前没有进行中的任务", "新任务启动后会自动进入实时过程。")
-        case .history: ("还没有历史记录", "完成、取消，以及被你忽略的后台作业都会保留在这里。")
+    @ViewBuilder
+    private func placeholder(title: String, message: String) -> some View {
+        if store.downloadsLoading || !store.jobsLoaded {
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("正在汇总任务…").font(.subheadline).foregroundStyle(Theme.textMuted)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 70)
+        } else {
+            ActivityEmptyCard(systemImage: "checklist", title: title, message: message)
+                .accessibilityIdentifier("task-empty")
         }
-        return VStack(spacing: 8) {
-            Text(copy.0).font(.headline).foregroundStyle(Theme.text.opacity(0.75))
-            Text(copy.1).font(.subheadline).foregroundStyle(Theme.textMuted).multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 56)
-        .background(Color.black.opacity(0.2), in: .rect(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.07)))
-        .padding(.top, 28)
-        .accessibilityIdentifier("task-empty")
     }
+}
 
-    // MARK: 动作（文案照搬 Web）
+/// 下载器不可用 / 快照读取失败的提示条（总览顶部）：给出「检查设置」出口
+struct TaskSourceWarning: View {
+    let store: TaskActivityStore
+    @Environment(Router.self) private var router
 
-    private func replace(_ task: API.DownloadTaskView) {
+    var body: some View {
+        let failed = store.sources.filter { $0.status != "active" }
+        if !failed.isEmpty || store.downloadsError != nil {
+            let message = store.downloadsError
+                ?? failed.map { "「\($0.name)」\($0.message.flatMap { $0.isEmpty ? nil : $0 } ?? "当前不可用")" }.joined(separator: "；")
+            ActivityWarningBanner(message: message) {
+                Button { router.open(.settingsSection(.downloaders)) } label: {
+                    Text("检查设置")
+                        .font(.subheadline.weight(.semibold))
+                        .expandedHitArea(vertical: 12)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+/// 任务的写操作（文案照搬 Web）。总览与二级页各持一份：在途状态（哪个任务正在换种 / 取消…）挂在这里，
+/// 删种确认弹层由持有者 `.taskDeleteSheet(actions, store:)` 挂上。
+@Observable
+final class TaskCenterActions {
+    var replacingTaskId: String?
+    var cancellingJobId: String?
+    var retryingJobId: String?
+    var undismissingJobId: String?
+    var bulkDismissing = false
+    /// 待确认删除的种子任务（非 nil 即弹出确认层）
+    var pendingDelete: API.DownloadTaskView?
+
+    func replace(_ task: API.DownloadTaskView, api: APIClient, feedback: Feedback, store: TaskActivityStore) {
         guard let downloaderId = task.downloaderId, replacingTaskId == nil else { return }
         replacingTaskId = task.id
         Task {
@@ -233,7 +151,7 @@ struct TaskCenterPanel: View {
         }
     }
 
-    private func delete(_ task: API.DownloadTaskView, deleteFiles: Bool) async {
+    func delete(_ task: API.DownloadTaskView, deleteFiles: Bool, api: APIClient, feedback: Feedback, store: TaskActivityStore) async {
         guard let downloaderId = task.downloaderId else { return }
         do {
             let result = try await api.dlTorrentDelete(downloaderId: downloaderId, infoHash: task.infoHash, deleteFiles: deleteFiles)
@@ -245,7 +163,7 @@ struct TaskCenterPanel: View {
         }
     }
 
-    private func cancel(_ job: API.JobView) {
+    func cancel(_ job: API.JobView, api: APIClient, feedback: Feedback, store: TaskActivityStore) {
         guard cancellingJobId == nil else { return }
         cancellingJobId = job.id
         Task {
@@ -259,7 +177,8 @@ struct TaskCenterPanel: View {
         }
     }
 
-    private func dismissAllFailed() {
+    /// 故障常常成批（一次扫描几十个字幕任务一起失败），逐条忽略是灾难，给一个整体动作
+    func dismissAllFailed(api: APIClient, feedback: Feedback, store: TaskActivityStore) {
         guard !bulkDismissing else { return }
         bulkDismissing = true
         Task {
@@ -274,7 +193,7 @@ struct TaskCenterPanel: View {
         }
     }
 
-    private func undismiss(_ job: API.JobView) {
+    func undismiss(_ job: API.JobView, api: APIClient, feedback: Feedback, store: TaskActivityStore) {
         guard undismissingJobId == nil else { return }
         undismissingJobId = job.id
         Task {
@@ -288,7 +207,7 @@ struct TaskCenterPanel: View {
         }
     }
 
-    private func retry(_ job: API.JobView) {
+    func retry(_ job: API.JobView, api: APIClient, feedback: Feedback, store: TaskActivityStore) {
         guard retryingJobId == nil else { return }
         retryingJobId = job.id
         Task {
@@ -299,6 +218,29 @@ struct TaskCenterPanel: View {
             } catch {
                 feedback.error(error.localizedDescription.isEmpty ? "重新执行失败" : error.localizedDescription)
             }
+        }
+    }
+}
+
+extension View {
+    /// 挂上删种确认弹层（`actions.pendingDelete` 非 nil 时弹出）
+    func taskDeleteSheet(_ actions: TaskCenterActions, store: TaskActivityStore) -> some View {
+        modifier(TaskDeleteSheetModifier(actions: actions, store: store))
+    }
+}
+
+private struct TaskDeleteSheetModifier: ViewModifier {
+    @Bindable var actions: TaskCenterActions
+    let store: TaskActivityStore
+    @Environment(\.api) private var api
+    @Environment(Feedback.self) private var feedback
+
+    func body(content: Content) -> some View {
+        content.sheet(item: $actions.pendingDelete) { task in
+            DeleteDownloadTaskSheet(task: task) { deleteFiles in
+                await actions.delete(task, deleteFiles: deleteFiles, api: api, feedback: feedback, store: store)
+            }
+            .sheetFeedback()
         }
     }
 }

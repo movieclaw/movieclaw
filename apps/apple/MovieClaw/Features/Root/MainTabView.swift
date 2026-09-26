@@ -53,7 +53,7 @@ struct MainTabView: View {
             }
             if permissions.isAdmin {
                 Tab(value: MainTab.activity) {
-                    TabRoot(tab: .activity) { ActivityView(initialView: nil) }
+                    TabRoot(tab: .activity) { ActivityView() }
                 } label: {
                     iconLabel(.activity)
                 }
