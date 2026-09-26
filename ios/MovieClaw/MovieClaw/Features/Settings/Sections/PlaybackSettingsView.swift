@@ -174,8 +174,6 @@ struct PlaybackSettingsView: View {
                 .font(.subheadline).foregroundStyle(Theme.textMuted)
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
-        } header: {
-            Text("远程转码")
         }
 
         Section {

@@ -103,6 +103,28 @@ final class ShellParityUITests: XCTestCase {
         tapSafely(again, again.buttons["关闭"], "关闭")
     }
 
+    /// 登录页：铺登录页全局背景图、「记住我」默认不勾、副标题同 Web（只打开页面，不提交任何登录）
+    @MainActor
+    func testLoginPageMatchesWeb() throws {
+        guard password != nil else { throw XCTSkip("未提供 MC_TEST_PASSWORD，跳过联调用例") }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--reset-state", "--ui-testing"]
+        app.launch()
+        let field = app.textFields["server-address"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        tapSafely(app, field, "服务器地址")
+        field.typeText(server)
+        tapSafely(app, app.buttons["connect-button"], "连接")
+        XCTAssertTrue(app.textFields["login-username"].waitForExistence(timeout: 15), "连接成功后应进入登录页")
+        XCTAssertTrue(app.staticTexts["使用你的 MovieClaw 账号进入。"].exists)
+        let remember = app.switches["30 天内记住我"]
+        XCTAssertTrue(remember.exists)
+        XCTAssertEqual(remember.value as? String, "0", "「记住我」默认不勾（同 Web）")
+        sleep(2) // 背景图下载与出图
+        snapshot("登录页")
+    }
+
     /// /my 压栈打开：只有返回，没有「完成」（R-7）
     @MainActor
     func testMyRouteHasSingleExit() throws {
