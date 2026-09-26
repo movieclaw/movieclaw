@@ -128,8 +128,6 @@ final class PlaybackController {
     private var overrideConsumed = false
     private var reportedStart = false
     private var lastDownlinkBps: Double?
-    private var directShortSamples = 0
-    private var directHintShown = false
     private var qoe = QoE()
     /// 卡顿归因 / 掉帧看门狗（每秒一个样本，见 PlaybackWatchdogs.swift）
     private var stallWatch = StallWatch()
@@ -564,8 +562,6 @@ final class PlaybackController {
         phase = .buffering
         deadSession = false
         bandwidthRestarted = false
-        directShortSamples = 0
-        directHintShown = false
         startPingLoop()
         loadTrickplay(fileId: fileId, token: PlaybackAPI.token(in: session.streamUrl))
         restartDiagnosticsPolling()
@@ -1184,15 +1180,9 @@ final class PlaybackController {
         let stats = engine.stats()
         if let label = Self.formatBandwidth(stats.downlinkBps) { speedLabel = label }
         if let downlink = stats.downlinkBps { lastDownlinkBps = downlink }
-        // 直通线路不够：码率改不了，只能提醒换画质。连续 10 次采样不够才提示、每会话一次
-        if playsOriginalFile, !directHintShown, let downlink = stats.downlinkBps, downlink > 0,
-           let source = session?.source?.bitRate, source > 0 {
-            directShortSamples = downlink < Double(source) * 1.2 ? directShortSamples + 1 : 0
-            if directShortSamples >= 10 {
-                directHintShown = true
-                flash("线路速度低于片源码率，可在设置里选更低画质")
-            }
-        }
+        // 不做「线路速度低于片源码率」的预警（网页有，App 去掉，用户决定）：下载速度读数会误报——
+        // MPV 预读缓存填满后暂停下载，读数掉到接近 0；临时抖一下也会触发，而播放本身并没有卡。
+        // 真卡住时由看门狗判「断粮」并自动转码降码率（engineFailed → bandwidthDegraded），不靠提醒用户
         runWatchdogs(engine: engine, stats: stats)
         nowPlaying.updatePosition(controller: self)
     }
