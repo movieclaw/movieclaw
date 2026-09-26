@@ -25,6 +25,8 @@ struct UpgradeRunSheet: View {
     @State private var busy = false
     @State private var error: String?
     @State private var report: API.UpgradeRunView?
+    /// 报告里点了「标注片源」的季（电影为 0）
+    @State private var annotateSeason: Int?
 
     private var isMovie: Bool { detail.media.kind == "movie" }
     private var paused: Bool { detail.status == "paused" }
@@ -38,21 +40,18 @@ struct UpgradeRunSheet: View {
     var body: some View {
         Group {
             if let report {
-                SubsSheetScaffold(title: "洗版体检报告", closeTitle: "完成", onClose: finish) {
+                SubsSheetScaffold(
+                    title: "洗版体检报告",
+                    closable: false,
+                    confirm: SubsSheetConfirm(title: "完成", identifier: "upgrade-report-done", action: finish),
+                    fullHeight: true
+                ) {
                     UpgradeRunReportView(
                         title: detail.media.title,
                         isMovie: isMovie,
                         report: report,
-                        mediaItemId: detail.media.mediaItemId,
-                        onAnnotated: { _ in
-                            // 标注已刷新快照：重跑一轮体检，报告当场翻新
-                            if let fresh = try? await api.subscriptionsUpgradeRun(subscriptionId: detail.id, body: .init(ruleSetId: nil)) {
-                                self.report = fresh
-                            }
-                        }
+                        onAnnotate: { annotateSeason = $0 }
                     )
-                } footer: {
-                    SubsPrimaryButton(title: "完成", identifier: "upgrade-report-done", action: finish)
                 }
             } else {
                 confirm
@@ -64,6 +63,14 @@ struct UpgradeRunSheet: View {
                 ruleSets = (ruleSets ?? []) + [saved]
                 // 新建组带洗版目标时自动选中（快捷新建的动机就是没得选）
                 if saved.upgradeTarget != nil { ruleSetId = saved.id }
+            }
+        }
+        .sheet(item: Binding(get: { annotateSeason.map(SeasonKey.init) }, set: { annotateSeason = $0?.season })) { key in
+            MediaSourceAnnotationSheet(mediaItemId: detail.media.mediaItemId, seasonNumber: key.season, isMovie: isMovie) { _ in
+                // 标注已刷新快照：重跑一轮体检，报告当场翻新
+                if let fresh = try? await api.subscriptionsUpgradeRun(subscriptionId: detail.id, body: .init(ruleSetId: nil)) {
+                    self.report = fresh
+                }
             }
         }
         .task { await loadRules() }
@@ -79,85 +86,76 @@ struct UpgradeRunSheet: View {
     private var confirm: some View {
         SubsSheetScaffold(
             title: "洗一轮版",
-            subtitle: "逐集检查《\(detail.media.title)》库里已有的版本，低于洗版目标的立即排入搜索；洗到新版本入库并验证通过后，旧文件自动替换。"
+            subtitle: "逐集检查《\(detail.media.title)》库里已有的版本，低于洗版目标的立即排入搜索；洗到新版本入库并验证通过后，旧文件自动替换。",
+            confirm: SubsSheetConfirm(
+                title: paused ? "恢复并触发洗版" : "开始体检并洗版",
+                enabled: selectedRule != nil,
+                busy: busy,
+                identifier: "upgrade-run-start"
+            ) { Task { await run() } },
+            ready: ruleSets != nil || error != nil
         ) {
-            if let error { SubsNotice(text: error, tone: .error) }
-            if paused { SubsNotice(text: "该订阅已暂停。触发洗版会先恢复追踪，随后开始搜索。", tone: .warn) }
+            if let error {
+                Section { SubsNoticeRow(text: error, tone: .error) }
+            }
+            if paused {
+                Section { SubsNoticeRow(text: "该订阅已暂停。触发洗版会先恢复追踪，随后开始搜索。", tone: .warn) }
+            }
 
-            VStack(alignment: .leading, spacing: 8) {
-                SubsSectionHeader(title: "洗版目标")
+            Section {
                 if ruleSets == nil {
-                    Text("正在加载规则组…").font(.subheadline).foregroundStyle(Theme.textMuted)
-                } else if upgradeRules.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("还没有配置洗版目标的规则组。" + (permissions.canManageSubscriptions ? "" : " 请联系管理员在「设置 → 订阅规则 → 规则组」中配置「洗到哪一档」。"))
-                            .font(.subheadline).foregroundStyle(Theme.textMuted)
-                        if permissions.canManageSubscriptions {
-                            Button("+ 新建规则组") { creatingRuleSet = true }.font(.subheadline.weight(.medium))
-                        }
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在加载规则组…").foregroundStyle(Theme.textMuted)
                     }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white.opacity(0.03), in: .rect(cornerRadius: 14))
                 } else {
-                    if !currentHasTarget {
-                        Text("当前规则组未配置洗版目标，选一个带洗版目标的组，确认后一并换用。")
-                            .font(.subheadline).foregroundStyle(Theme.textMuted)
-                    }
                     ForEach(upgradeRules, id: \.id) { rule in
                         SubsChoiceRow(
                             title: rule.name + (rule.id == detail.ruleSetId ? "（当前使用）" : ""),
+                            subtitle: "洗到 \(rule.upgradeTarget ?? "")",
                             selected: rule.id == ruleSetId,
                             tint: SubsColor.upgrade
                         ) {
-                            Text("洗到 \(rule.upgradeTarget ?? "")")
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(SubsColor.upgrade)
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(SubsColor.upgrade.opacity(0.15), in: .rect(cornerRadius: 6))
-                        } action: {
                             ruleSetId = rule.id
                         }
                         .disabled(busy)
                         .accessibilityIdentifier("upgrade-rule-option")
                     }
                     if permissions.canManageSubscriptions {
-                        Button("+ 新建规则组") { creatingRuleSet = true }
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.textMuted)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 14).padding(.vertical, 9)
-                            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4])).foregroundStyle(Color.white.opacity(0.14)))
+                        Button("新建规则组…", systemImage: "plus") { creatingRuleSet = true }
+                    }
+                }
+            } header: {
+                Text("洗版目标")
+            } footer: {
+                if ruleSets != nil {
+                    if upgradeRules.isEmpty {
+                        Text("还没有配置洗版目标的规则组。" + (permissions.canManageSubscriptions ? "新建一个，在编辑器里选择「洗到哪一档」即可。" : "请联系管理员在「设置 → 订阅规则 → 规则组」中配置「洗到哪一档」。"))
+                    } else if !currentHasTarget {
+                        Text("当前规则组未配置洗版目标，选一个带洗版目标的组，确认后一并换用。")
                     }
                 }
             }
 
             if !outOfScopeOwned.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    SubsSectionHeader(title: "范围外的库存季")
-                    Text("这些季库里有文件但不在订阅范围内，勾选后并入订阅一起洗版；季内缺集会一并搜索补齐。")
-                        .font(.subheadline).foregroundStyle(Theme.textMuted)
-                    DiscoverFlowLayout(spacing: 6, lineSpacing: 6) {
-                        ForEach(outOfScopeOwned, id: \.seasonNumber) { season in
-                            let stock = "库存 \(season.ownedCount)" + ((season.episodeCount.map { season.ownedCount < $0 } ?? false) ? " / \(season.episodeCount ?? 0)" : "")
-                            SubsToggleChip(
-                                label: SubsFormat.seasonName(season.seasonNumber),
-                                active: optedSeasons.contains(season.seasonNumber),
-                                suffix: stock
-                            ) {
-                                if optedSeasons.contains(season.seasonNumber) { optedSeasons.remove(season.seasonNumber) } else { optedSeasons.insert(season.seasonNumber) }
-                            }
+                Section {
+                    ForEach(outOfScopeOwned, id: \.seasonNumber) { season in
+                        let stock = "库存 \(season.ownedCount)" + ((season.episodeCount.map { season.ownedCount < $0 } ?? false) ? " / \(season.episodeCount ?? 0)" : "") + " 集"
+                        SubsChoiceRow(
+                            title: SubsFormat.seasonName(season.seasonNumber),
+                            subtitle: stock,
+                            selected: optedSeasons.contains(season.seasonNumber)
+                        ) {
+                            if optedSeasons.contains(season.seasonNumber) { optedSeasons.remove(season.seasonNumber) } else { optedSeasons.insert(season.seasonNumber) }
                         }
+                        .disabled(busy)
                     }
+                } header: {
+                    Text("范围外的库存季")
+                } footer: {
+                    Text("这些季库里有文件但不在订阅范围内，勾选后并入订阅一起洗版；季内缺集会一并搜索补齐。")
                 }
             }
-        } footer: {
-            SubsPrimaryButton(
-                title: paused ? "恢复并触发洗版" : "开始体检并洗版",
-                busy: busy,
-                enabled: selectedRule != nil,
-                identifier: "upgrade-run-start"
-            ) { Task { await run() } }
         }
         .accessibilityIdentifier("upgrade-run-sheet")
     }
@@ -204,18 +202,19 @@ struct UpgradeRunSheet: View {
     }
 }
 
-/// 体检报告段：摘要句 + 按季分组的单元列表（一次性快照）。
+/// 体检报告段：摘要句 + 按季分组的单元列表（一次性快照），直接产出表单 Section，放进 `SubsSheetScaffold`。
 /// 订阅弹层的洗版变体（建订阅后自动接一轮洗版）复用本段。
+///
+/// 「标注片源」弹层不挂在这里：原生列表的行按需创建，挂在行上的弹层滚出屏幕后可能失效，
+/// 所以只回调季号，由宿主弹层统一呈现。
 struct UpgradeRunReportView: View {
     let title: String
     let isMovie: Bool
     let report: API.UpgradeRunView
-    /// 有值且提供 onAnnotated 时，「无法确认」的季显示「标注片源」入口（管理员）
-    var mediaItemId: Int?
-    var onAnnotated: ((String) async -> Void)?
+    /// 有值时（且为管理员）「无法确认」的季显示「标注片源」入口，参数为季号（电影为 0）
+    var onAnnotate: ((Int) -> Void)?
 
     @Environment(\.permissions) private var permissions
-    @State private var annotateSeason: Int?
 
     static func stateMeta(_ state: String) -> (label: String, color: Color) {
         switch state {
@@ -239,55 +238,58 @@ struct UpgradeRunReportView: View {
 
     var body: some View {
         let seasons = Dictionary(grouping: report.units, by: \.seasonNumber)
-        let annotatable: Set<Int> = (mediaItemId != nil && onAnnotated != nil && permissions.isAdmin)
+        let annotatable: Set<Int> = (onAnnotate != nil && permissions.isAdmin)
             ? Set(report.units.filter { $0.state == "not_comparable" }.map(\.seasonNumber)) : []
-        VStack(alignment: .leading, spacing: 14) {
-            Text("《\(title)》· 目标 \(report.targetLabel)").font(.subheadline).foregroundStyle(Theme.textMuted)
-            SubsNotice(text: report.summary, tone: .upgrade)
+        let keys = seasons.keys.sorted()
+        Section {
+            SubsNoticeRow(text: report.summary, tone: .upgrade)
                 .accessibilityIdentifier("upgrade-report-summary")
-            ForEach(seasons.keys.sorted(), id: \.self) { season in
-                VStack(alignment: .leading, spacing: 0) {
-                    if !isMovie || annotatable.contains(season) {
-                        HStack {
-                            Text(isMovie ? "正片" : SubsFormat.seasonName(season)).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text.opacity(0.8))
-                            Spacer()
-                            if annotatable.contains(season) {
-                                Button("标注片源") { annotateSeason = season }
-                                    .font(.caption.weight(.medium)).buttonStyle(.bordered).controlSize(.mini)
-                            }
-                        }
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        Divider().overlay(Color.white.opacity(0.06))
-                    }
-                    ForEach(seasons[season] ?? [], id: \.episodeNumber) { unit in
-                        let meta = Self.stateMeta(unit.state)
-                        HStack(alignment: .firstTextBaseline, spacing: 10) {
-                            Text(isMovie ? "正片" : "E\(SubsFormat.pad(unit.episodeNumber))")
-                                .font(.subheadline.weight(.medium)).monospacedDigit().foregroundStyle(Theme.text.opacity(0.9))
-                                .frame(width: 44, alignment: .leading)
-                            Text(meta.label)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(meta.color)
-                                .padding(.horizontal, 7).padding(.vertical, 2)
-                                .background(meta.color.opacity(0.13), in: .capsule)
-                            Text(Self.note(unit)).font(.caption).foregroundStyle(Theme.textMuted).fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                    }
-                }
-                .background(Color.white.opacity(0.02), in: .rect(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.07)))
-            }
-            Text("后续进展在订阅详情的「追踪明细」里跟进：洗版中的单元带青色徽标，换版成功会记入活动记录。")
-                .font(.caption).foregroundStyle(Theme.textFaint)
+        } header: {
+            Text("《\(title)》· 目标 \(report.targetLabel)")
+        } footer: {
+            if keys.isEmpty { footerNote }
         }
-        .sheet(item: Binding(get: { annotateSeason.map(SeasonKey.init) }, set: { annotateSeason = $0?.season })) { key in
-            if let mediaItemId {
-                MediaSourceAnnotationSheet(mediaItemId: mediaItemId, seasonNumber: key.season, isMovie: isMovie) { message in
-                    await onAnnotated?(message)
+        ForEach(keys, id: \.self) { season in
+            Section {
+                ForEach(seasons[season] ?? [], id: \.episodeNumber) { unit in
+                    unitRow(unit)
                 }
+            } header: {
+                if !isMovie || annotatable.contains(season) {
+                    HStack {
+                        Text(isMovie ? "正片" : SubsFormat.seasonName(season))
+                        Spacer()
+                        if annotatable.contains(season) {
+                            Button("标注片源") { onAnnotate?(season) }
+                                .font(.caption.weight(.medium)).buttonStyle(.bordered).controlSize(.mini)
+                        }
+                    }
+                }
+            } footer: {
+                if season == keys.last { footerNote }
             }
+        }
+    }
+
+    private var footerNote: some View {
+        Text("后续进展在订阅详情的「追踪明细」里跟进：洗版中的单元带青色徽标，换版成功会记入活动记录。")
+    }
+
+    private func unitRow(_ unit: API.UpgradeRunUnitView) -> some View {
+        let meta = Self.stateMeta(unit.state)
+        return HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(isMovie ? "正片" : "E\(SubsFormat.pad(unit.episodeNumber))")
+                .font(.subheadline.weight(.medium)).monospacedDigit().foregroundStyle(Theme.text)
+                .frame(width: 44, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(meta.label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(meta.color)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(meta.color.opacity(0.13), in: .capsule)
+                Text(Self.note(unit)).font(.footnote).foregroundStyle(Theme.textMuted).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
         }
     }
 }

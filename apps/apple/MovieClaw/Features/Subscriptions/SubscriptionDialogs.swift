@@ -14,19 +14,14 @@ struct SeasonPickRow: View {
     let checked: Bool
     let onToggle: () -> Void
 
-    private var progress: String { Self.progress(season) }
-    private var owned: String? { Self.owned(season) }
-
-    /// 播出进度文案（订阅弹层的原生季行也用这一套）
-    static func progress(_ season: API.SeasonOverview) -> String {
+    private var progress: String {
         let total = season.episodeCount ?? 0
         if total > 0, season.airedCount >= total { return "全 \(total) 集已播完" }
         if total > 0 { return "已播 \(season.airedCount)/\(total) 集" }
         return season.airedCount > 0 ? "已播 \(season.airedCount) 集" : "未播出"
     }
 
-    /// 库存文案；库里一集都没有时为 nil
-    static func owned(_ season: API.SeasonOverview) -> String? {
+    private var owned: String? {
         let total = season.episodeCount ?? 0
         guard season.ownedCount > 0 else { return nil }
         return total > 0 && season.ownedCount >= total ? "整季已在库" : "库里已有 \(season.ownedCount) 集"
@@ -35,24 +30,24 @@ struct SeasonPickRow: View {
     var body: some View {
         Button(action: onToggle) {
             HStack(spacing: 10) {
-                Text(SubsFormat.seasonName(season.seasonNumber))
-                    .font(.body.weight(.medium)).foregroundStyle(Theme.text.opacity(0.9))
-                Text(progress).font(.caption).monospacedDigit().foregroundStyle(Theme.textFaint)
-                if let owned {
-                    Text(owned).font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(SubsColor.ok.opacity(0.9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(SubsFormat.seasonName(season.seasonNumber)).foregroundStyle(Theme.text)
+                    HStack(spacing: 6) {
+                        Text(progress).foregroundStyle(Theme.textMuted)
+                        if let owned {
+                            Text(owned).foregroundStyle(SubsColor.ok.opacity(0.9))
+                        }
+                    }
+                    .font(.footnote).monospacedDigit()
                 }
                 Spacer(minLength: 4)
-                Image(systemName: checked ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(checked ? Theme.accentStrong : Theme.textFaint)
+                Image(systemName: "checkmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Theme.accentStrong)
+                    .opacity(checked ? 1 : 0)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .background(checked ? Color.white.opacity(0.08) : Color.white.opacity(0.02), in: .rect(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(checked ? Color.white.opacity(0.2) : Color.white.opacity(0.06)))
             .contentShape(.rect)
         }
-        .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(checked ? .isSelected : [])
         .accessibilityIdentifier("season-\(season.seasonNumber)")
@@ -68,18 +63,19 @@ struct SeasonPickRow: View {
 struct DispatchPreviewNote: View {
     let preview: API.DispatchPreviewView
     var adjusting = false
-    /// 放在毛玻璃弹层的脚注里时字号与对比度提一档，否则虚化背景上看不清
-    var emphasized = false
 
+    // 放在玻璃弹层的表单脚注里：字号与对比度比系统脚注提一档，否则虚化背景上看不清；警示用图标 + 文字，不在脚注里套色块
     var body: some View {
         if preview.ok {
             Text(text)
-                .font(emphasized ? .footnote : .caption)
-                .foregroundStyle(emphasized ? Theme.textMuted : Theme.textFaint)
+                .font(.footnote)
+                .foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("dispatch-preview")
         } else {
-            SubsNotice(text: preview.warning ?? "按当前配置投递无法自动入库", tone: .warn)
+            Label(preview.warning ?? "按当前配置投递无法自动入库", systemImage: "exclamationmark.triangle.fill")
+                .font(.footnote)
+                .foregroundStyle(SubsColor.warn)
                 .accessibilityIdentifier("dispatch-preview")
         }
     }
@@ -119,10 +115,13 @@ struct SubscriptionCancelSheet: View {
     var body: some View {
         let torrentCount = preview?.torrentCount ?? 0
         let fileCount = preview?.libraryFileCount ?? 0
-        SubsSheetScaffold(title: "取消订阅《\(title)》？", closeTitle: "先不") {
-            Text("将停止追踪剩余内容。默认只取消订阅，已经下载或入库的内容都会保留。")
-                .font(.subheadline).foregroundStyle(Theme.textMuted)
-            VStack(alignment: .leading, spacing: 14) {
+        SubsSheetScaffold(
+            title: "取消订阅",
+            subtitle: "取消订阅《\(title)》将停止追踪剩余内容。默认只取消订阅，已经下载或入库的内容都会保留。",
+            closeTitle: "先不",
+            ready: preview != nil
+        ) {
+            Section {
                 SubsCleanupToggle(
                     label: preview == nil ? "同时删除相关的下载任务"
                         : torrentCount == 0 ? "同时删除相关的下载任务（没有可删除的任务）" : "同时删除相关的下载任务（\(torrentCount) 个）",
@@ -142,17 +141,28 @@ struct SubscriptionCancelSheet: View {
                     disabled: preview == nil || fileCount == 0
                 )
                 .accessibilityIdentifier("cancel-delete-files")
-            }
-            if deleteTorrents || deleteFiles {
-                SubsNotice(text: "订阅会立刻取消，清理在后台进行——可以在「任务中心」查看进度和结果。", tone: .neutral)
-            }
-        } footer: {
-            SubsPrimaryButton(title: busy ? "处理中…" : "取消订阅", busy: busy, destructive: true, identifier: "confirm-cancel-subscription") {
-                Task {
-                    busy = true
-                    await onConfirm(deleteTorrents, deleteFiles)
-                    busy = false
+            } footer: {
+                if deleteTorrents || deleteFiles {
+                    Text("订阅会立刻取消，清理在后台进行——可以在「任务中心」查看进度和结果。")
                 }
+            }
+            // 破坏性确认不放右上 ✓：列表末尾一组红色行按钮，与系统「删除」类操作同一形态
+            Section {
+                Button(role: .destructive) {
+                    Task {
+                        busy = true
+                        await onConfirm(deleteTorrents, deleteFiles)
+                        busy = false
+                    }
+                } label: {
+                    HStack {
+                        Text(busy ? "处理中…" : "取消订阅")
+                        Spacer()
+                        if busy { ProgressView() }
+                    }
+                }
+                .disabled(busy)
+                .accessibilityIdentifier("confirm-cancel-subscription")
             }
         }
         .interactiveDismissDisabled(busy)
@@ -184,10 +194,13 @@ struct SeasonCleanupContent: View {
     var body: some View {
         let label = seasonText(seasons)
         let them = seasons.count > 1 ? "这几季" : "这一季"
-        SubsSheetScaffold(title: "\(label)已移出订阅", closeTitle: "保留内容", onClose: onKeep) {
-            Text("《\(title)》的\(them)不再追了。要不要把已经下载的内容也清理掉？不清理也没关系，种子和文件都原样留着。")
-                .font(.subheadline).foregroundStyle(Theme.textMuted)
-            VStack(alignment: .leading, spacing: 14) {
+        SubsSheetScaffold(
+            title: "\(label)已移出订阅",
+            subtitle: "《\(title)》的\(them)不再追了。要不要把已经下载的内容也清理掉？不清理也没关系，种子和文件都原样留着。",
+            closeTitle: "保留内容",
+            onClose: onKeep
+        ) {
+            Section {
                 SubsCleanupToggle(
                     label: preview.torrentCount == 0 ? "同时删除\(label)的下载任务（没有可单独删除的任务）" : "同时删除\(label)的下载任务（\(preview.torrentCount) 个）",
                     description: preview.torrentCount == 0 ? nil : "从下载器移除任务，并删除下载目录里的文件，不可恢复。以后重新勾选\(them)需要重新下载。",
@@ -202,23 +215,34 @@ struct SeasonCleanupContent: View {
                     isOn: $deleteFiles,
                     disabled: preview.libraryFileCount == 0
                 )
+            } footer: {
+                if deleteTorrents || deleteFiles {
+                    Text("清理在后台进行——可以在「任务中心」查看进度和结果。")
+                }
             }
             if let first = preview.retainedCrossSeason.first {
-                SubsNotice(
-                    text: "另有 \(preview.retainedCrossSeason.count) 个跨季种子\(first.seasons.isEmpty ? "" : "（如 \(seasonText(first.seasons))合集）")仍被保留的季使用，不会删除。",
-                    tone: .info
-                )
-            }
-            if deleteTorrents || deleteFiles {
-                SubsNotice(text: "清理在后台进行——可以在「任务中心」查看进度和结果。", tone: .neutral)
-            }
-        } footer: {
-            SubsPrimaryButton(title: busy ? "处理中…" : "清理\(label)", busy: busy, enabled: deleteTorrents || deleteFiles, destructive: true) {
-                Task {
-                    busy = true
-                    await onConfirm(deleteTorrents, deleteFiles)
-                    busy = false
+                Section {
+                    SubsNoticeRow(
+                        text: "另有 \(preview.retainedCrossSeason.count) 个跨季种子\(first.seasons.isEmpty ? "" : "（如 \(seasonText(first.seasons))合集）")仍被保留的季使用，不会删除。",
+                        tone: .info
+                    )
                 }
+            }
+            Section {
+                Button(role: .destructive) {
+                    Task {
+                        busy = true
+                        await onConfirm(deleteTorrents, deleteFiles)
+                        busy = false
+                    }
+                } label: {
+                    HStack {
+                        Text(busy ? "处理中…" : "清理\(label)")
+                        Spacer()
+                        if busy { ProgressView() }
+                    }
+                }
+                .disabled(busy || !(deleteTorrents || deleteFiles))
             }
         }
         .interactiveDismissDisabled(busy)
@@ -289,12 +313,20 @@ struct SubscriptionAdjustSheet: View {
     private var form: some View {
         SubsSheetScaffold(
             title: "调整订阅",
-            subtitle: "《\(detail.media.title)》——加季会恢复或补建追踪；减季会让整季退出追踪范围，但不会删除下载器任务、已下载文件或入库内容。"
+            subtitle: "《\(detail.media.title)》——加季会恢复或补建追踪；减季会让整季退出追踪范围，但不会删除下载器任务、已下载文件或入库内容。",
+            confirm: SubsSheetConfirm(
+                title: "保存调整",
+                enabled: (seasonsChanged || libraryChanged) && (isMovie || !selected.isEmpty),
+                busy: busy,
+                identifier: "adjust-save"
+            ) { Task { await save() } },
+            ready: isMovie || seasons != nil || error != nil
         ) {
-            if let error { SubsNotice(text: error, tone: .error) }
+            if let error {
+                Section { SubsNoticeRow(text: error, tone: .error) }
+            }
             if !isMovie {
-                VStack(alignment: .leading, spacing: 8) {
-                    SubsSectionHeader(title: "选择要收录的季", hint: "勾选即要整季（含未播集）")
+                Section {
                     if let seasons {
                         ForEach(seasons, id: \.seasonNumber) { season in
                             SeasonPickRow(season: season, checked: selected.contains(season.seasonNumber)) {
@@ -302,10 +334,19 @@ struct SubscriptionAdjustSheet: View {
                             }
                         }
                     } else {
-                        SubsNotice(text: "正在加载季集信息…", tone: .neutral)
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("正在加载季集信息…").foregroundStyle(Theme.textMuted)
+                        }
                     }
-                    if !droppedWithProgress.isEmpty {
-                        SubsNotice(
+                } header: {
+                    Text("选择要收录的季")
+                } footer: {
+                    Text("勾选即要整季（含未播集）")
+                }
+                if !droppedWithProgress.isEmpty {
+                    Section {
+                        SubsNoticeRow(
                             text: "第 \(droppedWithProgress.map(String.init).joined(separator: "、")) 季已有下载进度：保存只让它退出追踪（停止进度关联、缺失搜索与自动换源），不会动任何文件"
                                 + (permissions.canManageSubscriptions ? "；保存后会问你要不要顺手清理这一季的内容" : ""),
                             tone: .warn
@@ -314,29 +355,19 @@ struct SubscriptionAdjustSheet: View {
                 }
             }
             if permissions.canManageSubscriptions, !libraries.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    SubsSectionHeader(title: "入库到")
+                Section {
                     Picker("入库到", selection: $libraryId) {
-                        Text("（按默认库路由）").tag(Int?.none)
+                        Text("按默认库路由").tag(Int?.none)
                         ForEach(libraries, id: \.id) { library in
                             Text(library.name + (library.isDefault ? "（默认）" : "")).tag(Int?.some(library.id))
                         }
                     }
                     .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 12))
                     .accessibilityIdentifier("adjust-library")
+                } footer: {
                     if let preview { DispatchPreviewNote(preview: preview, adjusting: true) }
                 }
             }
-        } footer: {
-            SubsPrimaryButton(
-                title: busy ? "保存中…" : "保存调整",
-                busy: busy,
-                enabled: (seasonsChanged || libraryChanged) && (isMovie || !selected.isEmpty),
-                identifier: "adjust-save"
-            ) { Task { await save() } }
         }
         .accessibilityIdentifier("adjust-sheet")
         .task {
@@ -413,29 +444,19 @@ struct RuleSetSwitchSheet: View {
             title: "更换规则组",
             subtitle: "点选即应用，只影响之后的资源评估；已下载/已入库的内容不受影响。需要新的组合条件可去「设置 → 订阅规则 → 规则组」新建。"
         ) {
-            if let error { SubsNotice(text: error, tone: .error) }
-            VStack(spacing: 8) {
+            if let error {
+                Section { SubsNoticeRow(text: error, tone: .error) }
+            }
+            Section {
                 ForEach(ruleSets, id: \.id) { rule in
-                    let current = rule.id == currentId
-                    Button {
+                    let chips = RuleSetText.summary(rule.typedSpec)
+                    SubsChoiceRow(
+                        title: rule.name + (rule.isDefault ? "（默认）" : ""),
+                        subtitle: chips.isEmpty ? "全不限" : chips.joined(separator: " · "),
+                        selected: rule.id == currentId
+                    ) {
                         Task { await pick(rule.id) }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text(rule.name).font(.body.weight(.medium)).foregroundStyle(Theme.text.opacity(0.9)).lineLimit(1)
-                                if rule.isDefault { Text("默认").font(.caption).foregroundStyle(Theme.textFaint) }
-                                Spacer()
-                                if current { Text("当前使用 ✓").font(.caption.weight(.medium)).foregroundStyle(SubsColor.ok) }
-                            }
-                            SubsSpecChips(chips: RuleSetText.summary(rule.typedSpec), emptyText: "全不限")
-                        }
-                        .padding(.horizontal, 14).padding(.vertical, 11)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(current ? Color.white.opacity(0.1) : Color.white.opacity(0.03), in: .rect(cornerRadius: 14))
-                        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(current ? Color.white.opacity(0.25) : Color.white.opacity(0.08)))
-                        .contentShape(.rect)
                     }
-                    .buttonStyle(.plain)
                     .disabled(busy)
                     .accessibilityIdentifier("ruleset-option")
                 }

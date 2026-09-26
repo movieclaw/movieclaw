@@ -44,9 +44,6 @@ struct SubscribeSheet: View {
     @State private var upgradeReport: API.UpgradeRunView?
     @State private var creatingRuleSet = false
     @State private var cancelling = false
-    /// 表单内容的实际高度（含导航栏与底部安全区），弹层据此贴合内容；量到之前先用半高
-    @State private var fitHeight: CGFloat?
-    @State private var detent: PresentationDetent = .medium
 
     private var upgradeMode: Bool { request.upgrade }
     private var canManage: Bool { permissions.canManageSubscriptions }
@@ -75,41 +72,32 @@ struct SubscribeSheet: View {
     private var showsRules: Bool { upgradeMode || (canManage && !ruleSets.isEmpty) }
     private var showsLibrary: Bool { canManage && !libraries.isEmpty }
     private var pickedRule: API.RuleSetView? { selectableRules.first { $0.id == ruleSetId } }
-    private var fitDetent: PresentationDetent { fitHeight.map { .height($0) } ?? .medium }
 
     var body: some View {
         Group {
             if let upgradeReport {
-                SubsSheetScaffold(title: "订阅《\(displayTitle)》", closeTitle: "完成") {
+                SubsSheetScaffold(
+                    title: "订阅《\(displayTitle)》",
+                    closable: false,
+                    confirm: SubsSheetConfirm(title: "完成", identifier: "upgrade-report-done") { dismiss() },
+                    fullHeight: true
+                ) {
                     UpgradeRunReportView(title: displayTitle, isMovie: kind == "movie", report: upgradeReport)
-                } footer: {
-                    SubsPrimaryButton(title: "完成", identifier: "upgrade-report-done") { dismiss() }
                 }
             } else {
-                NavigationStack {
-                    Form { content }
-                        .scrollContentBackground(.hidden)
-                        .scrollBounceBehavior(.basedOnSize)
-                        // 表单默认的首尾留白偏大，弹层贴合内容后显得空
-                        .contentMargins(.top, 4, for: .scrollContent)
-                        .contentMargins(.bottom, 8, for: .scrollContent)
-                        // 内容长高、弹层跟着长高时守住顶部：不然剧集长表单会停在底部，条目卡被滚出视野
-                        .defaultScrollAnchor(.top, for: .sizeChanges)
-                        // 量出整张表单要多高（内容 + 导航栏 + 底部安全区），弹层就开多高
-                        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                            geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom
-                        } action: { _, height in
-                            fit(height)
-                        }
-                        .navigationTitle(upgradeMode ? "订阅并洗版" : "订阅")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar { toolbar }
+                SubsSheetScaffold(
+                    title: upgradeMode ? "订阅并洗版" : "订阅",
+                    confirm: showsSubmit ? SubsSheetConfirm(
+                        title: upgradeMode ? "订阅并开始洗版" : "确认订阅",
+                        enabled: canSubmit,
+                        busy: busy,
+                        identifier: "subscribe-submit"
+                    ) { Task { await submit() } } : nil,
+                    ready: prepared != nil || error != nil
+                ) {
+                    content
                 }
             }
-        }
-        .presentationDetents([fitDetent, .large], selection: $detent)
-        .onChange(of: upgradeReport != nil) { _, showing in
-            if showing { detent = .large }
         }
         .interactiveDismissDisabled(busy)
         .accessibilityIdentifier("subscribe-sheet")
@@ -133,47 +121,6 @@ struct SubscribeSheet: View {
         }
     }
 
-    /// 内容高度变了就跟着改弹层高度；用户已手动拉到全高时不去抢。
-    /// 加载中停在半高（免得先缩成一条再涨回去两段动画）；高度封顶在弹层能开的最大值——
-    /// 要的比屏幕还高时系统虽会截断，但每次重设都会把列表往底部带（实测剧集长表单停在最底下）
-    private func fit(_ height: CGFloat) {
-        guard prepared != nil || error != nil else { return }
-        let height = min(height.rounded(.up), Self.maxSheetHeight)
-        guard height > 0, height != fitHeight else { return }
-        let following = detent != .large
-        fitHeight = height
-        if following { detent = .height(height) }
-    }
-
-    /// 弹层能开的最大高度 = 窗口高度 − 顶部安全区（iPhone Air 实测 912 − 68 = 844）
-    private static var maxSheetHeight: CGFloat {
-        let window = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
-        guard let window else { return .greatestFiniteMagnitude }
-        return window.bounds.height - window.safeAreaInsets.top
-    }
-
-    @ToolbarContentBuilder
-    private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("取消", systemImage: "xmark", role: .close) { dismiss() }
-                .accessibilityIdentifier("sheet-close")
-        }
-        if showsSubmit {
-            ToolbarItem(placement: .confirmationAction) {
-                if busy {
-                    ProgressView().accessibilityLabel(upgradeMode ? "正在订阅并体检" : "正在订阅")
-                } else {
-                    Button(upgradeMode ? "订阅并开始洗版" : "确认订阅", systemImage: "checkmark", role: .confirm) {
-                        Task { await submit() }
-                    }
-                    .discoverProminentButton()
-                    .disabled(!canSubmit)
-                    .accessibilityIdentifier("subscribe-submit")
-                }
-            }
-        }
-    }
-
     // MARK: 正文
 
     @ViewBuilder
@@ -185,13 +132,11 @@ struct SubscribeSheet: View {
                 Text("洗版通过订阅持续追踪更好的版本：确认后建立订阅并立即体检库里已有的每一集。")
             }
         }
-        .listRowBackground(Color.clear)
-        .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
+        .subsBareRow()
 
         if let error {
             Section {
-                Text(error).font(.subheadline).foregroundStyle(SubsTone.error.color)
-                    .accessibilityIdentifier("subscribe-error")
+                SubsNoticeRow(text: error, tone: .error).accessibilityIdentifier("subscribe-error")
             }
         }
         if let prepared {
@@ -320,7 +265,13 @@ struct SubscribeSheet: View {
         if prepared.media?.kind == "tv" {
             Section {
                 ForEach(prepared.seasons, id: \.seasonNumber) { season in
-                    seasonRow(season)
+                    SeasonPickRow(season: season, checked: selectedSeasons.contains(season.seasonNumber)) {
+                        if selectedSeasons.contains(season.seasonNumber) {
+                            selectedSeasons.remove(season.seasonNumber)
+                        } else {
+                            selectedSeasons.insert(season.seasonNumber)
+                        }
+                    }
                 }
             } header: {
                 Text("选择要收录的季")
@@ -351,40 +302,6 @@ struct SubscribeSheet: View {
                 routingFooter
             }
         }
-    }
-
-    /// 原生多选行：右侧对勾表示选中，第二行是播出进度与库存
-    private func seasonRow(_ season: API.SeasonOverview) -> some View {
-        let checked = selectedSeasons.contains(season.seasonNumber)
-        return Button {
-            if checked {
-                selectedSeasons.remove(season.seasonNumber)
-            } else {
-                selectedSeasons.insert(season.seasonNumber)
-            }
-        } label: {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(SubsFormat.seasonName(season.seasonNumber)).foregroundStyle(Theme.text)
-                    HStack(spacing: 6) {
-                        Text(SeasonPickRow.progress(season)).foregroundStyle(.secondary)
-                        if let owned = SeasonPickRow.owned(season) {
-                            Text(owned).foregroundStyle(SubsColor.ok.opacity(0.9))
-                        }
-                    }
-                    .font(.footnote).monospacedDigit()
-                }
-                Spacer(minLength: 4)
-                Image(systemName: "checkmark")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(Theme.accentStrong)
-                    .opacity(checked ? 1 : 0)
-            }
-            .contentShape(.rect)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(checked ? .isSelected : [])
-        .accessibilityIdentifier("season-\(season.seasonNumber)")
     }
 
     /// 规则组行：原生菜单行，菜单里单选规则组，末尾是低频的「新建规则组…」
@@ -457,7 +374,7 @@ struct SubscribeSheet: View {
                     Label(reason, systemImage: "sparkles")
                         .accessibilityIdentifier("subscribe-routed-library")
                 }
-                if let dispatchPreview { DispatchPreviewNote(preview: dispatchPreview, emphasized: true) }
+                if let dispatchPreview { DispatchPreviewNote(preview: dispatchPreview) }
             }
         }
         .foregroundStyle(Theme.textMuted)

@@ -179,7 +179,18 @@ struct ActivityPoster: View {
     }
 }
 
-/// 正在播放的一行：海报 · 片名 / 成员 · 设备 · 客户端版本 / 播放状态与传输 / 进度条与时刻。
+/// 正在播放的一行。按「在看什么 → 谁在哪看 → 看到哪」三层排，每层一行、不挤不截：
+///
+///     [海报]  抓特务 2026
+///             yee · Safari · iPhone
+///             ⏸ 已暂停 · 59%                 ↓ 2.1 MB/s
+///             ━━━━━━━━━━━━━━░░░░░░░░
+///             1:23:16                     还剩 57 分钟
+///
+/// - 客户端名去掉「MovieClaw 」前缀（「MovieClaw Web · Safari · iPhone」→「Web · Safari · iPhone」），
+///   客户端版本号不上行（排障用，一行放不下时最先被截断的正是有用的设备名）；
+/// - 传输只留一个实时速率（本地直连在传时）或「网盘直链」；已传输总量、连接数属于排障细节，不上行；
+/// - 进度条下左右两端是已看到的时刻与剩余时长，比「1:23:16 / 2:21:06」更好读。
 /// 左滑「结束播放」；长按菜单：打开影片详情、结束播放、注销此设备（仅持 Jellyfin 凭据的会话）。
 struct ActivityPlaybackSessionRow: View {
     let session: API.ActivePlaybackSessionView
@@ -194,15 +205,14 @@ struct ActivityPlaybackSessionRow: View {
         let device = WatchFormat.deviceLabel(client: session.client, deviceName: session.deviceName)
         HStack(alignment: .top, spacing: 12) {
             ActivityPoster(media: session.media, width: 48, height: 70)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 5) {
                 ActivityTitleText(media: session.media)
-                Text(WatchFormat.metaLine([session.memberName, device, session.clientVersion]))
+                Text(WatchFormat.metaLine([session.memberName, Self.shortDevice(device)]))
                     .font(.footnote).foregroundStyle(Theme.textMuted).lineLimit(1)
                 statusLine
                 if let percent = session.progressPercent {
                     ProgressView(value: Double(min(100, max(0, percent))), total: 100)
                         .tint(session.paused ? Color.white.opacity(0.35) : Theme.info)
-                        .padding(.top, 4)
                 }
                 clockLine
             }
@@ -232,39 +242,43 @@ struct ActivityPlaybackSessionRow: View {
         actions.end(deviceId: session.deviceId, label: device, api: api, feedback: feedback, store: store)
     }
 
-    /// 播放状态 + 传输：本地直连报实时速率与已传输量，网盘直链不经过服务器
+    /// 「MovieClaw Web · Safari · iPhone」→「Web · Safari · iPhone」：自家客户端的品牌前缀没有信息量
+    static func shortDevice(_ label: String) -> String {
+        label.hasPrefix("MovieClaw ") ? String(label.dropFirst("MovieClaw ".count)) : label
+    }
+
+    /// 播放状态 · 百分比，右侧只放一个实时传输指标
     private var statusLine: some View {
-        HStack(spacing: 8) {
-            Label(session.paused ? "已暂停" : "播放中", systemImage: session.paused ? "pause.fill" : "play.fill")
-                .labelStyle(.titleAndIcon)
-                .foregroundStyle(session.paused ? Theme.textFaint : Theme.success)
-            if session.playMethod == "local" {
-                if let rate = session.rateBytesPerSecond, rate > 0 {
-                    Text(ActivityFormat.rate(rate)).foregroundStyle(Theme.info)
-                } else {
-                    Text("本地直连")
-                }
-                if let sent = session.bytesSent, sent > 0 { Text("已传输 \(ActivityFormat.bytes(Double(sent)))") }
-                if session.connections > 1 { Text("\(session.connections) 条连接") }
-            } else {
-                Text("网盘直链")
+        HStack(spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: session.paused ? "pause.fill" : "play.fill").font(.caption2)
+                Text(session.paused ? "已暂停" : "播放中")
+            }
+            .foregroundStyle(session.paused ? Theme.textMuted : Theme.success)
+            .accessibilityElement(children: .combine)
+            if let percent = session.progressPercent {
+                Text("· \(percent)%").foregroundStyle(Theme.textMuted)
+            }
+            Spacer(minLength: 8)
+            if session.playMethod != "local" {
+                Text("网盘直链").foregroundStyle(Theme.textFaint)
+            } else if let rate = session.rateBytesPerSecond, rate > 0 {
+                Text("↓ \(ActivityFormat.rate(rate))").foregroundStyle(Theme.info)
             }
         }
         .font(.footnote)
         .monospacedDigit()
         .lineLimit(1)
-        .foregroundStyle(Theme.textFaint)
     }
 
+    /// 进度条下方：左端已看到的时刻，右端剩余时长（没有总时长时只显示已看到）
     @ViewBuilder private var clockLine: some View {
         if let position = session.positionMs {
-            HStack(spacing: 0) {
+            HStack {
                 Text(ActivityFormat.playClock(ms: position))
-                if let duration = session.durationMs {
-                    Text(" / \(ActivityFormat.playClock(ms: duration))").foregroundStyle(Theme.textFaint.opacity(0.7))
-                }
-                if let percent = session.progressPercent {
-                    Text("  ·  \(percent)%").foregroundStyle(Theme.textMuted)
+                Spacer(minLength: 8)
+                if let duration = session.durationMs, duration > position {
+                    Text("还剩 \(ActivityFormat.watched(duration - position))")
                 }
             }
             .font(.caption)

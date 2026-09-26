@@ -6,7 +6,8 @@ import SwiftUI
 /// 为什么收进弹层：绑定是一次性动作（拿到二维码 / 配对码 → 去客户端确认 → 完成），
 /// 设置页的常态是「看看已经接好了哪些」；只有点「新增通道」才进入这层，绑定成功即关闭并刷新列表。
 ///
-/// 流程差异只落在 body 上，外壳（标题 / 指引 / 关闭）一致：
+/// 流程差异只落在 body 上，外壳（标题 / 指引 / 关闭）一致；各 body 直接产出表单分组，
+/// 轮询 / 自动出码这类副作用只挂在一个常驻行上——列表会把修饰符分发给每一行，挂在整段上会变成多份：
 /// - 微信：进弹层即请求二维码 → 扫码 →（可能）填手机上的配对码 → 完成；
 /// - Telegram / Discord：先填 bot token → 拿 6 位配对码 → 私聊 bot 发码 → 完成；
 /// - 飞书：粘贴群机器人 Webhook 地址 → 服务端发欢迎消息验真 → 即绑即用（无轮询）。
@@ -29,20 +30,18 @@ struct SettingsBPushBindSheet: View {
 
 // MARK: - 共用小件
 
-/// 弹层里的状态卡（浅底圆角、居中排版）
+/// 弹层里的状态行（居中排版，行底由表单提供）
 private struct SettingsBPushStatusCard<Content: View>: View {
     @ViewBuilder let content: () -> Content
     var body: some View {
         VStack(spacing: 14) { content() }
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 24)
-            .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 18))
+            .padding(.vertical, 12)
     }
 }
 
-/// 单行输入框（弹层内统一外观）
+/// 单行输入（表单行里的原生输入框）
 private struct SettingsBPushInput: View {
     let placeholder: String
     @Binding var text: String
@@ -59,10 +58,6 @@ private struct SettingsBPushInput: View {
             .autocorrectionDisabled()
             .submitLabel(.go)
             .onSubmit(onSubmit)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .background(Color.white.opacity(0.05), in: .rect(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.08)))
             .accessibilityIdentifier(identifier)
     }
 }
@@ -107,12 +102,48 @@ private struct SettingsBPushWeixinBody: View {
     private var terminal: Bool { binding?.status == "expired" || binding?.status == "failed" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if let error {
-                SettingsBNotice(text: error, tone: .danger)
-                    .accessibilityIdentifier("push-bind-error")
+        if let error {
+            Section {
+                SubsNoticeRow(text: error, tone: .error).accessibilityIdentifier("push-bind-error")
             }
+        }
+        Section {
+            statusRow
+                .task {
+                    guard !autoStarted else { return }
+                    autoStarted = true
+                    await begin()
+                }
+                .polling(every: 2) { await poll() }
+        }
+        // 微信要求补填手机上显示的配对码时才出现
+        if binding?.status == "need_verify_code" {
+            Section {
+                HStack(spacing: 8) {
+                    SettingsBPushInput(
+                        placeholder: "手机微信上显示的数字",
+                        text: $verifyCode,
+                        keyboard: .numberPad,
+                        identifier: "push-weixin-verify-code",
+                        onSubmit: { Task { await submitVerify() } }
+                    )
+                    .focused($codeFocused)
+                    Button("确认") { Task { await submitVerify() } }
+                        .font(.subheadline.weight(.semibold))
+                        .discoverProminentButton()
+                        .disabled(busy || verifyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("push-weixin-verify-submit")
+                }
+                .onAppear { codeFocused = true }
+            } header: {
+                Text("配对码")
+            }
+        }
+    }
 
+    /// 二维码 / 状态常驻一行（副作用挂在这里，行身份不随分支变化）
+    private var statusRow: some View {
+        VStack(spacing: 0) {
             if let binding {
                 SettingsBPushStatusCard {
                     if !terminal {
@@ -147,10 +178,7 @@ private struct SettingsBPushWeixinBody: View {
                     }
                 }
             } else if busy {
-                RoundedRectangle(cornerRadius: 18)
-                    .fill(Color.white.opacity(0.04))
-                    .frame(height: 240)
-                    .overlay(ProgressView())
+                ProgressView().frame(maxWidth: .infinity, minHeight: 240)
             } else {
                 // 发起失败（网关不可达等）：留一个手动重试入口
                 SettingsBPushStatusCard {
@@ -161,33 +189,7 @@ private struct SettingsBPushWeixinBody: View {
                         .accessibilityIdentifier("push-weixin-retry")
                 }
             }
-
-            // 微信要求补填手机上显示的配对码时才出现
-            if binding?.status == "need_verify_code" {
-                HStack(spacing: 8) {
-                    SettingsBPushInput(
-                        placeholder: "手机微信上显示的数字",
-                        text: $verifyCode,
-                        keyboard: .numberPad,
-                        identifier: "push-weixin-verify-code",
-                        onSubmit: { Task { await submitVerify() } }
-                    )
-                    .focused($codeFocused)
-                    Button("确认") { Task { await submitVerify() } }
-                        .font(.subheadline.weight(.semibold))
-                        .discoverProminentButton()
-                        .disabled(busy || verifyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .accessibilityIdentifier("push-weixin-verify-submit")
-                }
-                .onAppear { codeFocused = true }
-            }
         }
-        .task {
-            guard !autoStarted else { return }
-            autoStarted = true
-            await begin()
-        }
-        .polling(every: 2) { await poll() }
     }
 
     private func begin() async {
@@ -261,11 +263,12 @@ private struct SettingsBPushFeishuBody: View {
     private var canSubmit: Bool { !busy && !webhookUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let error {
-                SettingsBNotice(text: error, tone: .danger)
-                    .accessibilityIdentifier("push-bind-error")
+        if let error {
+            Section {
+                SubsNoticeRow(text: error, tone: .error).accessibilityIdentifier("push-bind-error")
             }
+        }
+        Section {
             SettingsBPushInput(
                 placeholder: "https://open.feishu.cn/open-apis/bot/v2/hook/…",
                 text: $webhookUrl,
@@ -273,19 +276,27 @@ private struct SettingsBPushFeishuBody: View {
                 identifier: "push-feishu-webhook",
                 onSubmit: { Task { await bind() } }
             )
+            // 确认键挂在导航栏右上角（与其它表单弹层一致）；只挂在这一行上，避免分发成多份
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    if busy {
+                        ProgressView().accessibilityLabel("接入中")
+                    } else {
+                        Button("完成接入", systemImage: "checkmark", role: .confirm) { Task { await bind() } }
+                            .discoverProminentButton()
+                            .disabled(!canSubmit)
+                            .accessibilityIdentifier("push-feishu-submit")
+                    }
+                }
+            }
             SettingsBPushInput(
                 placeholder: "签名密钥（未开启签名校验可留空）",
                 text: $secret,
                 identifier: "push-feishu-secret",
                 onSubmit: { Task { await bind() } }
             )
+        } footer: {
             Text("接入成功会立即向群里发一条欢迎消息，收到即说明通道可用。安全设置若选了「自定义关键词」，推送文案需包含该关键词才会送达，建议改用「签名校验」。")
-                .font(.caption)
-                .foregroundStyle(Theme.textFaint)
-                .fixedSize(horizontal: false, vertical: true)
-            SubsPrimaryButton(title: busy ? "接入中…" : "完成接入", busy: busy, enabled: canSubmit, identifier: "push-feishu-submit") {
-                Task { await bind() }
-            }
         }
     }
 
@@ -319,11 +330,19 @@ private struct SettingsBPushTokenBody: View {
     private var canSubmit: Bool { !busy && !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let error {
-                SettingsBNotice(text: error, tone: .danger)
-                    .accessibilityIdentifier("push-bind-error")
+        if let error {
+            Section {
+                SubsNoticeRow(text: error, tone: .error).accessibilityIdentifier("push-bind-error")
             }
+        }
+        Section {
+            mainRow.polling(every: 2) { await poll() }
+        }
+    }
+
+    /// 输入 bot token → 拿到配对码后换成配对状态；常驻一行，轮询挂在这里
+    private var mainRow: some View {
+        VStack(spacing: 0) {
             if let binding {
                 SettingsBPushStatusCard {
                     if binding.status == "pending" {
@@ -335,8 +354,8 @@ private struct SettingsBPushTokenBody: View {
                             .textSelection(.enabled)
                             .accessibilityIdentifier("push-pair-code")
                         Text("10 分钟内有效 · 发码人将成为唯一可对话的用户与推送目标")
-                            .font(.caption)
-                            .foregroundStyle(Theme.textFaint)
+                            .font(.footnote)
+                            .foregroundStyle(Theme.textMuted)
                     } else {
                         Text("绑定未完成").font(.body.weight(.medium))
                         Text(binding.message).font(.subheadline).foregroundStyle(Theme.textMuted)
@@ -354,12 +373,22 @@ private struct SettingsBPushTokenBody: View {
                     identifier: "push-\(channel.rawValue)-token",
                     onSubmit: { Task { await start() } }
                 )
-                SubsPrimaryButton(title: busy ? "校验中…" : "获取配对码", busy: busy, enabled: canSubmit, identifier: "push-token-submit") {
-                    Task { await start() }
+            }
+        }
+        .toolbar {
+            if binding == nil {
+                ToolbarItem(placement: .confirmationAction) {
+                    if busy {
+                        ProgressView().accessibilityLabel("校验中")
+                    } else {
+                        Button("获取配对码", systemImage: "checkmark", role: .confirm) { Task { await start() } }
+                            .discoverProminentButton()
+                            .disabled(!canSubmit)
+                            .accessibilityIdentifier("push-token-submit")
+                    }
                 }
             }
         }
-        .polling(every: 2) { await poll() }
     }
 
     private func start() async {

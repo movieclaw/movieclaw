@@ -173,23 +173,33 @@ struct RuleSetEditorSheet: View {
         let draftChips = RuleSetText.summary(draft.spec, withoutUpgrade: ladderPreview != nil)
         SubsSheetScaffold(
             title: ruleSet == nil ? "新建规则组" : "编辑规则组",
-            subtitle: "所有条件都可以留空 = 不限该维度；条件之间是「且」的关系。"
+            subtitle: "所有条件都可以留空 = 不限该维度；条件之间是「且」的关系。",
+            confirm: SubsSheetConfirm(
+                title: "保存",
+                enabled: !name.trimmingCharacters(in: .whitespaces).isEmpty,
+                busy: busy,
+                identifier: "ruleset-save"
+            ) { Task { await submit() } }
         ) {
-            if let ruleSet, ruleSet.referenceCount > 0 {
-                SubsNotice(text: "此组正被 \(ruleSet.referenceCount) 个订阅使用，保存后对它们之后的资源评估立即生效（已下载的内容不受影响）。", tone: .warn)
+            // 保存失败的原因放最上面：确认键在右上角，放底部会被滚出视野
+            if let error {
+                Section { SubsNoticeRow(text: error, tone: .error) }
             }
-            field("名称") {
+            if let ruleSet, ruleSet.referenceCount > 0 {
+                Section {
+                    SubsNoticeRow(text: "此组正被 \(ruleSet.referenceCount) 个订阅使用，保存后对它们之后的资源评估立即生效（已下载的内容不受影响）。", tone: .warn)
+                }
+            }
+            Section {
                 TextField("如：4K 免费、追剧省流", text: $name)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 14).padding(.vertical, 11)
-                    .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.08)))
                     .accessibilityIdentifier("ruleset-name")
+            } header: {
+                Text("名称")
             }
 
             collapsible("适用范围", key: "scope", summary: validScope.summary(routingOptions) ?? "未设置（只能手动选用，或作为默认组兜底）") {
                 Text("订阅的作品符合这里的条件时，自动选用本规则组；多个组都符合时条件更多的优先，都不符合时用默认组。只选「电影」或「剧集」即可让本组成为该类型的默认选择。")
-                    .font(.caption).foregroundStyle(Theme.textFaint)
+                    .font(.footnote).foregroundStyle(Theme.textMuted)
                 field("作品类型") {
                     chips {
                         ForEach([(String?.none, "不限"), ("movie", "电影"), ("tv", "剧集")], id: \.1) { value, label in
@@ -200,7 +210,7 @@ struct RuleSetEditorSheet: View {
                 scopeEditor
             }
 
-            field("分辨率", hint: "点击依次选择，先选的优先（选中顺序 = 下载偏好）；不选 = 不限。限定分辨率后，无法从种子名识别出分辨率的资源也会被排除，可用「手动选种」兜底") {
+            fieldSection("分辨率", hint: "点击依次选择，先选的优先（选中顺序 = 下载偏好）；不选 = 不限。限定分辨率后，无法从种子名识别出分辨率的资源也会被排除，可用「手动选种」兜底") {
                 chips {
                     ForEach(RuleSetVocabulary.resolutions, id: \.self) { option in
                         let index = resolutions.firstIndex(of: option)
@@ -211,7 +221,7 @@ struct RuleSetEditorSheet: View {
                 }
             }
 
-            field("片源", hint: "点击依次选择，先选的优先（选中顺序 = 下载偏好）；不选 = 不限。Rip 类 = WEBRip/BDRip，电视录制类 = HDTV/DVD。限定片源后，无法从种子名识别出片源的资源也会被排除，可用「手动选种」兜底") {
+            fieldSection("片源", hint: "点击依次选择，先选的优先（选中顺序 = 下载偏好）；不选 = 不限。Rip 类 = WEBRip/BDRip，电视录制类 = HDTV/DVD。限定片源后，无法从种子名识别出片源的资源也会被排除，可用「手动选种」兜底") {
                 chips {
                     ForEach(RuleSetVocabulary.mediaSources, id: \.value) { option in
                         let index = mediaSources.firstIndex(of: option.value)
@@ -287,34 +297,23 @@ struct RuleSetEditorSheet: View {
                 if excludeHr {
                     SubsToggleRow(title: "站点未提供 H&R 信息时，保守视作有考核而排除", isOn: $hrStrict)
                 }
-                field("做种数下限") { numberInput(text: $minSeeders) }
-                field("单集体积下限 (MB)") { numberInput(text: $sizeMin) }
-                field("单集体积上限 (MB)") { numberInput(text: $sizeMax) }
+                numberField("做种数下限", text: $minSeeders)
+                numberField("单集体积下限 (MB)", text: $sizeMin)
+                numberField("单集体积上限 (MB)", text: $sizeMax)
                 Text("体积按「每集均摊」评估：整季包用总体积 ÷ 集数比较，整季合集不会被单集上限误杀。")
-                    .font(.caption).foregroundStyle(Theme.textFaint)
+                    .font(.footnote).foregroundStyle(Theme.textMuted)
             }
 
-            upgradeField
+            upgradeSection
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(ladderPreview != nil ? "先这样筛掉不要的" : "这条规则会这样筛选").font(.caption).foregroundStyle(Theme.textFaint)
+            Section {
                 Text(draftChips.isEmpty ? "不限任何条件——身份对得上的资源都接受" : draftChips.joined(separator: " · "))
-                    .font(.subheadline).foregroundStyle(Theme.textMuted)
+                    .font(.subheadline).foregroundStyle(Theme.text.opacity(0.85))
                     .accessibilityIdentifier("ruleset-draft-summary")
                 if let ladderPreview { ladderPreviewView(ladderPreview) }
+            } header: {
+                Text(ladderPreview != nil ? "先这样筛掉不要的" : "这条规则会这样筛选")
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white.opacity(0.03), in: .rect(cornerRadius: 14))
-
-            if let error { SubsNotice(text: error, tone: .error) }
-        } footer: {
-            SubsPrimaryButton(
-                title: busy ? "正在保存…" : "保存",
-                busy: busy,
-                enabled: !name.trimmingCharacters(in: .whitespaces).isEmpty,
-                identifier: "ruleset-save"
-            ) { Task { await submit() } }
         }
         .interactiveDismissDisabled(busy)
         .accessibilityIdentifier("ruleset-editor")
@@ -377,8 +376,10 @@ struct RuleSetEditorSheet: View {
         }
     }
 
-    private var upgradeField: some View {
-        field("洗版", hint: "收齐后继续追更高版本，直到达到目标档位为止。新版本入库后旧版本进回收站保留 7 天，做种中的任务不受影响；不开启 = 下到即止") {
+    /// 洗版：档位芯片一行；开启后依次是目标分辨率、保留旧版本、洗版优先级（可展开），各占一行
+    @ViewBuilder
+    private var upgradeSection: some View {
+        Section {
             chips {
                 SubsToggleChip(label: "不洗版", active: upgradeSource.isEmpty) { upgradeSource = "" }
                 ForEach(RuleSetVocabulary.upgradeOptions.filter { mediaSources.isEmpty || mediaSources.contains($0.value) }, id: \.value) { option in
@@ -386,8 +387,7 @@ struct RuleSetEditorSheet: View {
                 }
             }
             if !upgradeSource.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("目标分辨率").font(.subheadline).foregroundStyle(Theme.textMuted)
+                field("目标分辨率", hint: resolutions.isEmpty ? "未限定分辨率时缺省洗到 1080p（避免意外进入 4K 的磁盘占用）" : "缺省跟随上方分辨率偏好的第一位") {
                     chips {
                         let effective = cutoffResolution.isEmpty ? (resolutions.first ?? "1080p") : cutoffResolution
                         ForEach(resolutions.isEmpty ? RuleSetVocabulary.resolutions : resolutions, id: \.self) { option in
@@ -396,31 +396,24 @@ struct RuleSetEditorSheet: View {
                             }
                         }
                     }
-                    Text(resolutions.isEmpty ? "未限定分辨率时缺省洗到 1080p（避免意外进入 4K 的磁盘占用）" : "缺省跟随上方分辨率偏好的第一位")
-                        .font(.caption).foregroundStyle(Theme.textFaint)
-                    Divider().overlay(Color.white.opacity(0.06))
-                    Toggle(isOn: $upgradeKeepOld) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("洗到新版本后保留旧版本").font(.subheadline).foregroundStyle(Theme.textMuted)
-                            Text("多版本共存（收藏家模式）；关闭 = 旧版本进回收站保留 7 天").font(.caption).foregroundStyle(Theme.textFaint)
-                        }
+                }
+                SubsToggleRow(title: "洗到新版本后保留旧版本", hint: "多版本共存（收藏家模式）；关闭 = 旧版本进回收站保留 7 天", isOn: $upgradeKeepOld)
+                Button {
+                    withAnimation(.snappy) { ladderOpen.toggle() }
+                } label: {
+                    HStack {
+                        Text("洗版优先级").foregroundStyle(Theme.text)
+                        Spacer()
+                        Text(upgradeLadder.filter { !ladderUnconfigured($0) }.map { dim in RuleSetVocabulary.ladderOptions.first { $0.value == dim }?.label ?? dim }.joined(separator: " › "))
+                            .font(.footnote).foregroundStyle(Theme.textMuted).lineLimit(1)
+                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Theme.textFaint).rotationEffect(.degrees(ladderOpen ? 90 : 0))
                     }
-                    Divider().overlay(Color.white.opacity(0.06))
-                    Button {
-                        withAnimation(.snappy) { ladderOpen.toggle() }
-                    } label: {
-                        HStack {
-                            Text("洗版优先级").font(.subheadline).foregroundStyle(Theme.textMuted)
-                            Spacer()
-                            Text(upgradeLadder.filter { !ladderUnconfigured($0) }.map { dim in RuleSetVocabulary.ladderOptions.first { $0.value == dim }?.label ?? dim }.joined(separator: " › "))
-                                .font(.caption).foregroundStyle(Theme.textFaint).lineLimit(1)
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.textFaint).rotationEffect(.degrees(ladderOpen ? 90 : 0))
-                        }
-                        .contentShape(.rect)
-                    }
-                    .buttonStyle(.plain)
-                    if ladderOpen {
-                        Text("点击依次选择").font(.caption).foregroundStyle(Theme.textFaint)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                if ladderOpen {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("点击依次选择").font(.footnote).foregroundStyle(Theme.textMuted)
                         chips {
                             ForEach(RuleSetVocabulary.ladderOptions, id: \.value) { dim in
                                 let index = upgradeLadder.firstIndex(of: dim.value)
@@ -440,23 +433,25 @@ struct RuleSetEditorSheet: View {
                             }
                         }
                         Text("按顺序逐维度比较，先分出高低的那一维说了算。每多一维，就多一轮潜在的重复下载——缺省只比分辨率与片源。标「未配置」的维度会被自动跳过；全被跳过时按缺省的「分辨率 › 片源」比。")
-                            .font(.caption).foregroundStyle(Theme.textFaint)
+                            .font(.footnote).foregroundStyle(Theme.textMuted)
                     }
-                    let effective = upgradeLadder.filter { !ladderUnconfigured($0) }
-                    if let index = effective.firstIndex(of: "platform"), index < effective.count - 1 {
-                        SubsNotice(text: "很多资源的标题里根本没写平台。把平台排在前面，等于要求「先比平台再比别的」——没写平台的资源就全都分不出高低，洗版会大面积停住。建议把平台放到最后一位。", tone: .warn)
-                    }
+                    .padding(.vertical, 4)
                 }
-                .padding(14)
-                .background(Color.white.opacity(0.03), in: .rect(cornerRadius: 14))
+                let effective = upgradeLadder.filter { !ladderUnconfigured($0) }
+                if let index = effective.firstIndex(of: "platform"), index < effective.count - 1 {
+                    SubsNoticeRow(text: "很多资源的标题里根本没写平台。把平台排在前面，等于要求「先比平台再比别的」——没写平台的资源就全都分不出高低，洗版会大面积停住。建议把平台放到最后一位。", tone: .warn)
+                }
             }
+        } header: {
+            Text("洗版")
+        } footer: {
+            Text("收齐后继续追更高版本，直到达到目标档位为止。新版本入库后旧版本进回收站保留 7 天，做种中的任务不受影响；不开启 = 下到即止")
         }
     }
 
     /// 洗版阶梯预览：终点在上、过渡档降序排开；默认折叠只留一行终点
     private func ladderPreviewView(_ preview: UpgradeLadderPreview) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Divider().overlay(Color.white.opacity(0.06))
             Button {
                 withAnimation(.snappy) { ladderPreviewOpen.toggle() }
             } label: {
@@ -505,11 +500,24 @@ struct RuleSetEditorSheet: View {
 
     // MARK: 积木
 
+    /// 字段行：小标题 + 内容 + 说明，在折叠分段里作为表单的一行
     private func field<Content: View>(_ label: String, hint: String? = nil, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(label).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text.opacity(0.85))
+            Text(label).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
             content()
-            if let hint { Text(hint).font(.caption).foregroundStyle(Theme.textFaint).fixedSize(horizontal: false, vertical: true) }
+            if let hint { Text(hint).font(.footnote).foregroundStyle(Theme.textMuted).fixedSize(horizontal: false, vertical: true) }
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// 独立字段：自成一组，标题作分组头、说明作脚注
+    private func fieldSection<Content: View>(_ label: String, hint: String? = nil, @ViewBuilder content: () -> Content) -> some View {
+        Section {
+            content()
+        } header: {
+            Text(label)
+        } footer: {
+            if let hint { Text(hint) }
         }
     }
 
@@ -517,47 +525,44 @@ struct RuleSetEditorSheet: View {
         DiscoverFlowLayout(spacing: 6, lineSpacing: 6) { content() }
     }
 
-    /// 可折叠分段：折叠头直接显示当前摘要
+    /// 可折叠分段：一组表单行，首行是折叠头（直接显示当前摘要），展开后字段逐行排在下面
     private func collapsible<Content: View>(_ title: String, key: String, summary: String, @ViewBuilder content: () -> Content) -> some View {
         let open = openSections.contains(key)
-        return VStack(alignment: .leading, spacing: 0) {
+        return Section {
             Button {
                 withAnimation(.snappy) {
                     if open { openSections.remove(key) } else { openSections.insert(key) }
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text.opacity(0.85))
+                    Text(title).font(.body.weight(.semibold)).foregroundStyle(Theme.text)
                     Spacer(minLength: 8)
-                    Text(summary).font(.caption).foregroundStyle(Theme.textFaint).lineLimit(1)
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.textFaint).rotationEffect(.degrees(open ? 90 : 0))
+                    Text(summary).font(.footnote).foregroundStyle(Theme.textMuted).lineLimit(1)
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Theme.textFaint).rotationEffect(.degrees(open ? 90 : 0))
                 }
-                .padding(14)
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("ruleset-section-\(key)")
-            if open {
-                Divider().overlay(Color.white.opacity(0.06))
-                VStack(alignment: .leading, spacing: 18) { content() }.padding(14)
-            }
+            if open { content() }
         }
-        .background(Color.white.opacity(0.02), in: .rect(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.07)))
     }
 
     private func textInput(_ placeholder: String, text: Binding<String>) -> some View {
         TextField(placeholder, text: text)
-            .textFieldStyle(.plain)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
-            .padding(.horizontal, 14).padding(.vertical, 11)
-            .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.08)))
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .background(Color.white.opacity(0.06), in: .rect(cornerRadius: 10))
     }
 
-    private func numberInput(text: Binding<String>) -> some View {
-        textInput("不限", text: text).keyboardType(.numberPad)
+    /// 数字行：左标题、右输入（原生设置页的「键 — 值」形态），留空 = 不限
+    private func numberField(_ label: String, text: Binding<String>) -> some View {
+        LabeledContent(label) {
+            TextField("不限", text: text)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+        }
     }
 
     private func toggle(_ list: inout [String], _ value: String) {

@@ -67,32 +67,33 @@ struct SettingsBSiteExtInstallSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        SubsSheetScaffold(title: "安装浏览器插件", closeTitle: "完成") {
-            Text("按下面四步操作，全程约一分钟。Chrome 应用商店政策不允许商店外插件一键安装，所以需要手动加载一次，之后升级会自动提示。")
-                .font(.subheadline)
-                .foregroundStyle(Theme.textMuted)
-                .fixedSize(horizontal: false, vertical: true)
-            step(1, Text("下载插件包并解压，得到 \(Text("chrome-mv3").font(.footnote.monospaced())) 文件夹。")) {
-                ShareLink(item: api.server.origin.appending(path: "extension/movieclaw-extension.zip")) {
-                    Label("下载插件包", systemImage: "arrow.down.circle").font(.subheadline.weight(.semibold))
+        SubsSheetScaffold(
+            title: "安装浏览器插件",
+            subtitle: "按下面四步操作，全程约一分钟。Chrome 应用商店政策不允许商店外插件一键安装，所以需要手动加载一次，之后升级会自动提示。",
+            closeTitle: "完成"
+        ) {
+            Section {
+                step(1, Text("下载插件包并解压，得到 \(Text("chrome-mv3").font(.footnote.monospaced())) 文件夹。")) {
+                    ShareLink(item: api.server.origin.appending(path: "extension/movieclaw-extension.zip")) {
+                        Label("下载插件包", systemImage: "arrow.down.circle").font(.subheadline.weight(.semibold))
+                    }
+                    .discoverProminentButton()
+                    .accessibilityIdentifier("ext-download")
                 }
-                .discoverProminentButton()
-                .accessibilityIdentifier("ext-download")
-            }
-            step(2, Text("浏览器地址栏打开 \(Text("chrome://extensions").font(.footnote.monospaced()))，右上角开启「开发者模式」。"))
-            step(3, Text("点「加载已解压的扩展程序」，选择第 1 步解压出的文件夹。"))
-            step(4, Text("生成同步令牌并填入插件设置，之后切回本页会自动识别为「已安装」。")) {
-                Button {
-                    onOpenToken()
-                } label: {
-                    Label("去生成令牌", systemImage: "checkmark.shield").font(.subheadline.weight(.medium))
+                step(2, Text("浏览器地址栏打开 \(Text("chrome://extensions").font(.footnote.monospaced()))，右上角开启「开发者模式」。"))
+                step(3, Text("点「加载已解压的扩展程序」，选择第 1 步解压出的文件夹。"))
+                step(4, Text("生成同步令牌并填入插件设置，之后切回本页会自动识别为「已安装」。")) {
+                    Button {
+                        onOpenToken()
+                    } label: {
+                        Label("去生成令牌", systemImage: "checkmark.shield").font(.subheadline.weight(.medium))
+                    }
+                    .buttonStyle(.glass)
+                    .accessibilityIdentifier("ext-goto-token")
                 }
-                .buttonStyle(.glass)
-                .accessibilityIdentifier("ext-goto-token")
+            } footer: {
+                Text("支持 Chrome / Edge 等 Chromium 内核浏览器；安装检测同样仅对 Chromium 生效。")
             }
-            Text("支持 Chrome / Edge 等 Chromium 内核浏览器；安装检测同样仅对 Chromium 生效。")
-                .font(.caption)
-                .foregroundStyle(Theme.textFaint)
         }
     }
 
@@ -100,22 +101,21 @@ struct SettingsBSiteExtInstallSheet: View {
         step(n, text) { EmptyView() }
     }
 
+    /// 一步一行：序号圆点 + 说明 + 可选的动作按钮
     private func step<A: View>(_ n: Int, _ text: Text, @ViewBuilder action: () -> A) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Text("\(n)")
                 .font(.footnote.weight(.semibold))
                 .frame(width: 24, height: 24)
-                .background(Color.white.opacity(0.08), in: .circle)
+                .background(Color.white.opacity(0.1), in: .circle)
             VStack(alignment: .leading, spacing: 8) {
-                text.font(.subheadline).foregroundStyle(Theme.textMuted).fixedSize(horizontal: false, vertical: true)
+                text.font(.subheadline).foregroundStyle(Theme.text.opacity(0.88)).fixedSize(horizontal: false, vertical: true)
                 action()
             }
             .padding(.top, 2)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(Color.white.opacity(0.03), in: .rect(cornerRadius: 12))
+        .padding(.vertical, 4)
     }
 }
 
@@ -131,87 +131,85 @@ struct SettingsBSiteExtTokenSheet: View {
     @State private var revealed = false
 
     var body: some View {
-        SubsSheetScaffold(title: "同步令牌", closeTitle: "完成") {
-            HStack(alignment: .top) {
-                Text("在浏览器插件的设置里填入此令牌，即可把站点 Cookie 同步到本服务。令牌长期有效，除非你重新生成。")
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                HStack(spacing: 5) {
-                    SettingsBDot(tone: token?.enabled == true ? .ok : .neutral)
-                    Text(token?.enabled == true ? "已启用" : "未启用").font(.footnote).foregroundStyle(Theme.textMuted)
-                }
-                .fixedSize()
-                .accessibilityIdentifier("ext-token-status")
-            }
+        SubsSheetScaffold(
+            title: "同步令牌",
+            subtitle: "在浏览器插件的设置里填入此令牌，即可把站点 Cookie 同步到本服务。令牌长期有效，除非你重新生成。",
+            closeTitle: "完成",
+            ready: !loading
+        ) {
             if let error {
-                SubsNotice(text: error, tone: .error)
+                Section { SubsNoticeRow(text: error, tone: .error) }
             }
-            if loading {
-                RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.04)).frame(height: 44)
-            } else if let token, token.enabled {
-                tokenRow(token.token ?? "", createdAt: token.createdAt)
-            } else {
-                Text("尚未启用同步。点击下方「生成令牌」创建一个。")
-                    .font(.body)
-                    .foregroundStyle(Theme.textMuted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color.white.opacity(0.03), in: .rect(cornerRadius: 12))
+            Section {
+                LabeledContent("状态") {
+                    HStack(spacing: 5) {
+                        SettingsBDot(tone: token?.enabled == true ? .ok : .neutral)
+                        Text(token?.enabled == true ? "已启用" : "未启用")
+                    }
+                }
+                .accessibilityIdentifier("ext-token-status")
+                if loading {
+                    ProgressView().frame(maxWidth: .infinity)
+                } else if let token, token.enabled {
+                    tokenRow(token.token ?? "")
+                }
+            } footer: {
+                if !loading {
+                    if let token, token.enabled, let createdAt = token.createdAt {
+                        Text("生成于 \(SettingsBSiteFormat.dateTime(createdAt))")
+                    } else if token?.enabled != true {
+                        Text("尚未启用同步。点击下方「生成令牌」创建一个。")
+                    }
+                }
             }
-        } footer: {
-            HStack(spacing: 10) {
+            Section {
+                Button {
+                    Task { await generate() }
+                } label: {
+                    HStack {
+                        Label(token?.enabled == true ? "重新生成" : "生成令牌", systemImage: "key")
+                        Spacer()
+                        if busy { ProgressView() }
+                    }
+                }
+                .disabled(busy || loading)
+                .accessibilityIdentifier("ext-token-generate")
                 if token?.enabled == true {
                     Button(role: .destructive) {
                         Task { await revoke() }
                     } label: {
-                        Text("关闭同步").font(.body.weight(.medium)).padding(.vertical, 6)
+                        Label("关闭同步", systemImage: "xmark.shield")
                     }
-                    .buttonStyle(.glass)
-                    .tint(Theme.danger)
                     .disabled(busy || loading)
                     .accessibilityIdentifier("ext-token-revoke")
-                }
-                SubsPrimaryButton(title: token?.enabled == true ? "重新生成" : "生成令牌", busy: busy,
-                                  enabled: !loading, identifier: "ext-token-generate") {
-                    Task { await generate() }
                 }
             }
         }
         .task { await load() }
     }
 
-    private func tokenRow(_ value: String, createdAt: String?) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(revealed ? value : String(repeating: "•", count: min(value.count, 28)))
-                    .font(.footnote.monospaced())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("ext-token-value")
-                Button(revealed ? "隐藏" : "显示") { revealed.toggle() }
-                    .buttonStyle(.glass)
-                    .accessibilityIdentifier("ext-token-reveal")
-                Button {
-                    UIPasteboard.general.string = value
-                    feedback.success("已复制")
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                }
+    /// 令牌行：默认打码，「显示」才明文；复制键就在旁边
+    private func tokenRow(_ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(revealed ? value : String(repeating: "•", count: min(value.count, 28)))
+                .font(.footnote.monospaced())
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("ext-token-value")
+            Button(revealed ? "隐藏" : "显示") { revealed.toggle() }
                 .buttonStyle(.glass)
-                .accessibilityLabel("复制令牌")
-                .accessibilityIdentifier("ext-token-copy")
+                .accessibilityIdentifier("ext-token-reveal")
+            Button {
+                UIPasteboard.general.string = value
+                feedback.success("已复制")
+            } label: {
+                Image(systemName: "doc.on.doc")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 12))
-            if let createdAt {
-                Text("生成于 \(SettingsBSiteFormat.dateTime(createdAt))").font(.caption).foregroundStyle(Theme.textFaint)
-            }
+            .buttonStyle(.glass)
+            .accessibilityLabel("复制令牌")
+            .accessibilityIdentifier("ext-token-copy")
         }
     }
 

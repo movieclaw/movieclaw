@@ -9,7 +9,7 @@ import SwiftUI
 /// - 账号：切换账号 / 退出登录；
 /// - 最近会话（管理员）：首行「新会话」（顶栏的「+」已去掉，这里是发起新会话的入口），下面是 AI 会话，
 ///   每页 20 条、滑到末尾自动加载下一页（用户决定不要「显示全部 / 收起」，与 Web 的差异）；
-///   操作走 iOS 列表惯例：左滑出续接 / 删除两个图标按钮（都先确认），长按出完整菜单（与会话页右上角同图标、同顺序）。
+///   操作走 iOS 列表惯例：左滑出续接 / 重命名 / 删除三个图标按钮，长按出完整菜单（与会话页右上角同图标、同顺序）。
 ///
 /// 原先是点左上角头像弹出的 sheet（右上「完成」关闭），2026-09-26 头像挪进标签栏后改为标签根页；
 /// 站内链接 `/my` 也切到这个标签（Router.tabRoot）。
@@ -131,9 +131,10 @@ struct MorePage: View {
         .polling(every: 30, immediately: true) { await loadNotices() }
     }
 
-    /// 会话行按 iOS 列表惯例处理操作（同邮件 / 信息）：行上不放「⋯」，左滑出两个纯图标按钮——
-    /// 分支图标（在新会话中继续）与垃圾桶（删除），两者点了都先弹确认，所以不带文字也不怕误触；
-    /// 长按出完整菜单（含重命名，与会话页右上角同图标、同顺序）。删除不允许一滑到底直接触发。
+    /// 会话行按 iOS 列表惯例处理操作（同邮件 / 信息）：行上不放「⋯」，左滑出三个纯图标按钮——
+    /// 分支（在新会话中继续）/ 铅笔（重命名）/ 垃圾桶（删除）；续接与删除点了先确认、重命名先弹输入框，
+    /// 所以不带文字也不怕误触。长按出同样三项的完整菜单（与会话页右上角同图标、同顺序）。
+    /// 删除不允许一滑到底直接触发。
     private func sessionRow(_ item: API.SessionSummary) -> some View {
         MoreRouteRow(routes: [.session(id: item.id)]) {
             HStack(spacing: 10) {
@@ -148,6 +149,9 @@ struct MorePage: View {
             Button(role: .destructive) { Task { await remove(item) } } label: { Image(systemName: "trash") }
                 .tint(.red)
                 .accessibilityLabel("删除会话")
+            Button { Task { await rename(item) } } label: { Image(systemName: "pencil") }
+                .tint(.gray)
+                .accessibilityLabel("重命名")
             Button { Task { await fork(item) } } label: { Image(systemName: "arrow.triangle.branch") }
                 .tint(.blue)
                 .accessibilityLabel("在新会话中继续")

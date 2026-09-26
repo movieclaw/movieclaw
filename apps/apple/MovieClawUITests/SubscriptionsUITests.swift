@@ -178,7 +178,7 @@ final class SubscriptionsUITests: XCTestCase {
         XCTAssertTrue(remove.waitForExistence(timeout: 10))
         remove.tap()
         XCTAssertTrue(app.buttons["confirm-cancel-subscription"].waitForExistence(timeout: 20), "管理员取消订阅应弹带预览的确认层")
-        XCTAssertTrue(app.buttons["cancel-delete-torrents"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.switches["cancel-delete-torrents"].waitForExistence(timeout: 20), "清理项是原生开关")
         snapshot("详情-取消订阅预览")
         closeTopSheet(app)
         XCTAssertTrue(app.buttons["subscription-more"].waitForExistence(timeout: 10), "关闭后仍停留在详情")

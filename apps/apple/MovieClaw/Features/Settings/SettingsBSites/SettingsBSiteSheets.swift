@@ -15,24 +15,24 @@ struct SettingsBSiteAuthForm: View {
     @Binding var authType: String
     @Binding var values: [String: String]
 
+    // 直接产出表单分组（放进 `SubsSheetScaffold`）：授权方式一组，每个字段各一组、标题作分组头
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // 授权方式（多于一种时才展示）
-            if item.supportedAuthTypes.count > 1 {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("授权方式").font(.subheadline).foregroundStyle(Theme.textMuted)
-                    Picker("授权方式", selection: $authType) {
-                        ForEach(item.supportedAuthTypes, id: \.authType) { opt in
-                            Text(SettingsBSiteText.authType(opt.authType)).tag(opt.authType)
-                        }
+        // 授权方式（多于一种时才展示）
+        if item.supportedAuthTypes.count > 1 {
+            Section {
+                Picker("授权方式", selection: $authType) {
+                    ForEach(item.supportedAuthTypes, id: \.authType) { opt in
+                        Text(SettingsBSiteText.authType(opt.authType)).tag(opt.authType)
                     }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("site-auth-type")
                 }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("site-auth-type")
+            } header: {
+                Text("授权方式")
             }
-            ForEach(Self.fields(item, authType), id: \.self) { field in
-                fieldView(field)
-            }
+        }
+        ForEach(Self.fields(item, authType), id: \.self) { field in
+            fieldSection(field)
         }
     }
 
@@ -47,20 +47,11 @@ struct SettingsBSiteAuthForm: View {
         return !fields.isEmpty && fields.allSatisfy { !(values[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
-    @ViewBuilder
-    private func fieldView(_ field: String) -> some View {
+    private func fieldSection(_ field: String) -> some View {
         let meta = SettingsBSiteText.field(field)
         let binding = Binding(get: { values[field] ?? "" }, set: { values[field] = $0 })
         let placeholder = isEdit ? "出于安全，请重新填写" : ""
-        VStack(alignment: .leading, spacing: 6) {
-            Text(meta.label).font(.subheadline).foregroundStyle(Theme.textMuted)
-            // Cookie 恰是插件的用武之地：就地提一句，不打断手动粘贴的用户
-            if field == "cookie" {
-                Text("手动粘贴的 Cookie 过期后需重填；推荐用本页下方的 MovieClaw 浏览器插件自动同步。")
-                    .font(.caption)
-                    .foregroundStyle(Theme.textFaint)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        return Section {
             Group {
                 switch meta.kind {
                 case .textarea:
@@ -76,11 +67,14 @@ struct SettingsBSiteAuthForm: View {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .textContentType(meta.kind == .password ? .oneTimeCode : nil)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color.white.opacity(0.05), in: .rect(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.08)))
             .accessibilityIdentifier("site-field-\(field)")
+        } header: {
+            Text(meta.label)
+        } footer: {
+            // Cookie 恰是插件的用武之地：就地提一句，不打断手动粘贴的用户
+            if field == "cookie" {
+                Text("手动粘贴的 Cookie 过期后需重填；推荐用本页下方的 MovieClaw 浏览器插件自动同步。")
+            }
         }
     }
 
@@ -109,19 +103,21 @@ struct SettingsBSiteAddSheet: View {
     @State private var busy = false
 
     var body: some View {
-        SubsSheetScaffold(title: "添加站点") {
+        SubsSheetScaffold(
+            title: "添加站点",
+            confirm: selected.map { selected in
+                SubsSheetConfirm(
+                    title: "保存并验证",
+                    enabled: SettingsBSiteAuthForm.canSubmit(selected, authType, values),
+                    busy: busy,
+                    identifier: "site-add-save"
+                ) { Task { await save(selected) } }
+            }
+        ) {
             if let selected {
                 formStep(selected)
             } else {
                 pickStep
-            }
-        } footer: {
-            if let selected {
-                SubsPrimaryButton(title: busy ? "保存中…" : "保存并验证", busy: busy,
-                                  enabled: SettingsBSiteAuthForm.canSubmit(selected, authType, values),
-                                  identifier: "site-add-save") {
-                    Task { await save(selected) }
-                }
             }
         }
     }
@@ -134,61 +130,58 @@ struct SettingsBSiteAddSheet: View {
         }
     }
 
+    @ViewBuilder
     private var pickStep: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        Section {
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Theme.textFaint)
+                Image(systemName: "magnifyingglass").foregroundStyle(Theme.textMuted)
                 TextField("搜索站点名称 / 地址", text: $query)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .accessibilityIdentifier("site-add-search")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color.white.opacity(0.05), in: .rect(cornerRadius: 12))
-
+        }
+        Section {
             if available.isEmpty {
-                Text("所有支持的站点都已配置。").foregroundStyle(Theme.textMuted).frame(maxWidth: .infinity).padding(.vertical, 24)
+                Text("所有支持的站点都已配置。").foregroundStyle(Theme.textMuted)
             } else if filtered.isEmpty {
-                Text("没有匹配「\(query)」的站点。").foregroundStyle(Theme.textMuted).frame(maxWidth: .infinity).padding(.vertical, 24)
+                Text("没有匹配「\(query)」的站点。").foregroundStyle(Theme.textMuted)
             } else {
-                VStack(spacing: 2) {
-                    ForEach(filtered, id: \.siteId) { item in
-                        Button {
-                            pick(item)
-                        } label: {
-                            HStack(spacing: 10) {
-                                SettingsBSiteBadge(item: item)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(item.displayName).font(.body.weight(.medium)).foregroundStyle(Theme.text).lineLimit(1)
-                                    Text(item.baseUrl).font(.caption).foregroundStyle(Theme.textFaint).lineLimit(1)
-                                }
-                                Spacer(minLength: 8)
-                                Text(item.supportedAuthTypes.map { SettingsBSiteText.authType($0.authType) }.joined(separator: " / "))
-                                    .font(.caption)
-                                    .foregroundStyle(Theme.textMuted)
-                                    .lineLimit(1)
+                ForEach(filtered, id: \.siteId) { item in
+                    Button {
+                        pick(item)
+                    } label: {
+                        HStack(spacing: 10) {
+                            SettingsBSiteBadge(item: item)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(item.displayName).foregroundStyle(Theme.text).lineLimit(1)
+                                Text(item.baseUrl).font(.footnote).foregroundStyle(Theme.textMuted).lineLimit(1)
                             }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 9)
-                            .background(Color.white.opacity(0.03), in: .rect(cornerRadius: 10))
-                            .contentShape(.rect)
+                            Spacer(minLength: 8)
+                            Text(item.supportedAuthTypes.map { SettingsBSiteText.authType($0.authType) }.joined(separator: " / "))
+                                .font(.footnote)
+                                .foregroundStyle(Theme.textMuted)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Theme.textFaint)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("site-add-item-\(item.siteId)")
+                        .contentShape(.rect)
                     }
+                    .accessibilityIdentifier("site-add-item-\(item.siteId)")
                 }
             }
+        } header: {
+            Text("选择站点")
         }
     }
 
+    @ViewBuilder
     private func formStep(_ item: API.CatalogItem) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
+        Section {
             HStack(spacing: 10) {
                 SettingsBSiteBadge(item: item)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(item.displayName).font(.body.weight(.semibold)).lineLimit(1)
-                    Text(item.baseUrl).font(.caption).foregroundStyle(Theme.textFaint).lineLimit(1)
+                    Text(item.baseUrl).font(.footnote).foregroundStyle(Theme.textMuted).lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 Button("重新选择") { selected = nil }
@@ -196,8 +189,8 @@ struct SettingsBSiteAddSheet: View {
                     .disabled(busy)
                     .accessibilityIdentifier("site-add-repick")
             }
-            SettingsBSiteAuthForm(item: item, isEdit: false, authType: $authType, values: $values)
         }
+        SettingsBSiteAuthForm(item: item, isEdit: false, authType: $authType, values: $values)
     }
 
     private func pick(_ item: API.CatalogItem) {
@@ -247,14 +240,17 @@ struct SettingsBSiteEditAuthSheet: View {
     }
 
     var body: some View {
-        SubsSheetScaffold(title: "编辑授权", subtitle: item.displayName) {
+        SubsSheetScaffold(
+            title: "编辑授权",
+            subtitle: "修改「\(item.displayName)」的授权信息，保存后会重新验证。",
+            confirm: SubsSheetConfirm(
+                title: "保存并重新验证",
+                enabled: SettingsBSiteAuthForm.canSubmit(item, authType, values),
+                busy: busy,
+                identifier: "site-edit-save"
+            ) { Task { await save() } }
+        ) {
             SettingsBSiteAuthForm(item: item, isEdit: true, authType: $authType, values: $values)
-        } footer: {
-            SubsPrimaryButton(title: busy ? "保存中…" : "保存并重新验证", busy: busy,
-                              enabled: SettingsBSiteAuthForm.canSubmit(item, authType, values),
-                              identifier: "site-edit-save") {
-                Task { await save() }
-            }
         }
     }
 
@@ -308,47 +304,40 @@ struct SettingsBSiteBoostSheet: View {
     }
 
     var body: some View {
-        SubsSheetScaffold(title: mode == .enable ? "开启自动刷分享率" : "刷流设置") {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(mode == .enable ? "开启「\(siteName)」的自动刷分享率？" : "刷流设置 · \(siteName)")
-                    .font(.title3.weight(.bold))
-                Text(mode == .enable
-                     ? "开启后将自动抢该站新发布的免费种子做种以提升分享率，占用空间在预算内自动汰换（下载完成、入池满保留期且上传效率过低的任务才会被连数据删除），该站的索引同步会提速到约 5 分钟一次。"
-                     : "调小预算会按上传效率从低到高汰换在池任务（连数据删除），直到占用回到新预算内；保留期内的任务绝不会被提前删除。")
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
+        SubsSheetScaffold(
+            title: mode == .enable ? "开启自动刷分享率" : "刷流设置",
+            subtitle: mode == .enable
+                ? "开启「\(siteName)」的自动刷分享率后，将自动抢该站新发布的免费种子做种以提升分享率，占用空间在预算内自动汰换（下载完成、入池满保留期且上传效率过低的任务才会被连数据删除），该站的索引同步会提速到约 5 分钟一次。"
+                : "「\(siteName)」：调小预算会按上传效率从低到高汰换在池任务（连数据删除），直到占用回到新预算内；保留期内的任务绝不会被提前删除。",
+            confirm: SubsSheetConfirm(title: mode == .enable ? "开启刷流" : "保存", busy: busy, identifier: "boost-save") {
+                Task { await save() }
             }
+        ) {
             if let error {
-                SubsNotice(text: error, tone: .error)
+                Section { SubsNoticeRow(text: error, tone: .error) }
             }
             field(label: "存储预算", text: $budgetGib, unit: "GiB",
                   hint: "刷流任务占用磁盘的上限，预算内自动汰换", identifier: "boost-budget")
             field(label: "汰换保留期", text: $holdDays, unit: "天",
                   hint: "H&R 安全垫：有考核的站不小于考核时长；无考核可调 0 自由汰换", identifier: "boost-hold-days")
-        } footer: {
-            SubsPrimaryButton(title: busy ? "保存中…" : mode == .enable ? "开启刷流" : "保存", busy: busy,
-                              identifier: "boost-save") {
-                Task { await save() }
-            }
         }
     }
 
+    /// 数字行：左标题、右输入 + 单位，说明作脚注
     private func field(label: String, text: Binding<String>, unit: String, hint: String, identifier: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(.subheadline).foregroundStyle(Theme.textMuted)
-            HStack {
-                TextField("", text: text)
-                    .keyboardType(.numberPad)
-                    .accessibilityIdentifier(identifier)
-                Text(unit).font(.footnote.weight(.medium)).foregroundStyle(Theme.textFaint)
+        Section {
+            LabeledContent(label) {
+                HStack(spacing: 6) {
+                    TextField("", text: text)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier(identifier)
+                    Text(unit).foregroundStyle(Theme.textMuted)
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color.white.opacity(0.05), in: .rect(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.08)))
             .disabled(busy)
-            Text(hint).font(.caption).foregroundStyle(Theme.textFaint).fixedSize(horizontal: false, vertical: true)
+        } footer: {
+            Text(hint)
         }
     }
 
