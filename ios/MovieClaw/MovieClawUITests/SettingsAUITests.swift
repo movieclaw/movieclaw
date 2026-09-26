@@ -1,6 +1,6 @@
 import XCTest
 
-/// 设置模块（上）端到端验收：概览、个人信息、外观、成员、设备、播放、AI 设定、更新与维护、网络、系统日志。
+/// 设置模块（上）端到端验收：概览、个人信息、成员、设备、播放、AI 设定、更新与维护、网络、系统日志。
 ///
 /// 依赖一台真实运行的 MovieClaw，账号经环境变量传入（scripts/test.sh 已转发）：
 /// MC_TEST_SERVER / MC_TEST_USERNAME / MC_TEST_PASSWORD；未提供密码时整组跳过——仓库开源，不写任何真实密码。
@@ -9,7 +9,7 @@ import XCTest
 /// - 绝不点：修改密码、清空观看记录的确认、应用更新 / 回退 / 重启的确认、代理与外部访问 / 端口、保留版本数、
 ///   清理缓存、定时任务、别人的设备令牌与接入请求、已有成员的任何写操作、远程转码保存；
 /// - 可逆写操作动手前经接口记下原值，`tearDown` 一律经接口按原值写回（界面改回之外的第二道保险）：
-///   昵称、主题 / 质感 / 导航顺序（整份 ui.preferences）、播放策略两颗开关、AI 默认模型；
+///   昵称、播放策略两颗开关、AI 默认模型；
 /// - 自建数据只用 `ios-test-` 前缀（成员、CLI 令牌），`tearDown` 兜底清理同前缀的残留；
 /// - 每次点击前断言目标存在、可点且不被底部标签栏遮挡（`tapSafely`），否则用例失败——绝不按坐标盲点。
 final class SettingsAUITests: XCTestCase {
@@ -53,14 +53,6 @@ final class SettingsAUITests: XCTestCase {
         app.launchArguments = ["-mcServer", server, "-mcUser", username, "-mcPass", password, "-mcRoute", route]
         app.launch()
         return app
-    }
-
-    /// 记下某个接口的原始 data，tearDown 时用 PUT 原样写回
-    private func rememberPut(_ name: String, get path: String, put putPath: String? = nil, transform: (([String: Any]) -> [String: Any])? = nil) throws {
-        guard let probe else { return }
-        let original = try probe.getObject(path)
-        let body = transform?(original) ?? original
-        restorers.append((name, { _ = try probe.request("PUT", putPath ?? path, body: body) }))
     }
 
     @MainActor
@@ -216,50 +208,6 @@ final class SettingsAUITests: XCTestCase {
         XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 10) && app.alerts.firstMatch.label.contains("清空全部观看记录"))
         cancelAlert(app)
         snapshot("个人信息-清空记录已取消")
-    }
-
-    // MARK: 外观
-
-    @MainActor
-    func testAppearanceThemeTextureNavRestore() throws {
-        let app = try launch(route: "/settings/appearance")
-        guard let probe else { return }
-        try rememberPut("界面偏好", get: "/ui/preferences")
-
-        // 主题：App 固定银玻璃，Netflix 卡片置灰不可选；App 不做背景图设定，没有「背景图」页签
-        XCTAssertTrue(app.buttons["theme-silver"].waitForExistence(timeout: 20))
-        XCTAssertFalse(app.buttons["theme-netflix"].isEnabled, "Netflix 卡片应置灰")
-        XCTAssertFalse(app.buttons["appearance-tab-背景图"].exists, "App 不应有背景图页签")
-        snapshot("外观-主题")
-
-        // 界面质感：拖侧栏透明度 → 保存 → 接口可见变化；网页的蒙版参数原样带回（tearDown 写回原值）
-        let before = try probe.getObject("/ui/preferences")
-        let originalScrim = before["scrim"] as? [String: Any]
-        let originalTransparency = (before["sidebar"] as? [String: Any])?["transparency"] as? Double ?? 0
-        selectTab(app, "appearance-tab-界面质感")
-        XCTAssertFalse(app.sliders["slider-蒙版暗度"].exists, "App 不应有蒙版滑杆")
-        let slider = reveal(app, app.sliders["slider-侧栏透明度"])
-        slider.adjust(toNormalizedSliderPosition: originalTransparency > 0.5 ? 0.15 : 0.85)
-        let save = reveal(app, app.buttons["texture-save"])
-        XCTAssertTrue(save.isEnabled, "拖动滑杆后保存键应可用")
-        tapSafely(app, save, "保存质感")
-        XCTAssertTrue(waitUntil(15) {
-            let value = ((try? probe.getObject("/ui/preferences"))?["sidebar"] as? [String: Any])?["transparency"] as? Double
-            return value.map { abs($0 - originalTransparency) > 0.1 } ?? false
-        }, "侧栏透明度应已保存")
-        let scrimAfter = (try probe.getObject("/ui/preferences"))["scrim"] as? [String: Any]
-        XCTAssertEqual(scrimAfter?["blur"] as? Double, originalScrim?["blur"] as? Double, "蒙版模糊度应原样保留")
-        XCTAssertEqual(scrimAfter?["dark"] as? Double, originalScrim?["dark"] as? Double, "蒙版暗度应原样保留")
-        snapshot("外观-界面质感")
-
-        // 导航顺序：媒体库下移一格 → 保存 → 恢复默认
-        selectTab(app, "appearance-tab-导航顺序")
-        tapSafely(app, app.buttons["nav-down-library"], "媒体库下移")
-        tapSafely(app, app.buttons["nav-save"], "保存导航顺序")
-        XCTAssertTrue(waitUntil(15) {
-            (((try? probe.getObject("/ui/preferences"))?["nav"] as? [String: Any])?["order"] as? [String])?.firstIndex(of: "library") ?? 0 > 1
-        }, "导航顺序应已保存")
-        snapshot("外观-导航顺序")
     }
 
     // MARK: 成员

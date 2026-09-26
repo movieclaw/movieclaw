@@ -239,27 +239,6 @@ enum SettingsTime {
     }
 }
 
-// MARK: - 界面偏好
-
-extension API.UiPreferencesSetting {
-    /// 整体覆盖式保存用的请求体：原样带回全部分组（主题、侧栏、蒙版、导航、首页行），
-    /// 只改调用方关心的字段——漏带任何一组都会被后端当成「清空」覆盖掉。
-    var asInput: API.UiPreferencesSettingInput {
-        API.UiPreferencesSettingInput(
-            theme: theme,
-            themeDesktop: themeDesktop,
-            themeMobile: themeMobile,
-            sidebar: .init(transparency: sidebar.transparency, brightness: sidebar.brightness, depth: sidebar.depth),
-            scrim: .init(blur: scrim.blur, dark: scrim.dark),
-            nav: .init(order: nav.order),
-            home: .init(rows: home.rows.map {
-                .init(id: $0.id, sort: $0.sort, order: $0.order, name: $0.name, unwatched: $0.unwatched,
-                      hidden: $0.hidden, libraryId: $0.libraryId, collectionId: $0.collectionId)
-            })
-        )
-    }
-}
-
 // MARK: - 播放引擎偏好（本机）
 
 /// App 专属的「播放引擎」偏好。键名、取值与播放器模块 `PlayerPreferences.engine` 完全一致

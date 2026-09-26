@@ -47,8 +47,8 @@ struct MainTabView: View {
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
-        // 活动标签的状态点（红 > 绿 > 蓝，同网页）：SwiftUI 的 .badge 只能红底文字，下到 UIKit 设彩色空角标
-        .background(TabBarDotBridge(tabTitle: MainTab.activity.title, color: badges.activityDotColor))
+        // 活动标签的状态点（红 > 绿 > 蓝，同网页）：SwiftUI 的 .badge 只能红底文字，下到 UIKit 画小圆点
+        .background(TabBarDotBridge(tabTitle: MainTab.activity.title, dot: badges.activityDot))
         .sheet(item: $router.sheet) { sheet in
             sheet.content.sheetFeedback()
         }
@@ -224,9 +224,7 @@ extension Theme {
 ///
 /// 任务与观看两份数据源（`tasks` / `media`）也挂在这里、由外壳常驻运行：活动页直接读同一个实例，
 /// 全 App 只有一条 `/jobs/stream` SSE、一路下载器轮询、一路播放活动轮询（Web 同样是全站 Provider）。
-///
-/// 与 Web 的差异：iOS 标签角标只能是系统红底的数字/文字，不能按状态换色。于是用文字区分三档：
-/// 需要处理显示数量（红底数字，语义与 Web 红点一致）、有人在看显示「在看」、只有进行中显示「进行中」。
+/// 活动标签的状态点与网页一样按状态换色（红 / 绿 / 蓝），画法见 TabBarDotBridge。
 @Observable
 final class ShellBadges {
     /// 待更新快照（管理员）；nil 表示没有可用更新
@@ -250,22 +248,22 @@ final class ShellBadges {
     /// 进行中的任务数（蓝）
     var running: Int { tasks.activity.activeTotal }
 
-    /// 活动标签角标：按优先级只表达当前最该被看见的那一件事
-    /// 活动标签的状态点颜色（同网页 glass-tab-bar 的优先级）：有需要处理的任务红、有人在看绿、
-    /// 只有进行中的任务蓝；都没有不显示。用户觉得红底「在看」文字太重，改成小圆点
-    var activityDotColor: UIColor? {
+    /// 活动标签的状态点（同网页 glass-tab-bar 的优先级）：有需要处理的任务红、有人在看绿、
+    /// 只有进行中的任务蓝；都没有不显示。按优先级只表达当前最该被看见的那一件事。
+    /// 用户觉得红底「在看」文字太重，改成小圆点；`label` 给读屏用
+    var activityDot: TabBarDotBridge.Dot? {
         #if DEBUG
         // 开发期：-mcActivityDot red|green|blue 强制显示状态点（截图核对用）
         switch UserDefaults.standard.string(forKey: "mcActivityDot") {
-        case "red": return UIColor(Theme.danger)
-        case "green": return UIColor(Theme.success)
-        case "blue": return UIColor(Theme.info)
+        case "red": return .init(color: UIColor(Theme.danger), label: "有需要处理的任务")
+        case "green": return .init(color: UIColor(Theme.success), label: "有人正在观看")
+        case "blue": return .init(color: UIColor(Theme.info), label: "有任务进行中")
         default: break
         }
         #endif
-        if needsAction > 0 { return UIColor(Theme.danger) }
-        if watching > 0 { return UIColor(Theme.success) }
-        if running > 0 { return UIColor(Theme.info) }
+        if needsAction > 0 { return .init(color: UIColor(Theme.danger), label: "有需要处理的任务") }
+        if watching > 0 { return .init(color: UIColor(Theme.success), label: "有人正在观看") }
+        if running > 0 { return .init(color: UIColor(Theme.info), label: "有任务进行中") }
         return nil
     }
 
@@ -291,13 +289,25 @@ final class ShellBadges {
     }
 }
 
-/// 给系统标签栏的某个标签设彩色空角标（小圆点）。
+/// 给系统标签栏的某个标签挂一个彩色小圆点（与活动页顶部「观看」旁的状态点差不多大）。
 ///
-/// SwiftUI 的 `.badge` 只能是红底数字/文字；UIKit 的 UITabBarItem 支持 `badgeColor`，
-/// 且 `badgeValue = ""` 时只画一个小圆点。这里从视图所在窗口找到标签栏控制器，按标题定位标签后设置。
+/// SwiftUI 的 `.badge` 只能是红底数字/文字；UIKit 的系统空角标（`badgeValue = ""`）是约 18pt 的实心圆，
+/// 挂在图标右上角太抢眼（用户反馈），而角标尺寸没有公开接口可调。这里借用系统角标的位置、换掉画法：
+/// 角标底色设为透明，角标文字是一个小字号的「●」、文字颜色即状态色——画出来就是图标右上角的一颗小圆点，
+/// 标签栏收起/展开、横竖屏时的位置仍由系统排布，不碰任何私有视图。
+/// 从视图所在窗口找到标签栏控制器，按标题定位标签后设置。
 struct TabBarDotBridge: UIViewRepresentable {
+    struct Dot: Equatable {
+        var color: UIColor
+        /// 读屏念的状态说明（否则会把「●」念出来）
+        var label: String
+    }
+
     let tabTitle: String
-    let color: UIColor?
+    let dot: Dot?
+
+    /// 「●」的字号：约合 6pt 直径的圆点（活动页顶部状态点是 6pt）
+    private static let dotFontSize: CGFloat = 7.5
 
     func makeUIView(context: Context) -> UIView {
         let view = UIView(frame: .zero)
@@ -306,15 +316,27 @@ struct TabBarDotBridge: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UIView, context: Context) {
-        let title = tabTitle, color = color
+        let title = tabTitle, dot = dot
         // 等视图进窗口、标签栏建好之后再设（首次更新时窗口可能还是 nil）
         DispatchQueue.main.async {
             guard let root = view.window?.rootViewController,
                   let tabBarController = Self.findTabBarController(from: root),
                   let item = tabBarController.tabBar.items?.first(where: { $0.title == title })
             else { return }
-            item.badgeColor = color
-            item.badgeValue = color == nil ? nil : ""
+            guard let dot else {
+                item.badgeValue = nil
+                item.accessibilityValue = nil
+                return
+            }
+            let attributes: [NSAttributedString.Key: Any] = [
+                .foregroundColor: dot.color,
+                .font: UIFont.systemFont(ofSize: Self.dotFontSize),
+            ]
+            item.setBadgeTextAttributes(attributes, for: .normal)
+            item.setBadgeTextAttributes(attributes, for: .selected)
+            item.badgeColor = .clear
+            item.badgeValue = "●"
+            item.accessibilityValue = dot.label
         }
     }
 

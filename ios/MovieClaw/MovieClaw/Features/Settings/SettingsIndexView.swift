@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 设置首页：分区列表（Web 手机端 /settings，components/settings-index.tsx）。
-/// 成员只看到「个人信息」「外观」；空标题的组（概览）不渲染组头。
+/// 成员只看到「个人信息」；空标题的组（概览）不渲染组头。
 struct SettingsIndexView: View {
     @Environment(\.permissions) private var permissions
 

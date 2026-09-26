@@ -66,7 +66,7 @@ struct ShellLogicTests {
         #expect(router.guarded(.settingsSection(.sites)) == .settingsSection(.sites))
         router.permissions = Permissions.none
         #expect(router.guarded(.settingsSection(.sites)) == .settingsSection(.profile))
-        #expect(router.guarded(.settingsSection(.appearance)) == .settingsSection(.appearance))
+        #expect(router.guarded(.settingsSection(.profile)) == .settingsSection(.profile))
         #expect(router.guarded(.session(id: "x")) == .libraryHome)
         #expect(router.guarded(.activity()) == .libraryHome)
         #expect(router.guarded(.discover()) == .discover())

@@ -78,8 +78,10 @@ enum AppRoute: Hashable {
 }
 
 /// 设置分区（顺序与分组同 Web `lib/mock-data.ts` 的 settingsSectionGroups）。
+/// 网页的「外观」分区（主题、背景图、界面质感、导航顺序）只设置网页本身，App 不提供（用户决定，
+/// 已接受的平台差异）；`/settings/appearance` 深链因此落到设置首页。
 enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
-    case overview, profile, appearance
+    case overview, profile
     case members, devices
     case subscription, sites, downloaders, importWatch = "import-watch"
     case scrape, playback
@@ -92,7 +94,6 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .overview: "概览"
         case .profile: "个人信息"
-        case .appearance: "外观"
         case .members: "成员"
         case .devices: "设备"
         case .subscription: "订阅规则"
@@ -116,7 +117,6 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .overview: "配置状态一览：缺什么、有什么问题、下一步做什么"
         case .profile: "头像、昵称与登录密码"
-        case .appearance: "主题、界面质感与导航顺序"
         case .members: "家庭成员账号、能力开关与可见范围"
         case .devices: "命令行与转码 Worker 的接入审批和吊销"
         case .subscription: "订阅规则组与投递模拟预演"
@@ -140,7 +140,6 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .overview: "gauge.with.dots.needle.33percent"
         case .profile: "person.crop.circle"
-        case .appearance: "paintpalette"
         case .members: "person.2.badge.key"
         case .devices: "laptopcomputer.and.iphone"
         case .subscription: "bookmark"
@@ -160,13 +159,13 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
         }
     }
 
-    /// 成员只能看到「个人信息」「外观」，其余分区仅超级管理员可见
-    var memberVisible: Bool { self == .profile || self == .appearance }
+    /// 成员只能看到「个人信息」，其余分区仅超级管理员可见
+    var memberVisible: Bool { self == .profile }
 
     /// 分组（空标题的组不渲染组头）
     static let groups: [(title: String, items: [SettingsSection])] = [
         ("", [.overview]),
-        ("账号", [.profile, .appearance]),
+        ("账号", [.profile]),
         ("成员与设备", [.members, .devices]),
         ("资源与下载", [.subscription, .sites, .downloaders, .importWatch]),
         ("媒体库", [.scrape, .playback]),

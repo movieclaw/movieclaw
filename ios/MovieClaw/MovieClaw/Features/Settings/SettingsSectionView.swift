@@ -19,7 +19,6 @@ struct SettingsSectionView: View {
         switch section {
         case .overview: OverviewSettingsView()
         case .profile: ProfileSettingsView()
-        case .appearance: AppearanceSettingsView()
         case .members: MembersSettingsView()
         case .devices: DevicesSettingsView()
         case .subscription: SubscriptionRulesSettingsView()
