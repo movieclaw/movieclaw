@@ -17,8 +17,8 @@ Logo。这里只把**有订阅**的条目的下一次刷新提前到「立即到
 runtime-version。
 
 Revision ID: 2973f590e15e
-Revises: b6e2d8f4a193
-Create Date: 2026-09-26 12:00:00.000000
+Revises: d9b4e1f7a320
+Create Date: 2026-09-26 21:00:00.000000
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "2973f590e15e"
-down_revision: str | None = "b6e2d8f4a193"
+down_revision: str | None = "d9b4e1f7a320"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
