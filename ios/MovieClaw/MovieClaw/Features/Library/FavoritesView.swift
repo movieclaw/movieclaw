@@ -49,6 +49,7 @@ struct FavoritesView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     header
+                        .id(LibraryWallRecall.pageTopID)
                     content
                 }
                 .padding(.bottom, 32)
@@ -119,9 +120,10 @@ struct FavoritesView: View {
     private func resetForReentry() {
         guard didOfferRecall else { return } // 首载还没问过：正常流程会问
         galleryStart = 0
+        scrollProxy?.scrollTo(LibraryWallRecall.pageTopID, anchor: .top)
         Task {
             await pager.jump(to: 0)
-            if let first = pager.items?.first { scrollProxy?.scrollTo(first.id, anchor: .top) }
+            scrollProxy?.scrollTo(LibraryWallRecall.pageTopID, anchor: .top)
         }
         recallOffset = LibraryWallRecall.read(scope: Self.recallScope, view: recallView).flatMap { $0 < (pager.total ?? 0) ? $0 : nil }
     }

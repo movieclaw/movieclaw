@@ -246,6 +246,7 @@ struct LibraryDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     header(library)
+                        .id(LibraryWallRecall.pageTopID)
                     if !library.viewerAccess {
                         hiddenContent
                     } else if view == .collections {
@@ -781,6 +782,8 @@ struct LibraryDetailView: View {
                 issueTab = IssueSheet(tab: pendingTab)
             }
             await pager.refresh()
+            // 墙可能在这一轮才填好：再问一次（幂等），不必等下一轮 30 秒轮询
+            checkRecall()
             if effectiveSort == "title" || effectiveSort == "release_date" {
                 index = (try? await api.libraryIndexFiltered(libraryId: id, filter: filter, sort: effectiveSort, order: order)) ?? index
             }
@@ -858,9 +861,10 @@ struct LibraryDetailView: View {
         let offset = LibraryWallRecall.read(scope: recallScope, view: recallView)
         galleryStart = 0
         photoJump = PhotoWallJump(offset: 0)
+        scrollProxy?.scrollTo(LibraryWallRecall.pageTopID, anchor: .top)
         Task {
             await pager.jump(to: 0)
-            if let first = pager.items?.first { scrollProxy?.scrollTo(first.id, anchor: .top) }
+            scrollProxy?.scrollTo(LibraryWallRecall.pageTopID, anchor: .top)
         }
         if let offset, offset < (library?.stats.itemCount ?? 0) { recallOffset = offset }
     }

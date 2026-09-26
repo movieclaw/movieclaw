@@ -94,7 +94,9 @@ final class LibraryWallPager<Item: Identifiable & Sendable> where Item.ID: Senda
     /// 按已加载的条数整窗重拉并整体替换（轮询 / 返回对账），失败保留旧窗口
     func refresh() async {
         guard let fetch, !loading, let current = items else {
-            if items == nil, self.fetch != nil { await jump(to: start) }
+            // 墙还没首载：首页请求正在路上时不抢跳——那一跳会作废首载结果、再发一次同样的请求，
+            // 进页询问「回到上次位置」因此落空（第三轮复核 N-04b-5）
+            if items == nil, self.fetch != nil, !loading { await jump(to: start) }
             return
         }
         let gen = generation
@@ -139,7 +141,17 @@ enum LibraryWallRecall {
     static let minOffset = 24
     static let maxAge: TimeInterval = 14 * 86400
     /// 挂后台超过这么久再回来算「重新进入」：复位到墙首并重新询问（同 Web library-wall-recall）
-    static let reentryGap: TimeInterval = 30 * 60
+    static var reentryGap: TimeInterval {
+        #if DEBUG
+        // 开发期：-mcReentryGap <秒> 缩短判定，验证「久别回归」不用真等 30 分钟
+        let forced = UserDefaults.standard.double(forKey: "mcReentryGap")
+        if forced > 0 { return forced }
+        #endif
+        return 30 * 60
+    }
+    /// 页首锚点（挂在墙上方的页头上）：久别回归复位要回到页首（连统计行一起），
+    /// 只滚到第一张海报会把页头留在视口外（第三轮复核 LD-4）
+    static let pageTopID = "wall-page-top"
 
     static func read(scope: String, view: String) -> Int? {
         guard let all = UserDefaults.standard.dictionary(forKey: key),

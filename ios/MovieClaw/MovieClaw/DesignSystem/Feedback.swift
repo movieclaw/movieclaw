@@ -42,7 +42,7 @@ final class Feedback {
         var placeholder: String
         var text: String
         var confirmTitle: String
-        /// 输入上限（字符数）：输入时就截住，同网页 prompt 的 maxLength
+        /// 输入上限（字符数，同网页 prompt 的 maxLength）：超出时「确定」置灰，弹窗里写明上限
         var maxLength: Int?
         var resume: (String?) -> Void
     }
@@ -139,10 +139,9 @@ struct FeedbackHost: ViewModifier {
             ) { request in
                 TextField(request.placeholder, text: Binding(
                     get: { feedback.promptRequest?.text ?? "" },
-                    set: { value in
-                        // 有上限时输入即截断（同网页 maxLength：超出的字根本打不进去）
-                        feedback.promptRequest?.text = request.maxLength.map { String(value.prefix($0)) } ?? value
-                    }
+                    // 不在这里截断：系统弹窗的输入框不回显截断后的值，用户看着打满了、提交的却是前 N 个字
+                    // （第三轮复核 S-13）。超长改为「确定」置灰，说明写在弹窗里
+                    set: { feedback.promptRequest?.text = $0 }
                 ))
                 Button("取消", role: .cancel) { feedback.promptRequest = nil; request.resume(nil) }
                 Button(request.confirmTitle) {
@@ -150,8 +149,11 @@ struct FeedbackHost: ViewModifier {
                     feedback.promptRequest = nil
                     request.resume(text)
                 }
+                .disabled(request.maxLength.map { (feedback.promptRequest?.text.count ?? 0) > $0 } ?? false)
             } message: { request in
-                if let message = request.message { Text(message) }
+                let limit = request.maxLength.map { "最多 \($0) 字，超出时无法确定。" }
+                let lines = [request.message, limit].compactMap { $0 }
+                if !lines.isEmpty { Text(lines.joined(separator: "\n")) }
             }
     }
 }

@@ -131,7 +131,18 @@ struct AgentComposer: View {
         .background(Color.white.opacity(0.05), in: .rect(cornerRadius: 22))
         .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(Color.white.opacity(0.07)))
         .onAppear { if autoFocus, !disabled { focused = true } }
-        .onChange(of: draft.text) { _, text in
+        .onChange(of: draft.text) { old, text in
+            // 屏幕键盘在技能快选展开时按换行：同网页（Lexical typeahead 先吃回车），撤掉这个换行、选中高亮技能，
+            // 而不是在查询后面留一个换行（第三轮复核 P2-4）。只认「快选开着、恰好多了一个 \n」这一种编辑
+            if slashActive, text.count == old.count + 1, text.filter({ $0 == "\n" }).count == old.filter({ $0 == "\n" }).count + 1,
+               let query = AgentSkillText.slashQuery(in: old)?.query {
+                let matches = slashMatches(query)
+                if !matches.isEmpty {
+                    draft.text = old
+                    pickSlash(matches[min(slashHighlight, matches.count - 1)].name)
+                    return
+                }
+            }
             absorbTypedTokens(text)
             let active = AgentSkillText.slashQuery(in: text) != nil
             if active, !slashActive { Task { slashSkills = (try? await api.skillsList()) ?? [] } }
