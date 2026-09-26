@@ -22,7 +22,6 @@ struct DiscoverView: View {
     @State private var mediaType: String?
     @State private var source = "tmdb"
     @State private var filters = DiscoveryFilters.empty
-    @State private var showsFilter = false
     @State private var store = DiscoverFeedStore()
     /// 顶部安全区（状态栏 + 顶栏）高度：沉浸 Hero 用等量负边距顶到屏幕物理顶边
     @State private var topInset: CGFloat = 0
@@ -35,10 +34,8 @@ struct DiscoverView: View {
         let feed = store.feed(mediaType: currentType, provider: source)
         Group {
             if filtering {
-                DiscoverFilteredGrid(mediaType: currentType, filters: filters) {
-                    filters = .empty
-                }
-                .id("\(currentType)-\(filters.hashValue)")
+                DiscoverFilteredGrid(mediaType: currentType, filters: $filters)
+                    .id(currentType)
             } else if let failure = feed.failure, feed.layout == nil || feed.allRowsFailed {
                 DiscoverErrorView(failure: failure) {
                     await feed.reload(api: api)
@@ -68,9 +65,6 @@ struct DiscoverView: View {
             await feed.loadIfNeeded(api: api)
         }
         .tracksSubscriptionIndex()
-        .sheet(isPresented: $showsFilter) {
-            DiscoverFilterSheet(mediaType: currentType, initial: filters) { filters = $0 }
-        }
     }
 
     @ViewBuilder
@@ -186,23 +180,7 @@ struct DiscoverView: View {
         // 右上角只剩组合发现筛选（豆瓣视角没有）；整条顶栏的最右是外壳注入的搜索圆钮（MainTabView 的 AppTopBar）
         ToolbarItemGroup(placement: .topBarTrailing) {
             if source == "tmdb" {
-                Button {
-                    showsFilter = true
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease")
-                        .overlay(alignment: .topTrailing) {
-                            if filters.activeCount > 0 {
-                                Text("\(filters.activeCount)")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundStyle(.black)
-                                    .frame(width: 15, height: 15)
-                                    .background(Theme.accent, in: .circle)
-                                    .offset(x: 8, y: -8)
-                            }
-                        }
-                }
-                .accessibilityLabel(filters.activeCount > 0 ? "筛选，已启用 \(filters.activeCount) 项" : "筛选影片")
-                .accessibilityIdentifier("discover-filter")
+                DiscoverFilterMenu(mediaType: currentType, filters: $filters)
             }
         }
     }
