@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import MovieClaw
@@ -71,5 +72,34 @@ struct PlaybackWatchdogsTests {
         #expect(ScrubFollow.plan(nowMs: 1000, lastFollowMs: 0, cheap: true, reachable: true, settleOnly: false) == .follow)
         // 上次跟随刚过 70ms：再等 30ms 就到 100ms 兜底
         #expect(ScrubFollow.plan(nowMs: 1070, lastFollowMs: 1000, cheap: true, reachable: true, settleOnly: false) == .deferred(ms: 30))
+    }
+
+    // MARK: 取流失败归因与同档重开上限（第二轮审计 N-05-1）
+
+    @Test func formatNotRecognizedIsNotNetwork() {
+        // -11828 = AVErrorFileFormatNotRecognized：这一档放不了，要降档而不是同档重开
+        let format = NSError(domain: AVFoundationErrorDomain, code: -11828)
+        #expect(AVPlayerEngine.cause(of: format) == .decode)
+        // 真正的网络类错误仍走同档重开
+        #expect(AVPlayerEngine.cause(of: NSError(domain: AVFoundationErrorDomain, code: -11863)) == .network)
+        #expect(AVPlayerEngine.cause(of: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)) == .network)
+        let wrapped = NSError(domain: AVFoundationErrorDomain, code: -11800, userInfo: [
+            NSUnderlyingErrorKey: NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost),
+        ])
+        #expect(AVPlayerEngine.cause(of: wrapped) == .network)
+    }
+
+    @Test func networkRestartBudgetCapsConsecutiveRestarts() {
+        var budget = NetworkRestartBudget()
+        // 连续两次没出画还能重开，第三次不再相信「网络」归因
+        #expect(budget.allowRestart())
+        #expect(budget.allowRestart())
+        #expect(!budget.allowRestart())
+        #expect(!budget.allowRestart())
+        // 放起来过一次就清零，下次断线照常重开
+        budget.reachedPlaying()
+        #expect(budget.allowRestart())
+        budget.reset()
+        #expect(budget.consecutive == 0)
     }
 }

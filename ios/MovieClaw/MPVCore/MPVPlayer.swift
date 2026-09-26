@@ -196,6 +196,29 @@ public final class MPVPlayer {
         return String(cString: raw)
     }
 
+    // MARK: - 后台采样的读数
+
+    /// 最近一次后台采样到的读数（诊断面板、看门狗用；最多晚一秒）
+    public private(set) var readouts = MPVReadouts()
+    private var sampling = false
+
+    /// 在后台队列上读一批属性，读完回主线程更新 `readouts`。
+    ///
+    /// 为什么不在主线程直接读：`mpv_get_property` 要拿 mpv 的核心锁。核心线程卡在打开音频输出
+    /// （AURemoteIO 启动）、换流、网络 I/O 时，主线程每秒一次的同步读数会跟着一起卡住——
+    /// 界面点什么都没反应，严重时系统判定超时直接杀掉进程（第二轮审计 R-9 崩溃现场：
+    /// 主线程卡在 `mpv_get_property ← MPVEngine.stats()`，核心线程卡在 `ao_start`）。
+    /// 上一轮还没读完就跳过这一轮，不堆积。
+    public func sampleReadouts(doubles: [String], ints: [String], strings: [String]) {
+        guard !sampling else { return }
+        sampling = true
+        handle.sample(doubles: doubles, ints: ints, strings: strings) { [weak self] result in
+            guard let self else { return }
+            self.sampling = false
+            if let result { self.readouts = result }
+        }
+    }
+
     /// 当前文件的全部轨道（音频/视频/字幕，含 sub-add 挂上的外挂轨）
     public func tracks() -> [MPVTrack] {
         let count = int("track-list/count") ?? 0
@@ -285,6 +308,14 @@ nonisolated public enum MPVRenderBackend: String, Sendable {
     nonisolated public static var automatic: MPVRenderBackend { isSimulator ? .openGL : .metal }
 }
 
+/// 一次后台采样的属性读数（读不到的属性不在字典里）
+nonisolated public struct MPVReadouts: Sendable {
+    public var doubles: [String: Double] = [:]
+    public var ints: [String: Int] = [:]
+    public var strings: [String: String] = [:]
+    public init() {}
+}
+
 nonisolated public struct MPVTrack: Sendable, Hashable {
     /// mpv 的轨 id（同类型内从 1 开始），用于 aid / sid
     public let id: Int
@@ -341,6 +372,8 @@ nonisolated struct UncheckedBox<T>: @unchecked Sendable {
 nonisolated final class MPVHandle: @unchecked Sendable {
     let mpv: OpaquePointer
     private let queue = DispatchQueue(label: "movieclaw.mpv.events", qos: .userInitiated)
+    /// 读数采样队列：可能被 mpv 核心锁卡住，所以和事件队列分开，卡住也不耽误事件派发
+    private let sampleQueue = DispatchQueue(label: "movieclaw.mpv.sample", qos: .utility)
     private let lock = NSLock()
     private var _sink: (@MainActor (MPVEvent) -> Void)?
     private var destroyed = false
@@ -378,6 +411,33 @@ nonisolated final class MPVHandle: @unchecked Sendable {
             Self.log("命令失败 \(args.first ?? "")：\(String(cString: mpv_error_string(status)))")
         }
         return status
+    }
+
+    /// 在采样队列上读属性，完成后回主线程交给 completion（已销毁则给 nil）
+    func sample(doubles: [String], ints: [String], strings: [String], completion: @escaping @MainActor @Sendable (MPVReadouts?) -> Void) {
+        sampleQueue.async { [self] in
+            var result: MPVReadouts?
+            if !lock.withLock({ destroyed }) {
+                var readouts = MPVReadouts()
+                for name in doubles {
+                    var value = 0.0
+                    if mpv_get_property(mpv, name, MPV_FORMAT_DOUBLE, &value) >= 0 { readouts.doubles[name] = value }
+                }
+                for name in ints {
+                    var value: Int64 = 0
+                    if mpv_get_property(mpv, name, MPV_FORMAT_INT64, &value) >= 0 { readouts.ints[name] = Int(value) }
+                }
+                for name in strings {
+                    if let raw = mpv_get_property_string(mpv, name) {
+                        readouts.strings[name] = String(cString: raw)
+                        mpv_free(raw)
+                    }
+                }
+                result = readouts
+            }
+            let final = result
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(final) } }
+        }
     }
 
     /// 在事件队列上排空全部待处理事件
@@ -447,7 +507,10 @@ nonisolated final class MPVHandle: @unchecked Sendable {
         }
         mpv_set_wakeup_callback(mpv, nil, nil)
         let mpv = UncheckedBox(self.mpv)
+        let sampleQueue = self.sampleQueue
         queue.async {
+            // 等进行中的采样读完再销毁：采样线程还拿着句柄
+            sampleQueue.sync {}
             mpv_terminate_destroy(mpv.value)
             DispatchQueue.main.async(execute: completion)
         }

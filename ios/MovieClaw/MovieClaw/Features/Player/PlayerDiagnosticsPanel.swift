@@ -37,6 +37,7 @@ struct PlayerDiagnosticsPanel: View {
                 Spacer()
                 Button(action: close) {
                     Image(systemName: "xmark").font(.caption2.weight(.bold)).frame(width: 24, height: 24)
+                        .contentShape(.rect) // 整个 24pt 方块可点（.plain 默认只有叉号本身可点）
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white.opacity(0.5))

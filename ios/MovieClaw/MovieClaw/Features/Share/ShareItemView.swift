@@ -207,7 +207,8 @@ struct ShareItemView: View {
             for name in meta.directors where !seen.contains(name) { seen.append(name) }
             people += seen.map { .init(name: $0, subtitle: "导演") }
         }
-        people += meta.actors.map { .init(name: $0.name, subtitle: $0.role, avatarUrl: $0.thumbUrl) }
+        // 演员角色前缀「饰」（同 Web CastRow：有岗位的直接写岗位，演员写「饰 角色」）
+        people += meta.actors.map { .init(name: $0.name, subtitle: $0.role.map { "饰 \($0)" }, avatarUrl: $0.thumbUrl) }
         return people
     }
 
@@ -217,13 +218,13 @@ struct ShareItemView: View {
             HStack(spacing: 16) {
                 Text("相关链接").foregroundStyle(Theme.textFaint)
                 if let tmdb = item.tmdbId, let url = URL(string: "https://www.themoviedb.org/\(item.kind == "tv" ? "tv" : "movie")/\(tmdb)") {
-                    Link("TMDB", destination: url)
+                    Link("TMDB ↗", destination: url)
                 }
                 if let imdb = item.imdbId, let url = URL(string: "https://www.imdb.com/title/\(imdb)/") {
-                    Link("IMDb", destination: url)
+                    Link("IMDb ↗", destination: url)
                 }
                 if let douban = item.doubanId, let url = URL(string: "https://movie.douban.com/subject/\(douban)/") {
-                    Link("豆瓣", destination: url)
+                    Link("豆瓣 ↗", destination: url)
                 }
             }
             .font(.caption)
@@ -249,18 +250,32 @@ struct ShareItemView: View {
         return record
     }
 
+    /// 播放键 + 续播信息（同 Web PlayAction 的访客口径：本机只有位置、没有片长与已看，
+    /// 所以进度条是空条、文案只有「看到 hh:mm」）
     private func playButton(_ item: API.SharedItemView) -> some View {
-        let resumable = resume(item) != nil
-        return Button {
-            play(item, start: nil)
-        } label: {
-            Label(resumable ? "继续观看" : "播放", systemImage: "play.fill")
-                .font(.body.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .frame(height: 30)
+        let record = resume(item)
+        let label = record != nil ? "继续观看" : "播放"
+        let progressText = record.map { "看到 \(Formatters.clock(Double($0.positionMs) / 1000))" }
+        return VStack(alignment: .leading, spacing: 12) {
+            Button {
+                play(item, start: nil)
+            } label: {
+                Label(label, systemImage: "play.fill")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 30)
+            }
+            .discoverProminentButton()
+            .accessibilityLabel(progressText.map { "\(label)，\($0)" } ?? label)
+            .accessibilityIdentifier("share-play")
+            if let progressText {
+                VStack(alignment: .leading, spacing: 6) {
+                    Capsule().fill(.white.opacity(0.15)).frame(height: 4)
+                    Text(progressText).font(.caption).monospacedDigit().foregroundStyle(.white.opacity(0.6))
+                }
+                .accessibilityIdentifier("share-progress")
+            }
         }
-        .discoverProminentButton()
-        .accessibilityIdentifier("share-play")
     }
 
     private func play(_ item: API.SharedItemView, start: Double?) {
@@ -273,9 +288,24 @@ struct ShareItemView: View {
         ))
     }
 
+    /// 站内访客播放链接（`/s/{slug}/play/sXXeYY?t=`）：读到影片后接着起播（条目 id 此时才知道）
+    private func consumePendingPlay(_ item: API.SharedItemView) {
+        guard let pending = router.pendingSharePlay, pending.shareSlug == slug else { return }
+        router.pendingSharePlay = nil
+        var request = pending
+        request.mediaItemId = item.mediaItemId
+        if item.kind != "tv" {
+            request.season = nil
+            request.episode = nil
+        }
+        router.play(request)
+    }
+
     private func load() async {
         do {
-            item = try await api.shareGuestItem(slug: slug, item: mediaItemId)
+            let loaded = try await api.shareGuestItem(slug: slug, item: mediaItemId)
+            item = loaded
+            consumePendingPlay(loaded)
             failed = nil
         } catch is CancellationError {
         } catch let error as APIError where error.status != nil {

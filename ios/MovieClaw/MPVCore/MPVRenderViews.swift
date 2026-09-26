@@ -36,7 +36,7 @@ final class MPVMetalView: UIView {
 
 /// MoltenVK 的两个已知坑（MPVKit 示例同款修正）：
 /// 1. 呈现时会把 drawableSize 临时设成 1x1，导致闪烁甚至停在 1x1——忽略这种设置；
-/// 2. HDR 需要在主线程改 wantsExtendedDynamicRangeContent 才能真正打开屏幕的 EDR。
+/// 2. HDR 需要在主线程改 wantsExtendedDynamicRangeContent 才能真正打开屏幕的 EDR（异步切过去，见 setter）。
 nonisolated final class MPVMetalLayer: CAMetalLayer {
     override var drawableSize: CGSize {
         get { super.drawableSize }
@@ -53,8 +53,10 @@ nonisolated final class MPVMetalLayer: CAMetalLayer {
             if Thread.isMainThread {
                 super.wantsExtendedDynamicRangeContent = newValue
             } else {
+                // 异步切回主线程（MPVKit 示例用的是 sync）：vo 线程在这里同步等主线程，而主线程
+                // 若恰好在等 mpv 的核心锁（读属性、发命令），两边互等就是死锁——界面整个点不动
                 let box = UncheckedBox(self)
-                DispatchQueue.main.sync { box.value.setSuperEDR(newValue) }
+                DispatchQueue.main.async { box.value.setSuperEDR(newValue) }
             }
         }
     }

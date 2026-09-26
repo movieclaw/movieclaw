@@ -50,7 +50,7 @@ final class PlayerUITests: XCTestCase {
     }
 
     /// MPV 在模拟器上走 OpenGL ES、主线程逐帧绘制，XCUITest 每步都慢到跨过控制层 4 秒自动收起，
-    /// 所以这一条打开诊断面板把控制层钉住（判别式不变：控制层可见时中央键必须在）。
+    /// 所以这一条用 Debug 开关把控制层钉住（`-mcPlayerPinChrome`，随诊断面板一起打开；判别式不变：控制层可见时中央键必须在）。
     /// 可用 MC_TEST_MPV_ITEM 指定一部码率低些的 MKV（片子由测试现找时取第一部单文件 MKV）
     @MainActor
     func testCenterControlsWithMPV() throws {
@@ -113,7 +113,7 @@ final class PlayerUITests: XCTestCase {
         startSeconds = duration / 10
         let before = try resume(item)
         defer { try? restoreResume(item, positionMs: before) }
-        // 打开诊断面板：面板开着时控制条不自动隐藏，免得「刚确认按钮在、点下去时已隐藏」的竞态
+        // 打开诊断面板并用 Debug 开关钉住控制条，免得「刚确认按钮在、点下去时已隐藏」的竞态
         let app = launch(item: item, engine: "system", diagnostics: true)
         XCTAssertTrue(waitForPosition(app, atLeast: startSeconds + 2, timeout: 90), "进度没有前进")
 
@@ -187,6 +187,8 @@ final class PlayerUITests: XCTestCase {
             "-mcRoute", "/play/\(item)/s00e00?t=\(startSeconds)",
             "-movieclaw.player.engine", engine,
             "-mcPlayerDiagnostics", diagnostics ? "YES" : "NO",
+            // 诊断面板本身不再钉住控制层（同 Web chrome.ts），测试另用 Debug 开关钉住，免得每步都跨过 4 秒自动收起
+            "-mcPlayerPinChrome", diagnostics ? "YES" : "NO",
         ]
         app.launch()
         XCTAssertTrue(app.descendants(matching: .any)["player-screen"].waitForExistence(timeout: 30), "播放器没有打开")

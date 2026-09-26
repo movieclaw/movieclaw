@@ -191,6 +191,11 @@ private struct BarButton: View {
                 .foregroundStyle(.white)
                 .frame(width: 42, height: 38)
                 .background(open ? Color.white.opacity(0.15) : .clear, in: .capsule)
+                // 命中区必须是整个 42×38 胶囊：.plain 按钮默认只有「画出来的像素」可点，
+                // 透明背景不算。「⋯」的三个点只有约 17×4pt，手指几乎点不中，点空的触摸
+                // 落到下面的手势层被当成「轻点画面」收起了控制层——真机上「⋯ 点了没反应」的根因
+                // （XCUITest 恰好点在元素正中那个点上，模拟器测不出来）
+                .contentShape(.capsule)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)

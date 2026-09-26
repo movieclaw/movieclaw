@@ -28,7 +28,7 @@ struct PlayerScreen: View {
         .accessibilityIdentifier("player-screen")
         .onAppear {
             guard controller == nil else { return }
-            let created = PlaybackController(request: Self.resolved(request), api: api)
+            let created = PlaybackController(request: request, api: api)
             controller = created
             #if DEBUG
             // 开发期：-mcPlayerDiagnostics YES 起播即打开诊断面板（截图核对用）
@@ -65,27 +65,6 @@ struct PlayerScreen: View {
         exit()
         router.open(.settingsSection(.playback))
     }
-
-    /// Debug：`-mcRoute /play/{id}/s01e02?t=30` 的季集与起播秒数（根视图只解析了条目 id）
-    private static func resolved(_ request: PlayRequest) -> PlayRequest {
-        #if DEBUG
-        guard request.season == nil, request.startSeconds == nil, let route = DebugLaunch.route,
-              let components = URLComponents(string: route) else { return request }
-        let parts = components.path.split(separator: "/").map(String.init)
-        guard parts.count >= 2, parts[0] == "play", Int(parts[1]) == request.mediaItemId else { return request }
-        var resolved = request
-        if parts.count >= 3, let match = parts[2].lowercased().wholeMatch(of: /s(\d+)e(\d+)/) {
-            resolved.season = Int(match.1)
-            resolved.episode = Int(match.2)
-        }
-        if let t = components.queryItems?.first(where: { $0.name == "t" })?.value.flatMap(Double.init) {
-            resolved.startSeconds = t
-        }
-        return resolved
-        #else
-        return request
-        #endif
-    }
 }
 
 /// 播放器画面与控制层
@@ -108,6 +87,11 @@ private struct PlayerContent: View {
     @State private var scrubbingByGesture = false
     @State private var lastTapChromeState = true
     @State private var trickplay = TrickplayImages()
+    /// 控制条与菜单在窗口坐标里的位置：交给手势层当「禁区」，落在这里的触摸只归按钮，
+    /// 不再同时被当成「轻点画面」（否则一次点击既开菜单又收控制层/关菜单）
+    @State private var topBarFrame: CGRect = .zero
+    @State private var bottomBarFrame: CGRect = .zero
+    @State private var menuFrame: CGRect = .zero
 
     struct AdjustState {
         var side: PlayerGestureLayer.AdjustSide
@@ -142,6 +126,7 @@ private struct PlayerContent: View {
                 PlayerGestureLayer(
                     enabled: !isModal,
                     canHold: controller.canHoldSpeed && !locked,
+                    excludedRects: gestureExclusions,
                     onTap: handleTap,
                     onScrub: handleScrub,
                     onAdjust: handleAdjust,
@@ -197,13 +182,32 @@ private struct PlayerContent: View {
                 chromeVisible = true
                 return
             }
-            guard chromeVisible, !controller.diagnosticsOpen else { return }
+            // 诊断面板开着不钉住控制层（同 Web chrome.ts：「诊断面板不在此列（曾经在）」）
+            guard chromeVisible, !Self.debugPinChrome else { return }
             try? await Task.sleep(for: .seconds(4))
             if !Task.isCancelled { chromeVisible = false }
         }
     }
 
     private var isModal: Bool { controller.phase == .error || controller.phase == .consent }
+
+    /// Debug：`-mcPlayerPinChrome YES` 让控制层不自动收起（UI 测试每一步都慢，
+    /// 会跨过 4 秒自动收起，造成「刚确认按钮在、点下去时已隐藏」的竞态）。正式构建恒为 false
+    private static var debugPinChrome: Bool {
+        #if DEBUG
+        UserDefaults.standard.bool(forKey: "mcPlayerPinChrome")
+        #else
+        false
+        #endif
+    }
+
+    /// 手势层的禁区（窗口坐标）：控制层可见时的顶栏、底栏与打开着的菜单
+    private var gestureExclusions: [CGRect] {
+        guard chromeVisible, !locked else { return [] }
+        var rects = [topBarFrame, bottomBarFrame]
+        if menu != .none { rects.append(menuFrame) }
+        return rects.filter { !$0.isEmpty }
+    }
 
     /// 控制条必须常显（对应 Web `lib/player/chrome.ts` chromeMustStayVisible）：
     /// 暂停时用户在找播放键；菜单是从控制条里长出来的；按着进度条就是在用它；报错/同意弹窗在等用户拍板。
@@ -250,6 +254,7 @@ private struct PlayerContent: View {
                     })
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { topBarFrame = $0 }
                     .transition(.opacity)
                 }
                 if controller.diagnosticsOpen {
@@ -284,10 +289,12 @@ private struct PlayerContent: View {
                         controller: controller, trickplay: trickplay, menu: $menu, scrubMs: $scrubMs,
                         landscape: landscape, onToggleLandscape: { PlayerOrientation.request(landscape: !landscape) }
                     )
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { bottomBarFrame = $0 }
                     // 菜单用 overlay 挂在底栏上：不参与布局（否则高菜单会把底栏挤扁），
                     // 底边落在时间行上方、不压住进度条（同 Web 的 bottom-full 定位）
                     .overlay(alignment: .bottomLeading) {
                         menuPanel
+                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { menuFrame = $0 }
                             .padding(.bottom, 112)
                     }
                     .padding(.horizontal, 16)
