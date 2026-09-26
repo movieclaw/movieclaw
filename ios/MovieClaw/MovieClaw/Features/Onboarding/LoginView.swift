@@ -93,12 +93,7 @@ struct LoginView: View {
                 }
             }
             .navigationTitle(mode == .setup ? "初始化" : mode == .addAccount ? "添加账号" : "登录")
-            // 登录页铺背景图直出（Web AuthScreen：未登录时后端给的是管理员为登录页设的全局背景）
-            .appBackground(.sharp)
-            .task {
-                guard mode != .addAccount, let api = model.api else { return }
-                await AppBackdropStore.shared.refresh(api: api, includePrefs: false)
-            }
+            .appBackground()
         }
     }
 

@@ -11,7 +11,7 @@ import XCTest
 /// - 不发起新的站点资源实时搜索（会打真实 PT 站）：站点资源用例从「最近搜索」打开**已有快照**
 ///   （MC_TEST_TORRENT_KEYWORD，默认「沙丘」，需先在网页或 App 里搜过一次）；
 /// - 下载目标对话框只验证到预览（resolve-target）为止，**不点「确认下载」**；
-/// - 不订阅、不改院线地区、不设背景。
+/// - 不订阅、不改院线地区。
 final class DiscoverUITests: XCTestCase {
     private var env: [String: String] { ProcessInfo.processInfo.environment }
     private var server: String { env["MC_TEST_SERVER"] ?? "http://localhost:3000" }
@@ -155,12 +155,13 @@ final class DiscoverUITests: XCTestCase {
         for _ in 0 ..< 4 where !cast.exists { scroll.swipeUp() }
         XCTAssertTrue(cast.waitForExistence(timeout: 5), "应有演职员行")
         snapshot("详情-演职员")
-        // 剧照与海报：打开灯箱再关闭（不点「设为背景」）
+        // 剧照与海报：打开灯箱再关闭（App 没有背景图设定，灯箱不带「设为背景」）
         let photos = app.otherElements["detail-photos"]
         for _ in 0 ..< 4 where !photos.exists { scroll.swipeUp() }
         if photos.exists {
             photos.buttons.element(boundBy: photos.buttons.count > 2 ? 2 : 0).tap()
-            XCTAssertTrue(app.buttons["lightbox-action"].waitForExistence(timeout: 10), "剧照灯箱应有「设为背景」")
+            XCTAssertTrue(app.buttons["lightbox-close"].waitForExistence(timeout: 10), "应打开剧照灯箱")
+            XCTAssertFalse(app.buttons["设为背景"].exists, "App 不提供「设为背景」")
             XCTAssertTrue(app.scrollViews["lightbox-thumbnails"].exists || app.otherElements["lightbox-thumbnails"].exists, "灯箱底部应有缩略图条")
             snapshot("剧照灯箱")
             app.buttons["lightbox-close"].tap()

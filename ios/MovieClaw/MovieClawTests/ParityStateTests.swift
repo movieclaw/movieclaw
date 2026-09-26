@@ -4,7 +4,6 @@ import Testing
 
 /// 第二轮对等审计的状态类问题（对等修补四）：
 /// - N-04a-1 首页行偏好单例跨账号串用：换账号即作废旧副本、晚到的旧账号结果不落地；
-/// - N-03-1 剧照「设为背景」：上传回显必须交给全站背景应用；
 /// - N-05-4 / N-share-4 站内播放链接解析（同 Web play-links 的地址约定）。
 @MainActor
 struct ParityStateTests {
@@ -44,31 +43,6 @@ struct ParityStateTests {
         // 已有副本时不被一次迟到的拉取覆盖（自定义页刚保存的更新）
         prefs.accept([row("up_next")], for: "http://nas/api|bob")
         #expect(ids(prefs) == ["favorites"])
-    }
-
-    @Test func setBackdropAppliesUploadedAppearance() async throws {
-        let uploaded = API.AppearanceView(activeId: "abc", activeUrl: "/api/v1/appearance/backdrops/abc?v=2", backdrops: [])
-        var uploadedIndex: Int?
-        var applied: API.AppearanceView?
-        let action = MediaDetailView.setBackdropAction(
-            upload: { index in
-                uploadedIndex = index
-                return uploaded
-            },
-            apply: { applied = $0 }
-        )
-        #expect(action.label == "设为背景")
-        try await action.run(3)
-        #expect(uploadedIndex == 3)
-        #expect(applied == uploaded)
-    }
-
-    @Test func setBackdropDoesNotApplyWhenUploadFails() async {
-        struct Boom: Error {}
-        var applied = false
-        let action = MediaDetailView.setBackdropAction(upload: { _ in throw Boom() }, apply: { _ in applied = true })
-        await #expect(throws: Boom.self) { try await action.run(0) }
-        #expect(!applied)
     }
 
     @Test func playLinksParse() {

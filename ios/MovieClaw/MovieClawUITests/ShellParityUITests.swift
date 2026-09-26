@@ -4,8 +4,7 @@ import XCTest
 ///
 /// 依赖真实服务器（MC_TEST_SERVER / MC_TEST_USERNAME / MC_TEST_PASSWORD，未提供密码整组跳过——仓库开源，不写真实密码）。
 /// 安全约束（测试服务器是用户正在用的正式实例）：
-/// - 只打开菜单 / 弹层 / 页签，所有弹层一律点「取消」「关闭」退出，绝不点保存 / 删除 / 确认；
-/// - 唯一的写操作是「切换生效背景图」（可逆）：动手前经接口记下原生效图，tearDown 经接口写回并核对；
+/// - 只打开菜单 / 弹层 / 页签，所有弹层一律点「取消」「关闭」退出，绝不点保存 / 删除 / 确认，全程只读；
 /// - 每次点击前断言目标存在、可点且不被底部标签栏遮挡，否则用例失败——绝不按坐标盲点。
 final class ShellParityUITests: XCTestCase {
     private var env: [String: String] { ProcessInfo.processInfo.environment }
@@ -14,14 +13,6 @@ final class ShellParityUITests: XCTestCase {
     private var password: String? { env["MC_TEST_PASSWORD"].flatMap { $0.isEmpty ? nil : $0 } }
 
     private var probe: SettingsTestAPI?
-    private var restorers: [(String, () throws -> Void)] = []
-
-    override func tearDownWithError() throws {
-        for (name, restore) in restorers.reversed() {
-            do { try restore() } catch { XCTFail("恢复「\(name)」失败：\(error)") }
-        }
-        restorers = []
-    }
 
     // MARK: 工具
 
@@ -103,7 +94,7 @@ final class ShellParityUITests: XCTestCase {
         tapSafely(again, again.buttons["关闭"], "关闭")
     }
 
-    /// 登录页：铺登录页全局背景图、「记住我」默认不勾、副标题同 Web（只打开页面，不提交任何登录）
+    /// 登录页：「记住我」默认不勾、副标题同 Web（只打开页面，不提交任何登录）。App 登录页是纯黑底，不铺背景图
     @MainActor
     func testLoginPageMatchesWeb() throws {
         guard password != nil else { throw XCTSkip("未提供 MC_TEST_PASSWORD，跳过联调用例") }
@@ -121,7 +112,6 @@ final class ShellParityUITests: XCTestCase {
         let remember = app.switches["30 天内记住我"]
         XCTAssertTrue(remember.exists)
         XCTAssertEqual(remember.value as? String, "0", "「记住我」默认不勾（同 Web）")
-        sleep(2) // 背景图下载与出图
         snapshot("登录页")
     }
 
@@ -203,49 +193,5 @@ final class ShellParityUITests: XCTestCase {
         XCTAssertTrue(push.waitForExistence(timeout: 20))
         XCTAssertTrue(push.buttons["推送内容"].isSelected, "?tab=content 应直达推送内容")
         snapshot("深链-推送内容")
-    }
-
-    // MARK: 背景图（R-1）：切换后全 App 跟随，测完经接口切回
-
-    @MainActor
-    func testBackdropFollowsAppearance() throws {
-        let app = try launch(route: "/library")
-        guard let probe else { return }
-        let original = try probe.getObject("/appearance")
-        let originalId = original["active_id"] as? String
-        restorers.append(("生效背景图", {
-            _ = try probe.request("PUT", "/appearance/active", body: ["backdrop_id": originalId as Any])
-            let now = try probe.getObject("/appearance")
-            XCTAssertEqual(now["active_id"] as? String, originalId, "背景图应已切回原生效图")
-        }))
-        XCTAssertTrue(app.staticTexts["媒体库"].waitForExistence(timeout: 20))
-        snapshot("背景-原图-媒体库")
-        app.terminate()
-
-        let settings = try launch(route: "/settings/appearance")
-        let defaultTile = settings.buttons["backdrop-tile-默认"]
-        if originalId != nil {
-            tapSafely(settings, defaultTile, "默认背景")
-            // 等后端切换完成（默认瓷砖变成选中态）
-            let selected = NSPredicate(format: "isSelected == true")
-            expectation(for: selected, evaluatedWith: defaultTile)
-            waitForExpectations(timeout: 15)
-            sleep(2) // 背景图下载与模糊成品生成
-            snapshot("背景-切到默认-外观页")
-        }
-        // 蒙版暗度滑杆：拖动即预览（不保存）
-        tapSafely(settings, settings.buttons["appearance-tab-界面质感"], "界面质感")
-        let slider = settings.sliders["slider-蒙版暗度"]
-        XCTAssertTrue(slider.waitForExistence(timeout: 10))
-        let tabBar = settings.tabBars.firstMatch
-        var swipes = 0
-        while swipes < 6, !slider.isHittable || (tabBar.exists && slider.frame.intersects(tabBar.frame)) {
-            settings.swipeUp(velocity: .slow)
-            swipes += 1
-        }
-        XCTAssertTrue(slider.isHittable, "蒙版暗度滑杆不可操作，停止")
-        slider.adjust(toNormalizedSliderPosition: 0.2)
-        XCTAssertTrue(settings.staticTexts["调节实时预览中，保存后对所有设备生效"].waitForExistence(timeout: 5))
-        snapshot("质感-预览")
     }
 }

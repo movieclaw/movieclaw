@@ -87,7 +87,7 @@ struct LibraryItemDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .appBackground(.plain) // 氛围页：自带沉浸大图，不铺全站蒙版（Web isHomeRoute）
+        .appBackground() // 氛围页：自带沉浸大图，不铺全站蒙版（Web isHomeRoute）
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {

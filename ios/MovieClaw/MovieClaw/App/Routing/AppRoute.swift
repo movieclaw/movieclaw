@@ -116,7 +116,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .overview: "配置状态一览：缺什么、有什么问题、下一步做什么"
         case .profile: "头像、昵称与登录密码"
-        case .appearance: "首页背景与界面质感"
+        case .appearance: "主题、界面质感与导航顺序"
         case .members: "家庭成员账号、能力开关与可见范围"
         case .devices: "命令行与转码 Worker 的接入审批和吊销"
         case .subscription: "订阅规则组与投递模拟预演"

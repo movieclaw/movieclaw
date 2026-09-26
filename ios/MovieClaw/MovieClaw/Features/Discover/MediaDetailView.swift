@@ -5,7 +5,8 @@ import SwiftUI
 ///
 /// 数据：`GET /discover/titles/{titleRef}` 一次给全（资料、演职员、预告片、剧照海报、系列、相似推荐、在库入口）。
 /// 版式自上而下：沉浸剧照 Hero → 标题与元信息 → 在库条 → 订阅 / 搜索资源 → 简介（4 行折叠）→
-/// 演职员 → 预告片 → 剧照与海报（灯箱可「设为背景」）→ 系列 → 相似推荐 → 相关链接。
+/// 演职员 → 预告片 → 剧照与海报（灯箱看图）→ 系列 → 相似推荐 → 相关链接。
+/// 网页剧照灯箱的「设为背景」App 不做（App 没有背景图设定，用户决定）。
 ///
 /// 按钮规则同 Web：已在库的电影收起「订阅」与「搜索资源」（已订阅时仍显示订阅状态键）；
 /// 订阅键未订阅时打开订阅弹层，已订阅时显示「已订阅 · 状态」、点它同样打开订阅弹层（由弹层管理态接手）。
@@ -74,7 +75,7 @@ struct MediaDetailView: View {
                 content(detail)
             }
         }
-        .appBackground(.plain) // 氛围页：自带沉浸大图，不铺全站蒙版（Web isHomeRoute）
+        .appBackground() // 氛围页：自带沉浸大图，不铺全站蒙版（Web isHomeRoute）
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -548,7 +549,7 @@ struct DetailCastRow: View {
 
 // MARK: - 剧照与海报
 
-/// 剧照 / 海报两个分页的横滚图集；点开灯箱，剧照灯箱可「设为背景」
+/// 剧照 / 海报两个分页的横滚图集；点开灯箱看大图
 struct DetailPhotoWall: View {
     let title: String
     let backdrops: [API.MediaImage]
@@ -598,19 +599,10 @@ struct DetailPhotoWall: View {
 
     private func open(active: (id: String, label: String, images: [API.MediaImage]), index: Int) {
         let images = active.images
-        let client = api
-        var action: LightboxAction?
-        if active.id == "backdrops" {
-            action = MediaDetailView.setBackdropAction(
-                upload: { try await client.uploadBackdrop(fromRemote: images[$0].fullUrl) },
-                apply: { await AppBackdropStore.shared.apply(appearance: $0, api: client) }
-            )
-        }
         lightbox = DiscoverLightboxContent(
             urls: images.map { api.image($0.fullUrl) },
             initialIndex: index,
             title: "\(title) · \(active.label)",
-            action: action,
             thumbnails: images.map { api.image($0.previewUrl) },
             thumbAspect: active.id == "backdrops" ? 16.0 / 9.0 : 2.0 / 3.0
         )
@@ -665,20 +657,5 @@ extension API.DiscoveredTitleDetailsView {
             recommendations: [],
             libraryLinks: []
         )
-    }
-}
-
-extension MediaDetailView {
-    /// 剧照灯箱「设为背景」：上传成功后**立即**把后端回显的外观视图应用到全站背景
-    /// （同 Web lib/backdrop.tsx 上传后 applyView）。曾经丢掉回显，提示「已设为背景」
-    /// 背景却要重启才变（第二轮审计 N-03-1）。拆成静态函数便于单元测试核对这条接线
-    static func setBackdropAction(
-        upload: @escaping (Int) async throws -> API.AppearanceView,
-        apply: @escaping (API.AppearanceView) async -> Void
-    ) -> LightboxAction {
-        LightboxAction(label: "设为背景", busyLabel: "正在下载并设置…", doneLabel: "已设为背景", systemImage: "photo") { index in
-            let view = try await upload(index)
-            await apply(view)
-        }
     }
 }

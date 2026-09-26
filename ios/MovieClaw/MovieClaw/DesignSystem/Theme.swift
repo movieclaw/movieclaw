@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// 设计令牌：取自 Web 银玻璃主题（apps/web/app/globals.css :root），保证两端观感一致。
+/// 设计令牌：文字、强调色等取自 Web 银玻璃主题（apps/web/app/globals.css :root），保证两端观感一致。
 /// 原生控件（列表、按钮、标签栏、工具栏）一律用系统的液态玻璃材质，这里只定义颜色与尺寸。
 enum Theme {
-    /// 页面底色 --bg #0a0b10
-    static let background = Color(red: 0x0A / 255, green: 0x0B / 255, blue: 0x10 / 255)
+    /// 页面底色：纯黑（同 Apple Music）。网页的背景图设定 App 不做（用户决定），底色也不跟网页的 #0a0b10
+    static let background = Color.black
     /// 浮层卡片 --surface-raised
     static let surfaceRaised = Color(red: 30 / 255, green: 33 / 255, blue: 43 / 255).opacity(0.74)
     /// 内嵌输入 --surface-inset
@@ -36,13 +36,12 @@ enum Theme {
 }
 
 extension View {
-    /// 页面统一背景（银玻璃主题的「底」）：用户选定的背景图 + 模糊压暗蒙版，铺满安全区，
-    /// 外观页换图 / 调质感后全 App 即时跟随（见 AppBackdropStore）。
-    /// 同时把页内 List / Form 的系统底色隐藏，让背景透出来（Web 设置等页面的行直接铺在蒙版上）。
-    /// - Parameter style: 默认 `.scrim`；影片详情类氛围页传 `.plain`，登录页传 `.sharp`
-    func appBackground(_ style: AppBackdropStyle = .scrim) -> some View {
+    /// 页面统一底色：纯黑铺满安全区（同 Apple Music）。
+    /// App 不做网页的背景图设定（用户决定，已接受的平台差异），所有页面都铺同一个黑底；
+    /// 页内 List / Form 的系统底色隐藏，行与卡片直接落在黑底上。
+    func appBackground() -> some View {
         scrollContentBackground(.hidden)
-            .background { AppBackdropView(style: style) }
+            .background { Theme.background.ignoresSafeArea() }
     }
 
     /// 卡片底：半透明抬升面 + 细描边

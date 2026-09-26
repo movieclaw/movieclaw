@@ -9,7 +9,7 @@ import XCTest
 /// - 绝不点：修改密码、清空观看记录的确认、应用更新 / 回退 / 重启的确认、代理与外部访问 / 端口、保留版本数、
 ///   清理缓存、定时任务、别人的设备令牌与接入请求、已有成员的任何写操作、远程转码保存；
 /// - 可逆写操作动手前经接口记下原值，`tearDown` 一律经接口按原值写回（界面改回之外的第二道保险）：
-///   昵称、主题 / 质感 / 导航顺序（整份 ui.preferences）、生效背景图、播放策略两颗开关、AI 默认模型；
+///   昵称、主题 / 质感 / 导航顺序（整份 ui.preferences）、播放策略两颗开关、AI 默认模型；
 /// - 自建数据只用 `ios-test-` 前缀（成员、CLI 令牌），`tearDown` 兜底清理同前缀的残留；
 /// - 每次点击前断言目标存在、可点且不被底部标签栏遮挡（`tapSafely`），否则用例失败——绝不按坐标盲点。
 final class SettingsAUITests: XCTestCase {
@@ -221,45 +221,35 @@ final class SettingsAUITests: XCTestCase {
     // MARK: 外观
 
     @MainActor
-    func testAppearanceThemeTextureNavBackdropRestore() throws {
+    func testAppearanceThemeTextureNavRestore() throws {
         let app = try launch(route: "/settings/appearance")
         guard let probe else { return }
         try rememberPut("界面偏好", get: "/ui/preferences")
-        let appearance = try probe.getObject("/appearance")
-        let activeId = appearance["active_id"] as? String
-        restorers.append(("生效背景图", { _ = try probe.request("PUT", "/appearance/active", body: ["backdrop_id": activeId.map { $0 as Any } ?? NSNull()]) }))
 
-        // 主题：切到 Netflix → 背景图组置灰 → 切回银玻璃
-        tapSafely(app, app.buttons["theme-netflix"], "Netflix 主题卡")
-        XCTAssertTrue(app.buttons["theme-netflix"].waitForSelected(timeout: 15), "Netflix 应被选中")
-        XCTAssertEqual(try probe.getObject("/ui/preferences")["theme_mobile"] as? String, "netflix")
-        snapshot("外观-Netflix")
-        tapSafely(app, app.buttons["theme-silver"], "银玻璃主题卡")
-        XCTAssertTrue(app.buttons["theme-silver"].waitForSelected(timeout: 15), "银玻璃应被选中")
+        // 主题：App 固定银玻璃，Netflix 卡片置灰不可选；App 不做背景图设定，没有「背景图」页签
+        XCTAssertTrue(app.buttons["theme-silver"].waitForExistence(timeout: 20))
+        XCTAssertFalse(app.buttons["theme-netflix"].isEnabled, "Netflix 卡片应置灰")
+        XCTAssertFalse(app.buttons["appearance-tab-背景图"].exists, "App 不应有背景图页签")
+        snapshot("外观-主题")
 
-        // 背景图：点「默认」→ 再点一张画廊开头就可见的自定义图；原生效图由 tearDown 经接口写回
-        let backdrops = appearance["backdrops"] as? [[String: Any]] ?? []
-        if let pickIndex = backdrops.prefix(2).firstIndex(where: { $0["id"] as? String != activeId }),
-           let pickId = backdrops[pickIndex]["id"] as? String {
-            tapSafely(app, app.buttons["backdrop-tile-默认"], "默认背景瓷砖")
-            XCTAssertTrue(waitUntil(15) { (try? probe.getObject("/appearance"))?["active_id"] is NSNull }, "应切回默认背景")
-            tapSafely(app, app.buttons["backdrop-tile-自定义 \(pickIndex + 1)"], "自定义背景瓷砖")
-            XCTAssertTrue(waitUntil(15) { (try? probe.getObject("/appearance"))?["active_id"] as? String == pickId }, "应切到所点的背景")
-        }
-        snapshot("外观-背景图")
-
-        // 界面质感：拖一下滑杆 → 保存 → 接口可见变化（tearDown 写回原值）
-        let originalDark = ((try probe.getObject("/ui/preferences"))["scrim"] as? [String: Any])?["dark"] as? Double ?? 0
+        // 界面质感：拖侧栏透明度 → 保存 → 接口可见变化；网页的蒙版参数原样带回（tearDown 写回原值）
+        let before = try probe.getObject("/ui/preferences")
+        let originalScrim = before["scrim"] as? [String: Any]
+        let originalTransparency = (before["sidebar"] as? [String: Any])?["transparency"] as? Double ?? 0
         selectTab(app, "appearance-tab-界面质感")
-        let slider = reveal(app, app.sliders["slider-蒙版暗度"])
-        slider.adjust(toNormalizedSliderPosition: originalDark > 0.5 ? 0.15 : 0.85)
+        XCTAssertFalse(app.sliders["slider-蒙版暗度"].exists, "App 不应有蒙版滑杆")
+        let slider = reveal(app, app.sliders["slider-侧栏透明度"])
+        slider.adjust(toNormalizedSliderPosition: originalTransparency > 0.5 ? 0.15 : 0.85)
         let save = reveal(app, app.buttons["texture-save"])
         XCTAssertTrue(save.isEnabled, "拖动滑杆后保存键应可用")
         tapSafely(app, save, "保存质感")
         XCTAssertTrue(waitUntil(15) {
-            let dark = ((try? probe.getObject("/ui/preferences"))?["scrim"] as? [String: Any])?["dark"] as? Double
-            return dark.map { abs($0 - originalDark) > 0.1 } ?? false
-        }, "蒙版暗度应已保存")
+            let value = ((try? probe.getObject("/ui/preferences"))?["sidebar"] as? [String: Any])?["transparency"] as? Double
+            return value.map { abs($0 - originalTransparency) > 0.1 } ?? false
+        }, "侧栏透明度应已保存")
+        let scrimAfter = (try probe.getObject("/ui/preferences"))["scrim"] as? [String: Any]
+        XCTAssertEqual(scrimAfter?["blur"] as? Double, originalScrim?["blur"] as? Double, "蒙版模糊度应原样保留")
+        XCTAssertEqual(scrimAfter?["dark"] as? Double, originalScrim?["dark"] as? Double, "蒙版暗度应原样保留")
         snapshot("外观-界面质感")
 
         // 导航顺序：媒体库下移一格 → 保存 → 恢复默认

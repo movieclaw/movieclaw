@@ -99,10 +99,6 @@ struct MainTabView: View {
                 if permissions.isAdmin { await badges.refreshUpdate(api: api) }
             }
         }
-        .task {
-            // 当前账号的背景图与蒙版参数（每个账号各自一套；切换账号时整棵树重建会再拉一次）
-            await AppBackdropStore.shared.refresh(api: api, includePrefs: true)
-        }
         .task(id: permissions.isAdmin) {
             guard permissions.isAdmin else { return }
             await badges.run(api: api)

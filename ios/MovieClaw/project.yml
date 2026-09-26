@@ -55,6 +55,8 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
+        # App 固定暗色：底色纯黑（同 Apple Music），启动屏与系统弹出的界面也跟着是暗色，不会先白屏一下
+        UIUserInterfaceStyle: Dark
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -70,7 +72,7 @@ targets:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: MovieClaw 需要访问局域网内你自己部署的 MovieClaw 服务器。
-        NSPhotoLibraryUsageDescription: 选择图片作为头像、背景图或 AI 会话附件。
+        NSPhotoLibraryUsageDescription: 选择图片作为头像、媒体库封面或 AI 会话附件。
         NSCameraUsageDescription: 拍照作为 AI 会话的图片附件。
         # 后台继续播放音频、画中画
         UIBackgroundModes:

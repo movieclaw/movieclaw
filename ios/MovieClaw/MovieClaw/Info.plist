@@ -32,7 +32,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>MovieClaw 需要访问局域网内你自己部署的 MovieClaw 服务器。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>选择图片作为头像、背景图或 AI 会话附件。</string>
+	<string>选择图片作为头像、媒体库封面或 AI 会话附件。</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
@@ -52,5 +52,7 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
 </dict>
 </plist>

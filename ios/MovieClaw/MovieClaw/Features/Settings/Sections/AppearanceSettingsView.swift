@@ -1,42 +1,33 @@
-import PhotosUI
 import SwiftUI
 
-/// 设置 → 外观（Web settings-view.tsx 的 AppearanceSection）。
+/// 设置 → 外观（Web settings-view.tsx 的 AppearanceSection，去掉背景图设定）。
 ///
-/// 结构同 Web：置顶「主题」卡片组，下面三个胶囊页签——背景图 / 界面质感 / 导航顺序。
+/// 置顶「主题」卡片组，下面两个胶囊页签——界面质感 / 导航顺序。
+/// **App 不做背景图设定**（用户决定，已接受的平台差异）：App 底色固定纯黑（同 Apple Music），
+/// 网页外观页的「背景图」页签、质感里的两根蒙版滑杆（只作用于背景图）、详情页剧照的「设为背景」都不提供；
+/// 账号在网页设的背景图与蒙版参数原样保留，保存其它偏好时整份带回、不会被 App 冲掉。
 /// - 主题：按**当前设备语境**落字段。App 是手机端，改的是 `theme_mobile`（没单独设过时跟随通用 `theme`），
 ///   点卡即保存（`PUT /ui/preferences`，整体覆盖式，其余分组原样带回）。
 ///   **App 固定使用银玻璃外观**（产品决定，已接受的平台差异）：Netflix 卡片置灰不可选并写明只在网页生效；
 ///   账号若在网页把手机端设成了 Netflix，卡片仍如实标出，但 App 外观不变；
-/// - 背景图：账号图库（最多 20 张）的上传 / 点选切换 / 删除（`/appearance*`），上传前压到长边 2560 的 JPEG；
-///   每次写操作后把后端视图交给 AppBackdropStore，全 App 背景即时换图；
-/// - 界面质感：侧栏玻璃三根 + 蒙版两根滑杆。拖动蒙版滑杆即实时预览（AppBackdropStore.previewScrim，
-///   同 Web setPreview），「保存」才落库，离开本页签/本页撤销未保存的预览；「恢复默认」回内置默认并直接保存；
-///   侧栏三根只作用于网页桌面端的侧栏玻璃（手机端没有侧栏）；
+/// - 界面质感：侧栏玻璃三根滑杆，只作用于网页桌面端的侧栏玻璃（手机端没有侧栏）；「恢复默认」回内置默认并直接保存；
 /// - 导航顺序：只影响网页桌面端左侧栏（App 底栏不读它），上/下移改序，保存时保留不可见项（mergeNavOrder）。
 struct AppearanceSettingsView: View {
     @Environment(\.api) private var api
     @Environment(\.permissions) private var permissions
     @Environment(Feedback.self) private var feedback
 
-    enum Tab: String, Hashable { case backdrop, texture, nav }
+    enum Tab: String, Hashable { case texture, nav }
     /// 深链 `?tab=` 直达页签（Web useTabParam），只在首次出现时读一次
     @Environment(\.routeQuery) private var routeQuery
     @State private var routeQueryConsumed = false
 
     @State private var prefs: Loadable<API.UiPreferencesSetting> = .loading
-    @State private var appearance: API.AppearanceView?
-    @State private var appearanceError: String?
-    @State private var tab: Tab = .backdrop
+    @State private var tab: Tab = .texture
 
     // 主题
     @State private var themeBusy: String?
     @State private var themeError: String?
-    // 背景图
-    @State private var backdropItem: PhotosPickerItem?
-    @State private var pickingBackdrop = false
-    @State private var backdropBusy = false
-    @State private var backdropError: String?
     // 界面质感草稿
     @State private var texture = TextureDraft.defaults
     @State private var textureBusy = false
@@ -52,7 +43,7 @@ struct AppearanceSettingsView: View {
                 themeSection(saved)
                 Section {
                     SettingsPillTabs(
-                        tabs: [(Tab.backdrop, "背景图"), (Tab.texture, "界面质感"), (Tab.nav, "导航顺序")],
+                        tabs: [(Tab.texture, "界面质感"), (Tab.nav, "导航顺序")],
                         selection: $tab,
                         identifierPrefix: "appearance-tab"
                     )
@@ -60,7 +51,6 @@ struct AppearanceSettingsView: View {
                     .listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 4))
                 }
                 switch tab {
-                case .backdrop: backdropSection(saved)
                 case .texture: textureSection(saved)
                 case .nav: navSection(saved)
                 }
@@ -72,39 +62,19 @@ struct AppearanceSettingsView: View {
         .onAppear {
             guard !routeQueryConsumed else { return }
             routeQueryConsumed = true
+            // 网页的 `?tab=backdrop` 在 App 里没有对应页签，停在默认的界面质感
             if let raw = routeQuery["tab"], let value = Tab(rawValue: raw) { tab = value }
         }
-        // 离开外观页 / 离开质感页签：撤销未保存的预览，草稿回到已保存值（Web 质感组卸载即 setPreview(null)）
-        .onDisappear { AppBackdropStore.shared.previewScrim = nil }
+        // 离开质感页签：未保存的草稿回到已保存值（同 Web 质感组卸载）
         .onChange(of: tab) { old, _ in
-            guard old == .texture else { return }
-            AppBackdropStore.shared.previewScrim = nil
-            if let saved = prefs.value { texture = TextureDraft(saved) }
-        }
-        .onChange(of: texture) { _, draft in
-            // 拖动即预览：只有蒙版两根作用于 App 背景
-            guard tab == .texture, let saved = prefs.value else { return }
-            let savedDraft = TextureDraft(saved)
-            AppBackdropStore.shared.previewScrim = draft.rounded == savedDraft.rounded
-                ? nil : .init(blur: draft.blur, dark: draft.dark)
-        }
-        .photosPicker(isPresented: $pickingBackdrop, selection: $backdropItem, matching: .images)
-        .onChange(of: backdropItem) { _, item in
-            guard let item else { return }
-            backdropItem = nil
-            Task { await uploadBackdrop(item) }
+            guard old == .texture, let saved = prefs.value else { return }
+            texture = TextureDraft(saved)
         }
     }
 
     private func load() async {
         await Loadable.load(into: $prefs) { try await api.uiPrefsShow() }
         if let saved = prefs.value { syncDrafts(saved) }
-        do {
-            appearance = try await api.appearanceShow()
-            appearanceError = nil
-        } catch {
-            appearanceError = error.localizedDescription
-        }
     }
 
     /// 已保存值变化（首次拉取 / 保存成功）时把草稿对齐到落库值
@@ -117,8 +87,6 @@ struct AppearanceSettingsView: View {
         let stored = try await api.uiPrefsUpdate(body: next.asInput)
         prefs = .loaded(stored)
         syncDrafts(stored)
-        // 落库成功：全 App 的蒙版以新值为准，预览草稿完成使命（同 Web savePrefs 后 setPreview(null)）
-        AppBackdropStore.shared.apply(prefs: stored)
     }
 
     // MARK: 主题
@@ -205,179 +173,35 @@ struct AppearanceSettingsView: View {
         do { try await save(next) } catch { themeError = error.localizedDescription }
     }
 
-    // MARK: 背景图
-
-    /// 账号在网页手机端是 Netflix 时的补充说明：App 固定银玻璃，这两组在 App 里照常生效，
-    /// 只是网页手机端（纯色平铺设计）看不到（Web 在 Netflix 下把这两组置灰，App 不置灰）
-    private func netflixNote(_ label: String) -> String {
-        "网页手机端当前是 Netflix 主题（纯色平铺，没有背景大图与玻璃质感），\(label)只在 App 与银玻璃网页中可见。"
-    }
-
-    private func backdropSection(_ saved: API.UiPreferencesSetting) -> some View {
-        let netflix = resolvedTheme(saved) == "netflix"
-        let isCustom = appearance?.activeId != nil
-        let busy = backdropBusy || appearance == nil
-        return Section {
-            VStack(alignment: .leading, spacing: 14) {
-                // 大预览：点按即选图更换（Web 的「大预览 = 投放区」）
-                Button { pickingBackdrop = true } label: {
-                    ZStack(alignment: .bottomLeading) {
-                        RemoteImage(url: activeBackdropURL, placeholderSymbol: "photo")
-                            .aspectRatio(16 / 9, contentMode: .fill)
-                            .frame(maxWidth: .infinity)
-                            .clipped()
-                        LinearGradient(colors: [.black.opacity(0.65), .clear], startPoint: .bottom, endPoint: .center)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(isCustom ? "自定义背景" : "默认背景 · 深色调").font(.subheadline.weight(.semibold))
-                            Text("点击即可更换").font(.caption).foregroundStyle(.white.opacity(0.75))
-                        }
-                        .foregroundStyle(.white)
-                        .padding(14)
-                        if busy {
-                            Rectangle().fill(.black.opacity(0.5))
-                            Text(backdropBusy ? "正在应用…" : "加载中…")
-                                .font(.subheadline.weight(.medium)).foregroundStyle(.white.opacity(0.9))
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        }
-                    }
-                    .aspectRatio(16 / 9, contentMode: .fit)
-                    .clipShape(.rect(cornerRadius: 16))
-                    .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.14)))
-                }
-                .buttonStyle(.plain)
-                .disabled(busy)
-                .accessibilityLabel("点击更换首页背景")
-                .accessibilityIdentifier("backdrop-preview")
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 14) {
-                        BackdropTile(url: api.server.resolve("/backdrop-default.jpg"), label: "默认",
-                                     active: !isCustom, disabled: busy, onSelect: { Task { await selectBackdrop(nil) } })
-                        ForEach(Array((appearance?.backdrops ?? []).enumerated()), id: \.element.id) { index, item in
-                            BackdropTile(
-                                url: api.image(item.url), label: "自定义 \(index + 1)",
-                                active: item.id == appearance?.activeId, disabled: backdropBusy,
-                                onSelect: { Task { await selectBackdrop(item.id) } },
-                                onDelete: { Task { await deleteBackdrop(item.id) } }
-                            )
-                        }
-                        Button { pickingBackdrop = true } label: {
-                            VStack(spacing: 6) {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .strokeBorder(Color.white.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                                    .background(Color.black.opacity(0.25), in: .rect(cornerRadius: 8))
-                                    .frame(width: 120, height: 68)
-                                    .overlay(Image(systemName: "plus").foregroundStyle(Theme.textMuted))
-                                Text("上传").font(.caption).foregroundStyle(Theme.textMuted)
-                            }
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(busy)
-                        .accessibilityIdentifier("backdrop-upload")
-                    }
-                    .padding(4)
-                }
-                if let message = backdropError ?? appearanceError {
-                    SettingsNotice(text: message)
-                }
-            }
-            .padding(.vertical, 6)
-        } header: {
-            Text("首页背景")
-        } footer: {
-            Text("建议使用 16:9、分辨率较高的横图。上传的图全部保留在服务端图库（最多 20 张），点选即切换、点缩略图角上的 × 可删除；玻璃面板的折射随生效图一并更新，跨设备访问同一实例保持一致。"
-                + (netflix ? "\n" + netflixNote("背景图") : ""))
-        }
-    }
-
-    private var activeBackdropURL: URL? {
-        if let url = appearance?.activeUrl { return api.image(url) }
-        return api.server.resolve("/backdrop-default.jpg")
-    }
-
-    private func guardBackdrop(_ fallback: String, _ work: () async throws -> API.AppearanceView) async {
-        backdropBusy = true
-        backdropError = nil
-        defer { backdropBusy = false }
-        do {
-            let view = try await work()
-            appearance = view
-            // 全 App 背景跟随后端最新视图即时换图（Web applyView 同步 CSS 变量）
-            await AppBackdropStore.shared.apply(appearance: view, api: api)
-        } catch {
-            let message = error.localizedDescription
-            backdropError = message.isEmpty ? fallback : message
-        }
-    }
-
-    private func uploadBackdrop(_ item: PhotosPickerItem) async {
-        await guardBackdrop("上传失败，请重试") {
-            guard let data = try await item.loadTransferable(type: Data.self) else {
-                throw APIError.network("读取图片失败")
-            }
-            guard let jpeg = APIClient.compressedJPEG(data, maxEdge: 2560) else {
-                throw APIError.network("图片解码失败，请换一张试试")
-            }
-            return try await api.upload(
-                "/appearance/backdrops",
-                file: (name: "file", filename: "backdrop.jpg", mimeType: "image/jpeg", data: jpeg),
-                as: API.AppearanceView.self
-            )
-        }
-    }
-
-    /// 点选切换生效图（含切回默认）：不删任何图，无需确认
-    private func selectBackdrop(_ id: String?) async {
-        await guardBackdrop("切换失败，请重试") {
-            try await api.appearanceActiveSet(body: .init(backdropId: id))
-        }
-    }
-
-    /// 删除图库中的一张：不可恢复，二次确认；删的是生效图时后端自动回退默认
-    private func deleteBackdrop(_ id: String) async {
-        let ok = await feedback.confirm("删除这张背景图？", message: "删除后不可恢复。", confirmTitle: "删除", destructive: true)
-        guard ok else { return }
-        await guardBackdrop("删除失败，请重试") {
-            try await api.appearanceBackdropsDelete(backdropId: id)
-        }
-    }
-
     // MARK: 界面质感
 
-    /// 五根滑杆的草稿（与 Web 同一换算：透明度/暗度按百分比，明暗 -1~1 映射到 0~100）
+    /// 侧栏三根滑杆的草稿（与 Web 同一换算：透明度按百分比，明暗 -1~1 映射到 0~100）。
+    /// 网页的另两根蒙版滑杆只作用于背景图，App 不提供；保存时 `scrim` 按已保存值原样带回
     struct TextureDraft: Equatable {
         var transparency: Double
         var brightness: Double
         var depth: Double
-        var blur: Double
-        var dark: Double
 
         /// 内置默认（Web DEFAULT_UI_PREFS，与后端模型默认一致）
-        static let defaults = TextureDraft(transparency: 0.49, brightness: -0.36, depth: 28, blur: 13, dark: 0.69)
+        static let defaults = TextureDraft(transparency: 0.49, brightness: -0.36, depth: 28)
 
-        init(transparency: Double, brightness: Double, depth: Double, blur: Double, dark: Double) {
+        init(transparency: Double, brightness: Double, depth: Double) {
             self.transparency = transparency
             self.brightness = brightness
             self.depth = depth
-            self.blur = blur
-            self.dark = dark
         }
 
         init(_ prefs: API.UiPreferencesSetting) {
-            self.init(transparency: prefs.sidebar.transparency, brightness: prefs.sidebar.brightness,
-                      depth: prefs.sidebar.depth, blur: prefs.scrim.blur, dark: prefs.scrim.dark)
+            self.init(transparency: prefs.sidebar.transparency, brightness: prefs.sidebar.brightness, depth: prefs.sidebar.depth)
         }
 
         /// 按滑杆显示值比较（Web 的 same() 比较的是取整后的滑杆值落回的数）
         var rounded: [Int] {
-            [Int((transparency * 100).rounded()), Int((((brightness + 1) / 2) * 100).rounded()),
-             Int(depth.rounded()), Int(blur.rounded()), Int((dark * 100).rounded())]
+            [Int((transparency * 100).rounded()), Int((((brightness + 1) / 2) * 100).rounded()), Int(depth.rounded())]
         }
     }
 
     private func textureSection(_ saved: API.UiPreferencesSetting) -> some View {
-        let netflix = resolvedTheme(saved) == "netflix"
         let savedDraft = TextureDraft(saved)
         let dirty = texture.rounded != savedDraft.rounded
         let isDefault = texture.rounded == TextureDraft.defaults.rounded
@@ -389,15 +213,11 @@ struct AppearanceSettingsView: View {
                           value: Binding(get: { (texture.brightness + 1) / 2 * 100 }, set: { texture.brightness = $0 / 100 * 2 - 1 }))
             TextureSlider(label: "侧栏厚度", hint: "玻璃的边缘曲率带宽度：越大越像厚玻璃、边缘折射带越宽",
                           minLabel: "薄", maxLabel: "厚", range: 10 ... 90, unit: "", value: $texture.depth)
-            TextureSlider(label: "蒙版模糊度", hint: "全站背景蒙版的模糊程度：0 背景清晰透出，越大背景越朦胧",
-                          minLabel: "清晰", maxLabel: "朦胧", range: 0 ... 40, unit: "", value: $texture.blur)
-            TextureSlider(label: "蒙版暗度", hint: "蒙版把背景压暗的程度：0% 完全不压暗，100% 全黑", minLabel: "透亮", maxLabel: "全黑",
-                          value: Binding(get: { texture.dark * 100 }, set: { texture.dark = $0 / 100 }))
             if let textureError {
                 Text(textureError).font(.footnote).foregroundStyle(Theme.danger)
             }
             HStack(spacing: 10) {
-                Text(dirty ? "调节实时预览中，保存后对所有设备生效" : "设置已保存，跨设备一致")
+                Text(dirty ? "有未保存的调整，保存后对所有设备生效" : "设置已保存，跨设备一致")
                     .font(.caption).foregroundStyle(Theme.textFaint)
                 Spacer(minLength: 4)
                 Button("恢复默认") { Task { await saveTexture(.defaults, saved) } }
@@ -413,8 +233,7 @@ struct AppearanceSettingsView: View {
         } header: {
             Text("界面质感")
         } footer: {
-            Text("侧栏透明度、明暗、厚度只作用于网页桌面端的侧栏玻璃；蒙版模糊度与暗度作用于全站背景（含 App），拖动即可预览。"
-                + (netflix ? "\n" + netflixNote("蒙版") : ""))
+            Text("侧栏透明度、明暗、厚度只作用于网页桌面端的侧栏玻璃。")
         }
         .disabled(textureBusy)
     }
@@ -426,7 +245,6 @@ struct AppearanceSettingsView: View {
         defer { textureBusy = false }
         var next = saved
         next.sidebar = .init(transparency: draft.transparency, brightness: draft.brightness, depth: draft.depth)
-        next.scrim = .init(blur: draft.blur, dark: draft.dark)
         do { try await save(next) } catch { textureError = error.localizedDescription }
     }
 
@@ -547,65 +365,6 @@ enum SettingsNavOrder {
 }
 
 // MARK: - 小组件
-
-/// 背景画廊瓷砖：选中项高亮环 + 对勾；自定义图左上角常驻 × 删除（触屏没有 hover）
-private struct BackdropTile: View {
-    let url: URL?
-    let label: String
-    let active: Bool
-    let disabled: Bool
-    var onSelect: () -> Void
-    var onDelete: (() -> Void)?
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Button(action: onSelect) {
-                RemoteImage(url: url, placeholderSymbol: "photo")
-                    .frame(width: 120, height: 68)
-                    .clipShape(.rect(cornerRadius: 8))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(active ? Theme.accent : Color.white.opacity(0.14), lineWidth: active ? 2 : 1)
-                    )
-                    .overlay(alignment: .topTrailing) {
-                        if active {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(Color(red: 0x14 / 255, green: 0x18 / 255, blue: 0x21 / 255))
-                                .frame(width: 18, height: 18)
-                                .background(Theme.accentStrong, in: .circle)
-                                .padding(5)
-                        }
-                    }
-            }
-            .buttonStyle(.plain)
-            .disabled(active || disabled)
-            .accessibilityLabel("使用\(label)背景")
-            .accessibilityAddTraits(active ? .isSelected : [])
-            .accessibilityIdentifier("backdrop-tile-\(label)")
-            .overlay(alignment: .topLeading) {
-                if let onDelete, !disabled {
-                    Button(action: onDelete) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.9))
-                            .frame(width: 20, height: 20)
-                            .background(.black.opacity(0.6), in: .circle)
-                            .contentShape(Circle().inset(by: -8))
-                    }
-                    .buttonStyle(.plain)
-                    .padding(4)
-                    .accessibilityLabel("删除\(label)背景图")
-                    .accessibilityIdentifier("backdrop-delete-\(label)")
-                }
-            }
-            Text(label)
-                .font(.caption.weight(active ? .semibold : .regular))
-                .foregroundStyle(active ? Theme.text : Theme.textMuted)
-        }
-        .opacity(disabled && !active ? 0.5 : 1)
-    }
-}
 
 /// 一行滑杆：标题 + 当前值 + 说明 + 两端刻度（Web SliderRow）
 private struct TextureSlider: View {

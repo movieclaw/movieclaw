@@ -2,8 +2,8 @@ import NukeUI
 import SwiftUI
 
 /// 全屏看图灯箱（对应 Web `ImageLightbox` / `ZoomLightbox`）：左右滑动翻页、双指/双击缩放、
-/// 顶部标题与序号，右上可挂调用方的操作键（种子图集的 详情 / 投给订阅 / 下载），
-/// 底部可挂一个针对当前图的动作（详情页剧照的「设为背景」）与缩略图条（点击直达）。
+/// 顶部标题与序号，右上可挂调用方的操作键（种子图集的 详情 / 投给订阅 / 下载），底部是缩略图条（点击直达）。
+/// 网页剧照灯箱底部的「设为背景」App 不做（App 没有背景图设定）。
 ///
 /// 三级地址（同 Web 媒体库/种子灯箱）：缩略条用小图，舞台用屏幕档，放大后才换原图（`originals`）。
 ///
@@ -14,7 +14,6 @@ struct DiscoverLightboxContent: Identifiable {
     var urls: [URL?]
     var initialIndex: Int = 0
     var title: String
-    var action: LightboxAction?
     /// 图片加载失败时的补充说明（种子图床常失效）
     var brokenHint: String?
     /// 底部缩略图条的地址（nil = 不显示缩略条；只有一张图时也不显示）
@@ -27,25 +26,12 @@ struct DiscoverLightboxContent: Identifiable {
     var accessory: AnyView?
 }
 
-/// 灯箱里对当前图执行的动作：常态 / 执行中 / 成功三种文案（同 Web LightboxAction）
-struct LightboxAction {
-    var label: String
-    var busyLabel: String
-    var doneLabel: String
-    var systemImage: String
-    var run: (Int) async throws -> Void
-}
-
 struct DiscoverLightbox: View {
     let content: DiscoverLightboxContent
     @Environment(\.dismiss) private var dismiss
     @State private var index = 0
-    /// 按图片下标记录动作状态：换一张图可以再执行一次
-    @State private var actionState: [Int: ActionState] = [:]
     /// 缩略条可视宽度：图少时居中排布
     @State private var stripWidth: CGFloat = 0
-
-    enum ActionState: Equatable { case busy, done, failed(String) }
 
     var body: some View {
         ZStack {
@@ -83,15 +69,10 @@ struct DiscoverLightbox: View {
             .padding(.top, 8)
         }
         .overlay(alignment: .bottom) {
-            VStack(spacing: 14) {
-                if let action = content.action {
-                    actionButton(action)
-                }
-                if let thumbnails = content.thumbnails, thumbnails.count > 1 {
-                    thumbnailStrip(thumbnails)
-                }
+            if let thumbnails = content.thumbnails, thumbnails.count > 1 {
+                thumbnailStrip(thumbnails)
+                    .padding(.bottom, 12)
             }
-            .padding(.bottom, 12)
         }
         .onAppear { index = min(max(content.initialIndex, 0), max(content.urls.count - 1, 0)) }
         .preferredColorScheme(.dark)
@@ -133,47 +114,6 @@ struct DiscoverLightbox: View {
             }
         }
         .accessibilityIdentifier("lightbox-thumbnails")
-    }
-
-    @ViewBuilder
-    private func actionButton(_ action: LightboxAction) -> some View {
-        let state = actionState[index]
-        VStack(spacing: 8) {
-            if case let .failed(message) = state {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(Theme.danger)
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(.black.opacity(0.6), in: .capsule)
-            }
-            Button {
-                let current = index
-                actionState[current] = .busy
-                Task {
-                    do {
-                        try await action.run(current)
-                        actionState[current] = .done
-                    } catch {
-                        actionState[current] = .failed(error.localizedDescription)
-                    }
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    switch state {
-                    case .busy: ProgressView().controlSize(.small)
-                    case .done: Image(systemName: "checkmark")
-                    default: Image(systemName: action.systemImage)
-                    }
-                    Text(state == .busy ? action.busyLabel : state == .done ? action.doneLabel : action.label)
-                }
-                .font(.subheadline.weight(.semibold))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-            }
-            .buttonStyle(.glass)
-            .disabled(state == .busy || state == .done)
-            .accessibilityIdentifier("lightbox-action")
-        }
     }
 }
 
