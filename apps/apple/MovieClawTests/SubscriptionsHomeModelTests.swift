@@ -36,6 +36,7 @@ struct SubscriptionsHomeModelTests {
         status: String = "active",
         mediaStatus: String? = "Returning Series",
         progress: [String: Int] = [:],
+        owned: Int = 4,
         updatedAt: String = "2026-09-20T00:00:00Z"
     ) throws -> API.SubscriptionView {
         var counts = ["total": 8, "wanted": 1, "grabbed": 0, "downloaded": 0, "imported": 0, "upgrading": 0]
@@ -45,7 +46,7 @@ struct SubscriptionsHomeModelTests {
             "selected_seasons": kind == "tv" ? [1] : [], "follow_future": kind == "tv", "rule_set_id": 1,
             "library_id": NSNull(), "progress": counts,
             "season_collection": kind == "tv"
-                ? [["season_number": 1, "name": "第 1 季", "air_date": "2026-01-01", "episode_count": 8, "aired_count": 8, "owned_count": 4]]
+                ? [["season_number": 1, "name": "第 1 季", "air_date": "2026-01-01", "episode_count": 8, "aired_count": 8, "owned_count": owned]]
                 : [],
             "created_at": "2026-01-01T00:00:00Z", "updated_at": updatedAt,
         ])
@@ -171,49 +172,69 @@ struct SubscriptionsHomeModelTests {
 
     // MARK: 海报行
 
-    @Test func tvShelfPutsWhatMattersNowFirstAndRestsTheRest() throws {
+    @Test func tvShelfPutsWhatIsInProgressFirstAndFinishedLast() throws {
         let subs = try [
-            sub(1),
+            sub(1, owned: 8),
             sub(2),
             sub(3),
             sub(4, progress: ["upgrading": 2]),
             sub(5),
             sub(6, status: "paused"),
-            sub(7, status: "completed", progress: ["imported": 8, "wanted": 0]),
-            sub(8, status: "completed", progress: ["imported": 8, "wanted": 0]),
+            sub(7, status: "completed", progress: ["imported": 8, "wanted": 0], owned: 8, updatedAt: "2026-09-01T00:00:00Z"),
+            sub(8, status: "completed", progress: ["imported": 8, "wanted": 0], owned: 8),
+            sub(9, owned: 8),
+            sub(10, owned: 8),
+            sub(11, status: "completed", progress: ["imported": 8, "wanted": 0, "upgrading": 1], owned: 8),
         ]
         let arrivals = try [
             arrival(sub: 1, daysAhead: 2, day: "2026-09-28"),
             arrival(sub: 2, status: "grabbed"),
             arrival(sub: 3, predictedAt: now.addingTimeInterval(3600)),
         ]
-        let recents = try [recent(sub: 8, importedAt: now.addingTimeInterval(-3600))]
+        let recents = try [
+            recent(sub: 8, importedAt: now.addingTimeInterval(-3600)),
+            recent(sub: 9, episodes: [5, 6], importedAt: now.addingTimeInterval(-7200)),
+        ]
         let shelf = SubscriptionsHome.shelf(
             kind: "tv", subscriptions: subs,
             groups: SubscriptionsHome.arrivalGroups(arrivals, tasks: [], now: now), recent: recents
         )
-        // 下载中 → 刚到新集（哪怕订阅已收齐）→ 今天更新 → 两天后更新 → 洗版中 → 其余在追的
-        #expect(shelf.active.map(\.sub.id) == [2, 8, 3, 1, 4, 5])
-        #expect(shelf.active.map { $0.chip?.text } == ["下载中", "新一集", "今天更新", "周一更新", "洗版中", nil])
-        #expect(shelf.resting.map(\.sub.id) == [6, 7])
-        #expect(shelf.resting.allSatisfy { $0.resting })
+        // 进行中：下载中 → 有没看的新集 → 今天更新 → 两天后更新 → 洗版中（含已收齐但正在洗版的）
+        // → 缺集找资源 → 追更中（什么都不缺，等下一集）
+        // 同名次按最近变动、再按片名（「作品11」排在「作品4」前）
+        #expect(shelf.active.map(\.sub.id) == [2, 9, 3, 1, 11, 4, 5, 10])
+        #expect(shelf.active.map { $0.chip?.text } == ["下载中", "新 2 集", "今天更新", "周一更新", "洗版中", "洗版中", "缺 4 集", nil])
+        // 已完成的不因「刚到了、还没看」被拉回前排（那是 Hero 与刚刚入库的事）；最近完成的在前
+        #expect(shelf.paused.map(\.sub.id) == [6])
+        #expect(shelf.done.map(\.sub.id) == [8, 7])
+        #expect(shelf.done.allSatisfy { $0.chip == nil && $0.progress == nil })
         #expect(shelf.restingLabel == "暂停·收齐")
-        // 计数按订阅状态：「排在前面」不等于「追踪中」
-        #expect(SubscriptionsHome.countSummary(shelf) == "5 部追踪中 · 共 8 部")
-        #expect(shelf.active[5].meta == "第 1 季 · 4 / 8")
-        #expect(shelf.active[5].progress == 0.5)
+        // 计数 = 分隔线前的数量
+        #expect(SubscriptionsHome.countSummary(shelf) == "8 部进行中 · 共 11 部")
+        #expect(shelf.active.first { $0.sub.id == 5 }?.meta == "第 1 季 · 4 / 8")
+        #expect(shelf.active.first { $0.sub.id == 5 }?.progress == 0.5)
+        #expect(shelf.done.first?.meta == "已收齐 · 第 1 季")
     }
 
-    @Test func movieShelfTellsSearchingFromUnreleased() throws {
+    @Test func movieShelfFollowsTheSameOrderAndNeverPullsFinishedOnesBack() throws {
         let subs = try [
             sub(1, kind: "movie", mediaStatus: "Released"),
             sub(2, kind: "movie", mediaStatus: "Post Production"),
             sub(3, kind: "movie", status: "completed", mediaStatus: "Released", progress: ["imported": 1, "wanted": 0]),
+            sub(4, kind: "movie", mediaStatus: "Released", progress: ["grabbed": 1, "wanted": 0]),
+            sub(5, kind: "movie", status: "completed", mediaStatus: "Released", progress: ["imported": 1, "wanted": 0],
+                updatedAt: "2026-09-25T00:00:00Z"),
         ]
-        let shelf = SubscriptionsHome.shelf(kind: "movie", subscriptions: subs, groups: [], recent: [])
-        #expect(shelf.active.map { $0.chip?.text } == ["找资源中", "未上映"])
-        #expect(shelf.resting.map(\.meta) == ["2024 · 已入库"])
+        // 电影 5 刚入库、还没看：出现在 Hero 与刚刚入库那一排，但在海报行里已经算完成
+        let recents = try [recent(sub: 5, kind: "movie", importedAt: now.addingTimeInterval(-3600))]
+        let shelf = SubscriptionsHome.shelf(kind: "movie", subscriptions: subs, groups: [], recent: recents)
+        // 没有预告时按订阅进度判断下载中；没上映的也算进行中，排在最后
+        #expect(shelf.active.map(\.sub.id) == [4, 1, 2])
+        #expect(shelf.active.map { $0.chip?.text } == ["下载中", "找资源中", "未上映"])
+        #expect(shelf.done.map(\.sub.id) == [5, 3])
+        #expect(shelf.done.map(\.meta) == ["2024 · 已入库", "2024 · 已入库"])
         #expect(shelf.restingLabel == "已入库")
+        #expect(SubscriptionsHome.countSummary(shelf) == "3 部进行中 · 共 5 部")
     }
 
     // MARK: 格式

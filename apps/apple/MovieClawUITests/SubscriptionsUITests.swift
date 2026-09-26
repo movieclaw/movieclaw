@@ -101,6 +101,17 @@ final class SubscriptionsUITests: XCTestCase {
             }
             sleep(1)
             snapshot("订阅首页-04-剧集行左滑")
+            // 超过横滑上限时一直滑到底，末尾是「查看全部」卡
+            // 屏幕外的卡判断不了能否点击（isHittable 会直接报错），按坐标看它是否已完整进入屏幕
+            let seeAll = app.buttons["shelf-see-all"].firstMatch
+            let screen = app.windows.firstMatch.frame
+            for _ in 0 ..< 10 where !(seeAll.exists && seeAll.frame.maxX <= screen.maxX && seeAll.frame.minX >= screen.minX) {
+                tvShelf.swipeLeft()
+            }
+            if seeAll.exists {
+                sleep(1)
+                snapshot("订阅首页-04-剧集行末尾")
+            }
         }
 
         let tvWall = app.buttons["shelf-more-tv"]
@@ -112,6 +123,12 @@ final class SubscriptionsUITests: XCTestCase {
         XCTAssertTrue(count.label.hasPrefix("共 "), "计数头：\(count.label)")
         sleep(2)
         snapshot("订阅首页-05-海报墙")
+        // 海报墙分进行中 / 已暂停 / 已收齐三段，往下看后两段
+        for step in 1 ... 2 {
+            app.swipeUp(velocity: .slow)
+            sleep(1)
+            snapshot("订阅首页-05-海报墙-下滑\(step)")
+        }
 
         app.buttons["subscription-cell"].firstMatch.tap()
         XCTAssertTrue(app.buttons["subscription-more"].waitForExistence(timeout: 30), "点海报应进入订阅详情")

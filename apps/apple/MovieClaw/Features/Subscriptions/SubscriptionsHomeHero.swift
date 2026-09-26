@@ -27,8 +27,13 @@ struct SubsHomeHero: View {
     @Binding var index: Int
 
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.api) private var api
     /// 指示器当前胶囊的填充进度 0...1
     @State private var fill: CGFloat = 0
+
+    /// 预载下一张的剧照与 Logo：原图约 1MB，等轮到它才下载会闪一下空底；
+    /// 只预载下一张而不是全部，蜂窝网络下不白烧流量
+    private static let prefetcher = ImagePrefetcher()
 
     private var fade: Double { Double(max(0, min(1, 1 - scrollOffset / 260))) }
 
@@ -62,6 +67,15 @@ struct SubsHomeHero: View {
         }
         .onChange(of: slides.count) { _, count in
             if index >= count { index = 0 }
+        }
+        .onChange(of: index, initial: true) { _, current in
+            guard slides.count > 1 else { return }
+            let next = slides[(current + 1) % slides.count].media
+            let urls = [
+                api.server.originalTMDBImageURL(next.backdropUrl) ?? api.image(next.posterUrl),
+                api.image(next.logoUrl),
+            ].compactMap { $0 }
+            Self.prefetcher.startPrefetching(with: urls)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("subscriptions-hero")

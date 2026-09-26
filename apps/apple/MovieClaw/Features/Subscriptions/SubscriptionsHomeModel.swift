@@ -115,28 +115,65 @@ struct SubsHomeScheduleEntry: Identifiable, Equatable {
 
 // MARK: - 海报行
 
-/// 剧集 / 电影海报行的一张
+/// 一部订阅在海报行 / 海报墙里的位置。剧集与电影同一套口径（2026-09-26 用户拍板）：
+/// 进行中、没完成的排在前面（连没上映的也算进行中），已暂停、已完成的排在分隔线后面。
+struct SubsHomeStanding: Equatable {
+    enum Phase: Equatable {
+        /// 订阅还在干活：下载 / 整理、等更新、缺集找资源、洗版、没上映
+        case active
+        /// 用户暂停了追踪
+        case paused
+        /// 已收齐（剧集）/ 已入库（电影），且没有洗版在进行
+        case done
+    }
+
+    var phase: Phase
+    /// 进行中内部的排位，越小越靠前（此刻最要紧的在最左）；暂停 / 完成时不参与
+    var rank: Double
+    var chip: SubsHomeChip?
+}
+
+/// 剧集 / 电影海报行（以及海报墙）的一张
 struct SubsHomeShelfItem: Identifiable, Equatable {
     var sub: API.SubscriptionView
+    var phase: SubsHomeStanding.Phase
     var chip: SubsHomeChip?
     /// 海报下第二行：「第 3 季 · 4 / 8」「已收齐 · 全 5 季」「2026」
     var meta: String
-    /// 海报底部的收录细线（剧集当季已收 / 应有）；nil = 不画
+    /// 海报底部的收录细线（进行中的剧集，当季已收 / 应有）；nil = 不画
     var progress: Double?
-    /// 已收齐 / 已暂停：压暗排在分隔线后面
-    var resting: Bool
     var id: Int { sub.id }
+    /// 已暂停 / 已完成：压暗，排在分隔线后面
+    var resting: Bool { phase != .active }
 }
 
-/// 一排海报：在追的在前，歇着的（已收齐 / 已暂停）压暗排在分隔线后
+/// 一排海报：进行中在前；已暂停、已完成压暗排在分隔线后（海报墙分成三段展示同一份结果）
 struct SubsHomeShelf: Equatable {
     var active: [SubsHomeShelfItem]
-    var resting: [SubsHomeShelfItem]
-    /// 分隔线上的竖排小字：已收齐 / 已暂停 / 暂停·收齐
+    var paused: [SubsHomeShelfItem]
+    var done: [SubsHomeShelfItem]
+    /// 分隔线上的竖排小字：已收齐 / 已入库 / 已暂停 / 暂停·收齐
     var restingLabel: String
 
-    var isEmpty: Bool { active.isEmpty && resting.isEmpty }
-    var all: [SubsHomeShelfItem] { active + resting }
+    static let empty = SubsHomeShelf(active: [], paused: [], done: [], restingLabel: "")
+
+    var resting: [SubsHomeShelfItem] { paused + done }
+    var all: [SubsHomeShelfItem] { active + paused + done }
+    var isEmpty: Bool { active.isEmpty && paused.isEmpty && done.isEmpty }
+}
+
+/// 订阅首页一次算好的全部结果：Hero、日程、两排海报。
+/// 只在数据变化时重算（见 `SubscriptionsHomeFeed.state(for:)`），海报墙直接复用同一份
+struct SubsHomeState {
+    var groups: [SubscriptionsHome.ArrivalGroup]
+    var slides: [SubsHomeHeroSlide]
+    var days: [SubsHomeScheduleDay]
+    var tv: SubsHomeShelf
+    var movie: SubsHomeShelf
+
+    static let empty = SubsHomeState(groups: [], slides: [], days: [], tv: .empty, movie: .empty)
+
+    func shelf(_ kind: String) -> SubsHomeShelf { kind == "movie" ? movie : tv }
 }
 
 // MARK: - 组装
@@ -480,9 +517,30 @@ enum SubscriptionsHome {
         )
     }
 
+    // MARK: 整页
+
+    /// 一次算好整页：Hero、日程、两排海报共用同一批分组，不各算各的
+    static func state(
+        subscriptions: [API.SubscriptionView],
+        week: [API.TodayArrivalView],
+        recent: [API.RecentArrivalView],
+        tasks: [API.DownloadTaskView],
+        now: Date
+    ) -> SubsHomeState {
+        let groups = arrivalGroups(week, tasks: tasks, now: now)
+        return SubsHomeState(
+            groups: groups,
+            slides: heroSlides(subscriptions: subscriptions, groups: groups, recent: recent, now: now),
+            days: scheduleDays(groups: groups, subscriptions: subscriptions, now: now),
+            tv: shelf(kind: "tv", subscriptions: subscriptions, groups: groups, recent: recent),
+            movie: shelf(kind: "movie", subscriptions: subscriptions, groups: groups, recent: recent)
+        )
+    }
+
     // MARK: 海报行
 
-    /// 剧集 / 电影一排：在追的按「此刻最要紧」排前面，已收齐 / 已暂停压暗排在分隔线后面
+    /// 剧集 / 电影一排（海报墙同一份结果）：进行中按「此刻最要紧」排前面；
+    /// 已暂停（还能恢复）、已完成（最近完成的在前）压暗排在分隔线后面
     static func shelf(
         kind: String,
         subscriptions: [API.SubscriptionView],
@@ -496,98 +554,121 @@ enum SubscriptionsHome {
         }
         let recentBySub = Dictionary(recent.map { ($0.subscriptionId, $0) }, uniquingKeysWith: { first, _ in first })
 
-        var ranked: [(rank: Double, item: SubsHomeShelfItem)] = []
-        var resting: [SubsHomeShelfItem] = []
+        var active: [(rank: Double, item: SubsHomeShelfItem)] = []
+        var paused: [SubsHomeShelfItem] = []
+        var done: [SubsHomeShelfItem] = []
         for sub in subscriptions where sub.media.kind == kind {
-            let (chip, rank) = chipAndRank(sub, group: nearestGroup[sub.id], recent: recentBySub[sub.id])
-            let isResting = rank == nil
+            let standing = standing(sub, group: nearestGroup[sub.id], recent: recentBySub[sub.id])
             let item = SubsHomeShelfItem(
                 sub: sub,
-                chip: chip,
-                meta: meta(sub, resting: isResting),
-                progress: isResting ? nil : seasonProgress(sub),
-                resting: isResting
+                phase: standing.phase,
+                chip: standing.chip,
+                meta: meta(sub, phase: standing.phase),
+                progress: standing.phase == .active ? seasonProgress(sub) : nil
             )
-            if let rank { ranked.append((rank, item)) } else { resting.append(item) }
+            switch standing.phase {
+            case .active: active.append((standing.rank, item))
+            case .paused: paused.append(item)
+            case .done: done.append(item)
+            }
         }
-        let active = ranked.sorted { left, right in
-            if left.rank != right.rank { return left.rank < right.rank }
-            if left.item.sub.updatedAt != right.item.sub.updatedAt { return left.item.sub.updatedAt > right.item.sub.updatedAt }
-            return left.item.sub.media.title < right.item.sub.media.title
-        }.map(\.item)
-        // 歇着的：暂停在前（还能恢复），收齐的按最近动过排
-        let rest = resting.sorted { left, right in
-            let l = left.sub.status == "paused" ? 0 : 1, r = right.sub.status == "paused" ? 0 : 1
-            if l != r { return l < r }
-            return left.sub.updatedAt > right.sub.updatedAt
+        func recentFirst(_ left: SubsHomeShelfItem, _ right: SubsHomeShelfItem) -> Bool {
+            if left.sub.updatedAt != right.sub.updatedAt { return left.sub.updatedAt > right.sub.updatedAt }
+            return left.sub.media.title < right.sub.media.title
         }
-        let hasPaused = rest.contains { $0.sub.status == "paused" }
-        let hasDone = rest.contains { $0.sub.status != "paused" }
-        let label = hasPaused && hasDone ? "暂停·收齐" : (hasPaused ? "已暂停" : (kind == "movie" ? "已入库" : "已收齐"))
-        return SubsHomeShelf(active: active, resting: rest, restingLabel: label)
+        let doneLabel = kind == "movie" ? "已入库" : "已收齐"
+        let label = !paused.isEmpty && !done.isEmpty ? "暂停·\(doneLabel.dropFirst())" : (paused.isEmpty ? doneLabel : "已暂停")
+        return SubsHomeShelf(
+            active: active.sorted { left, right in
+                left.rank != right.rank ? left.rank < right.rank : recentFirst(left.item, right.item)
+            }.map(\.item),
+            paused: paused.sorted(by: recentFirst),
+            done: done.sorted(by: recentFirst),
+            restingLabel: label
+        )
     }
 
-    /// 一排的计数：「5 部追踪中 · 共 12 部」（全在追或一部都不在追时只说总数）。
-    /// 按订阅状态数，首页与海报墙同一口径——「排在前面」与「追踪中」不是一回事
+    /// 一排的计数：「5 部进行中 · 共 12 部」（全部进行中或一部都没有时只说总数）。
+    /// 进行中的数量就是分隔线前的数量，首页与海报墙同一口径
     static func countSummary(_ shelf: SubsHomeShelf) -> String {
         let total = shelf.all.count
-        let tracking = shelf.all.filter { $0.sub.status == "active" }.count
-        guard tracking > 0, tracking < total else { return "共 \(total) 部" }
-        return "\(tracking) 部追踪中 · 共 \(total) 部"
+        let active = shelf.active.count
+        guard active > 0, active < total else { return "共 \(total) 部" }
+        return "\(active) 部进行中 · 共 \(total) 部"
     }
 
-    /// 一张海报的小签与排位；排位 nil = 歇着（已收齐 / 已暂停），排到分隔线后
-    static func chipAndRank(
+    /// 一部订阅的位置与小签。剧集与电影同一套口径，进行中内部按此刻最要紧排：
+    ///
+    ///   下载中 / 整理中 → 有没看的新集（剧集）→ 今天更新 → 某天更新 → 洗版中
+    ///   → 缺集 / 找资源中 → 追更中（剧集，等下一集或下一季）→ 未上映（电影）
+    ///
+    /// 已完成的订阅不因「刚到了、还没看」被拉回前排——那是 Hero 与「刚刚入库」的职责；
+    /// 唯一的例外是洗版：内容虽已齐，但正在换更好的版本，事情还在进行。
+    static func standing(
         _ sub: API.SubscriptionView,
         group: ArrivalGroup?,
         recent: API.RecentArrivalView?
-    ) -> (SubsHomeChip?, Double?) {
+    ) -> SubsHomeStanding {
         let isTV = sub.media.kind == "tv"
+        func active(_ rank: Double, _ chip: SubsHomeChip?) -> SubsHomeStanding {
+            SubsHomeStanding(phase: .active, rank: rank, chip: chip)
+        }
         if sub.status == "paused" {
-            return (SubsHomeChip(text: "已暂停", tone: .calm), nil)
+            return SubsHomeStanding(phase: .paused, rank: 0, chip: SubsHomeChip(text: "已暂停", tone: .calm))
         }
-        if let group {
-            switch group.presentation.statusLabel {
-            case "下载中": return (SubsHomeChip(text: "下载中", tone: .live, pulse: true), 0)
-            case "整理中": return (SubsHomeChip(text: "整理中", tone: .ok, pulse: true), 0)
-            default: break
-            }
-        } else if sub.progress.downloaded > 0 {
-            return (SubsHomeChip(text: "整理中", tone: .ok, pulse: true), 0)
-        } else if sub.progress.grabbed > 0 {
-            return (SubsHomeChip(text: "下载中", tone: .live, pulse: true), 0)
+        // 正在下载 / 整理：有预告按预告，没有（老服务端 / 预告还没取到）按订阅进度判断
+        let pipeline = group?.presentation.statusLabel
+            ?? (sub.progress.downloaded > 0 ? "整理中" : (sub.progress.grabbed > 0 ? "下载中" : nil))
+        switch pipeline {
+        case "下载中": return active(0, SubsHomeChip(text: "下载中", tone: .live, pulse: true))
+        case "整理中": return active(0, SubsHomeChip(text: "整理中", tone: .ok, pulse: true))
+        default: break
         }
-        if let recent {
-            let count = recent.units.count
-            let text = isTV ? (count > 1 ? "新 \(count) 集" : "新一集") : "新入库"
-            return (SubsHomeChip(text: text, tone: .ok), 1)
-        }
-        if let group {
-            if group.daysAhead == 0 { return (SubsHomeChip(text: "今天更新", tone: .today), 2) }
-            let when = group.daysAhead == 1 ? "明天" : (weekday(of: group.expectedDay) ?? "\(group.daysAhead) 天后")
-            return (SubsHomeChip(text: "\(when)更新", tone: .calm), 3 + Double(group.daysAhead) / 100)
-        }
-        if sub.progress.upgrading > 0 {
-            return (SubsHomeChip(text: "洗版中", tone: .upgrade), 4)
-        }
+        let upgrading = sub.progress.upgrading > 0
         if SubscriptionSummary.fullyCollected(sub) || sub.status == "completed" {
-            return (nil, nil)
+            return upgrading
+                ? active(4, SubsHomeChip(text: "洗版中", tone: .upgrade))
+                : SubsHomeStanding(phase: .done, rank: 0, chip: nil)
         }
-        if !isTV {
-            return released(sub) ? (SubsHomeChip(text: "找资源中", tone: .warn), 5) : (SubsHomeChip(text: "未上映", tone: .calm), 6)
+        if isTV, let recent {
+            let count = recent.units.count
+            return active(1, SubsHomeChip(text: count > 1 ? "新 \(count) 集" : "新一集", tone: .ok))
         }
-        return (nil, 5)
+        if let group {
+            if group.daysAhead == 0 { return active(2, SubsHomeChip(text: "今天更新", tone: .today)) }
+            let when = group.daysAhead == 1 ? "明天" : (weekday(of: group.expectedDay) ?? "\(group.daysAhead) 天后")
+            return active(3 + Double(group.daysAhead) / 100, SubsHomeChip(text: "\(when)更新", tone: .calm))
+        }
+        if upgrading { return active(4, SubsHomeChip(text: "洗版中", tone: .upgrade)) }
+        if isTV {
+            let missing = missingAired(sub)
+            return missing > 0 ? active(5, SubsHomeChip(text: "缺 \(missing) 集", tone: .warn)) : active(6, nil)
+        }
+        return released(sub)
+            ? active(5, SubsHomeChip(text: "找资源中", tone: .warn))
+            : active(7, SubsHomeChip(text: "未上映", tone: .calm))
+    }
+
+    /// 剧集订阅范围内「已经播出、库里还没有」的集数（缺集，正在找资源）。
+    /// 只看用户勾选的季；只追新集（没勾季）时看最新一季
+    static func missingAired(_ sub: API.SubscriptionView) -> Int {
+        let seasons = sub.seasonCollection.filter { $0.seasonNumber > 0 }
+        let selected = Set(sub.selectedSeasons.filter { $0 > 0 })
+        let scoped = selected.isEmpty
+            ? Array(seasons.max { $0.seasonNumber < $1.seasonNumber }.map { [$0] } ?? [])
+            : seasons.filter { selected.contains($0.seasonNumber) }
+        return scoped.reduce(0) { $0 + max(0, $1.airedCount - $1.ownedCount) }
     }
 
     /// 海报下第二行
-    static func meta(_ sub: API.SubscriptionView, resting: Bool) -> String {
+    static func meta(_ sub: API.SubscriptionView, phase: SubsHomeStanding.Phase) -> String {
         let year = sub.media.year.map(String.init)
         if sub.media.kind == "movie" {
             if sub.progress.imported > 0 { return [year, "已入库"].compactMap { $0 }.joined(separator: " · ") }
             return year ?? "电影"
         }
         guard let meta = SubscriptionSummary.collectionMeta(sub) else { return year ?? "剧集" }
-        if resting, sub.status != "paused" { return "已收齐 · \(meta.label)" }
+        if phase == .done { return "已收齐 · \(meta.label)" }
         return "\(meta.label) · \(meta.value)"
     }
 

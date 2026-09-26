@@ -373,8 +373,12 @@ private struct SubsHomeAgendaRow: View {
 
 // MARK: - 海报行
 
-/// 剧集 / 电影海报行：在追的在前（此刻最要紧的排最左），已收齐 / 已暂停压暗排在一道
-/// 竖排小字的分隔线后面。标题「›」压栈到完整的海报墙（`AppRoute.subscriptionWall`）。
+/// 剧集 / 电影海报行：进行中的在前（此刻最要紧的排最左，连没上映的也算进行中），
+/// 已暂停 / 已完成压暗排在一道竖排小字的分隔线后面。
+///
+/// 横滑最多放 `limit` 张：一排是浏览亮点的地方，翻到底要十几下就不再是「一眼扫过」；
+/// 超出时末尾放一张「查看全部」卡，与标题「›」一样压栈到完整海报墙（`AppRoute.subscriptionWall`），
+/// 墙上是同一份排好的结果，顺序不变。
 struct SubsHomeShelfRow: View {
     let title: String
     let kind: String
@@ -383,29 +387,37 @@ struct SubsHomeShelfRow: View {
 
     /// 与发现页、媒体库横滑行同宽：一屏两张半，第三张露出一截提示还能滑
     static let cardWidth: CGFloat = 126
-
-    /// 计数按订阅状态算（与海报墙同一口径）：已收齐但有新集的作品排在前面，却不算「追踪中」
-    private var countText: String {
-        SubscriptionsHome.countSummary(shelf)
-    }
+    /// 横滑最多几张（约七屏）；其余在海报墙里
+    static let limit = 20
 
     var body: some View {
+        let active = Array(shelf.active.prefix(Self.limit))
+        let resting = Array(shelf.resting.prefix(Self.limit - active.count))
+        let hidden = shelf.all.count - active.count - resting.count
         VStack(alignment: .leading, spacing: 12) {
-            SubsHomeSectionHeader(title: title, trailing: countText, actionIdentifier: "shelf-more-\(kind)") {
+            SubsHomeSectionHeader(
+                title: title, trailing: SubscriptionsHome.countSummary(shelf), actionIdentifier: "shelf-more-\(kind)"
+            ) {
                 router.push(.subscriptionWall(kind: kind))
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 12) {
-                    ForEach(shelf.active) { item in
+                    ForEach(active) { item in
                         SubsHomePosterCard(item: item).frame(width: Self.cardWidth)
                     }
-                    if !shelf.resting.isEmpty {
-                        if !shelf.active.isEmpty {
+                    if !resting.isEmpty {
+                        if !active.isEmpty {
                             SubsHomeRestingDivider(label: shelf.restingLabel, height: Self.cardWidth * 1.5)
                         }
-                        ForEach(shelf.resting) { item in
+                        ForEach(resting) { item in
                             SubsHomePosterCard(item: item).frame(width: Self.cardWidth)
                         }
+                    }
+                    if hidden > 0 {
+                        SubsHomeSeeAllCard(total: shelf.all.count) {
+                            router.push(.subscriptionWall(kind: kind))
+                        }
+                        .frame(width: Self.cardWidth)
                     }
                 }
                 .scrollTargetLayout()
@@ -419,9 +431,48 @@ struct SubsHomeShelfRow: View {
     }
 }
 
-/// 海报：只留一个状态小签 + 当季收录细线，其余交给下面两行字（规则组 → 媒体库的流向在订阅详情与海报墙里）
-private struct SubsHomePosterCard: View {
+/// 横滑末尾的「查看全部」：与海报同尺寸的一块透明玻璃，排在最后一张之后
+private struct SubsHomeSeeAllCard: View {
+    let total: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            // 与海报同一种撑法：先用 2:3 的空底定住尺寸（横滑里没有给定高度，按比例撑不开），内容叠在上面
+            Color.clear
+                .aspectRatio(Theme.posterAspect, contentMode: .fit)
+                .overlay {
+                    VStack(spacing: 8) {
+                        Image(systemName: "square.grid.2x2")
+                            .font(.system(size: 22, weight: .regular))
+                            .foregroundStyle(Theme.textMuted)
+                        Text("查看全部")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Theme.text)
+                        Text("\(total) 部")
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.textFaint)
+                    }
+                }
+            .background(Color.white.opacity(0.045), in: .rect(cornerRadius: Theme.posterRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.posterRadius, style: .continuous).strokeBorder(Color.white.opacity(0.09)))
+            .contentShape(.rect)
+        }
+        .buttonStyle(SubsHomePressStyle())
+        .accessibilityLabel("查看全部 \(total) 部")
+        .accessibilityIdentifier("shelf-see-all")
+    }
+}
+
+/// 海报：只留一个状态小签 + 进行中剧集的当季收录细线，其余交给下面两行字。
+/// 首页横滑与海报墙共用这一张，状态签与顺序两处一致；墙上多一行「规则组 → 媒体库」流向
+struct SubsHomePosterCard: View {
     let item: SubsHomeShelfItem
+    /// 海报墙的第三行（规则组 → 媒体库）；首页横滑不带
+    var flow: String?
+    /// 已暂停 / 已完成是否压暗：首页一排里靠压暗衬出分隔线；海报墙已按分段标题分组，保持原色便于浏览
+    var dimsResting = true
     @Environment(\.api) private var api
     @Environment(Router.self) private var router
 
@@ -433,7 +484,7 @@ private struct SubsHomePosterCard: View {
                 poster
                 Text(item.sub.media.title)
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(item.resting ? Theme.textMuted : Theme.text)
+                    .foregroundStyle(dimmed ? Theme.textMuted : Theme.text)
                     .lineLimit(1)
                     .padding(.top, 8)
                 Text(item.meta)
@@ -442,6 +493,13 @@ private struct SubsHomePosterCard: View {
                     .foregroundStyle(Theme.textFaint)
                     .lineLimit(1)
                     .padding(.top, 1)
+                if let flow {
+                    Text(flow)
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textFaint)
+                        .lineLimit(1)
+                        .padding(.top, 1)
+                }
             }
             .contentShape(.rect)
         }
@@ -453,18 +511,20 @@ private struct SubsHomePosterCard: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(["《\(item.sub.media.title)》", item.chip?.text, item.meta].compactMap { $0 }.joined(separator: "，"))
+        .accessibilityLabel(["《\(item.sub.media.title)》", item.chip?.text, item.meta, flow].compactMap { $0 }.joined(separator: "，"))
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("subscription-cell")
     }
+
+    private var dimmed: Bool { dimsResting && item.resting }
 
     private var poster: some View {
         Color.clear
             .aspectRatio(Theme.posterAspect, contentMode: .fit)
             .overlay {
                 RemoteImage(url: api.image(item.sub.media.posterUrl, .posterCard))
-                    .saturation(item.resting ? 0.35 : 1)
-                    .brightness(item.resting ? -0.12 : 0)
+                    .saturation(dimmed ? 0.35 : 1)
+                    .brightness(dimmed ? -0.12 : 0)
             }
             .overlay(alignment: .bottom) {
                 if let progress = item.progress {
@@ -484,7 +544,7 @@ private struct SubsHomePosterCard: View {
             }
             .clipShape(.rect(cornerRadius: Theme.posterRadius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Theme.posterRadius, style: .continuous).strokeBorder(Color.white.opacity(0.08)))
-            .shadow(color: .black.opacity(item.resting ? 0.18 : 0.4), radius: 10, y: 6)
+            .shadow(color: .black.opacity(dimmed ? 0.18 : 0.4), radius: 10, y: 6)
     }
 }
 

@@ -13,9 +13,10 @@ import SwiftUI
 /// 这部作品的光照着。链路体检收成右上角的琥珀色警示钮（管理员），不再占首屏一整条横幅。
 ///
 /// 数据：订阅清单直接消费全站订阅索引 `SubscriptionIndex.shared`（订阅弹层里订阅 / 取消后
-/// 即时同步）；整周预告 `today-arrivals?window=week`（10 秒）、刚刚入库 `recent-arrivals`（20 秒）、
-/// 下载快照（管理员，10 秒，给「下载中」补实时进度与 ETA）。老版本服务端没有后两者时，
-/// 对应版块自动不出现，页面其余部分照常。判定口径全在 `SubscriptionsHome`（SubscriptionsHomeModel.swift）。
+/// 即时同步）；整周预告（10 秒）、刚刚入库（20 秒）、下载快照（管理员，10 秒）放在与海报墙共用的
+/// `SubscriptionsHomeFeed.shared`，排好的整页结果按输入指纹缓存——Hero 轮播、底色切换引起的重绘
+/// 不会重排。老版本服务端没有刚刚入库 / 整周预告时，对应版块自动不出现。
+/// 判定口径全在 `SubscriptionsHome`（SubscriptionsHomeModel.swift）。
 struct SubscriptionsView: View {
     @Environment(\.api) private var api
     @Environment(\.permissions) private var permissions
@@ -23,13 +24,8 @@ struct SubscriptionsView: View {
     @Environment(AppModel.self) private var model
 
     @State private var failed = false
-    /// nil = 还没取到（与「取到了但一周都没安排」的空数组区分）
-    @State private var week: [API.TodayArrivalView]?
-    @State private var recent: [API.RecentArrivalView] = []
-    @State private var tasks: [API.DownloadTaskView] = []
     /// 体检整体为 error 时的库错误数；nil = 不亮警示钮
     @State private var healthErrors: Int?
-    @State private var now = Date()
     @State private var heroIndex = 0
     @State private var tint: Color?
     /// 顶部安全区（状态栏 + 顶栏）高度：沉浸 Hero 用等量负边距顶到屏幕物理顶边
@@ -44,12 +40,13 @@ struct SubscriptionsView: View {
     #endif
 
     private var index: SubscriptionIndex { SubscriptionIndex.shared }
+    private var feed: SubscriptionsHomeFeed { SubscriptionsHomeFeed.shared }
     private var all: [API.SubscriptionView]? { index.subscriptions }
 
     var body: some View {
         let subs = all ?? []
-        let groups = SubscriptionsHome.arrivalGroups(week ?? [], tasks: tasks, now: now)
-        let slides = SubscriptionsHome.heroSlides(subscriptions: subs, groups: groups, recent: recent, now: now)
+        let state = feed.state(for: subs)
+        let slides = state.slides
         let loading = all == nil && !failed
         let immersive = loading || (!failed && !slides.isEmpty)
         ScrollView {
@@ -64,7 +61,7 @@ struct SubscriptionsView: View {
                     if !slides.isEmpty {
                         SubsHomeHeroHost(slides: slides, scroll: scroll, index: $heroIndex)
                     }
-                    sections(subs: subs, groups: groups)
+                    sections(state)
                         .padding(.top, slides.isEmpty ? 12 : 22)
                 }
             }
@@ -99,31 +96,28 @@ struct SubscriptionsView: View {
             router.present(.subscribe(SubscribeRequest(titleRef: ref, upgrade: UserDefaults.standard.bool(forKey: "mcSubscribeUpgrade"))))
         }
         #endif
-        .polling(every: 10) { await refreshArrivals() }
-        .polling(every: 20) { await refreshRecent() }
-        .polling(every: 10, immediately: true) { await refreshTasks() }
+        .polling(every: 10) { if hasSubscriptions { await feed.refreshArrivals(api: api) } }
+        .polling(every: 20) { if hasSubscriptions { await feed.refreshRecent(api: api) } }
+        .polling(every: 10, immediately: true) { await feed.refreshTasks(api: api, isAdmin: permissions.isAdmin) }
         .tracksSubscriptionIndex()
     }
 
     // MARK: 版块
 
     @ViewBuilder
-    private func sections(subs: [API.SubscriptionView], groups: [SubscriptionsHome.ArrivalGroup]) -> some View {
-        let days = SubscriptionsHome.scheduleDays(groups: groups, subscriptions: subs, now: now)
-        let tv = SubscriptionsHome.shelf(kind: "tv", subscriptions: subs, groups: groups, recent: recent)
-        let movie = SubscriptionsHome.shelf(kind: "movie", subscriptions: subs, groups: groups, recent: recent)
+    private func sections(_ state: SubsHomeState) -> some View {
         VStack(alignment: .leading, spacing: 36) {
-            if !recent.isEmpty {
-                SubsHomeRecentRow(cards: recent)
+            if !feed.recent.isEmpty {
+                SubsHomeRecentRow(cards: feed.recent)
             }
-            if days.contains(where: { !$0.entries.isEmpty }) {
-                SubsHomeSchedule(days: days)
+            if state.days.contains(where: { !$0.entries.isEmpty }) {
+                SubsHomeSchedule(days: state.days)
             }
-            if !tv.isEmpty {
-                SubsHomeShelfRow(title: "剧集订阅", kind: "tv", shelf: tv)
+            if !state.tv.isEmpty {
+                SubsHomeShelfRow(title: "剧集订阅", kind: "tv", shelf: state.tv)
             }
-            if !movie.isEmpty {
-                SubsHomeShelfRow(title: "电影订阅", kind: "movie", shelf: movie)
+            if !state.movie.isEmpty {
+                SubsHomeShelfRow(title: "电影订阅", kind: "movie", shelf: state.movie)
             }
         }
     }
@@ -208,14 +202,20 @@ struct SubscriptionsView: View {
 
     // MARK: 数据
 
+    private var hasSubscriptions: Bool { !(all ?? []).isEmpty }
+
     private func reload() async {
         failed = false
+        feed.adopt(owner: SubscriptionsHomeFeed.ownerKey(api: api, username: model.session?.username))
         let ok = await index.refresh(api: api, owner: model.session?.username)
         failed = !ok && index.subscriptions == nil
+        guard hasSubscriptions else {
+            await refreshHealth()
+            return
+        }
         async let health: Void = refreshHealth()
-        async let arrivals: Void = refreshArrivals()
-        async let arrived: Void = refreshRecent()
-        _ = await (health, arrivals, arrived)
+        async let data: Void = feed.refreshAll(api: api, isAdmin: permissions.isAdmin)
+        _ = await (health, data)
     }
 
     private func refreshHealth() async {
@@ -228,32 +228,6 @@ struct SubscriptionsView: View {
         } else {
             healthErrors = nil
         }
-    }
-
-    /// 整周预告：有订阅才取；已有快照时瞬时失败继续保留，不闪成空
-    private func refreshArrivals() async {
-        guard let all, !all.isEmpty else { return }
-        now = .now
-        do {
-            week = try await api.subscriptionsListTodayArrivals(window: "week")
-        } catch is CancellationError {
-        } catch {
-            if week == nil { week = [] }
-        }
-    }
-
-    /// 刚刚入库：老版本服务端没有这个接口（404）或瞬时失败时保持原样，这一行不出现 / 不闪
-    private func refreshRecent() async {
-        guard let all, !all.isEmpty else { return }
-        if let list = try? await api.subscriptionsListRecentArrivals() {
-            recent = list
-        }
-    }
-
-    /// 下载任务快照（管理员）：「下载中」的进度与预计时间用下载器实时数据修正
-    private func refreshTasks() async {
-        guard permissions.isAdmin else { return }
-        if let list = try? await api.dlTasks() { tasks = list.items }
     }
 }
 
