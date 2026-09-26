@@ -112,6 +112,31 @@ class PlaybackFileSpec(BaseModel):
     size_bytes: int | None
 
 
+class PlaybackDeliveryView(BaseModel):
+    """这台设备此刻是怎么在播的：直连原文件，还是经服务器重封装 / 转码（活动页的播放方式标识）。"""
+
+    mode: str = Field(
+        description=(
+            "direct=直连原文件；remux=重封装（音视频都不重编码）；"
+            "audio=只转音频（视频直通）；transcode=视频转码"
+        )
+    )
+    label: str = Field(
+        description="简短中文标识：直连 / 重封装 / 音频转码 / 硬件转码 / 软件转码 / 远程转码"
+    )
+    target: str | None = Field(
+        default=None, description="转码输出规格，如「1080p · H.264 · 8 Mbps」；直连 / 重封装为 null"
+    )
+    executor: str | None = Field(
+        default=None,
+        description=(
+            "在哪转、用什么转，如「NAS · Intel 核显（QSV）」"
+            "「远程 Worker「studio」· Apple 芯片（VideoToolbox）」"
+        ),
+    )
+    reason: str | None = Field(default=None, description="服务端为什么选这个播放方式（中文）")
+
+
 class ActivePlaybackSessionView(BaseModel):
     """一台设备正在进行的播放会话。"""
 
@@ -134,6 +159,10 @@ class ActivePlaybackSessionView(BaseModel):
     bytes_sent: int | None
     connections: int
     file: PlaybackFileSpec | None
+    # 播放方式：按设备在服务端有没有在跑的重封装 / 转码会话判定；
+    # 网盘直链（play_method=remote）为 null。seek 重启的一瞬间会话可能正在重建，
+    # 这一轮会短暂显示成直连，下一轮轮询即恢复
+    delivery: PlaybackDeliveryView | None = None
     started_at: datetime
     last_report_at: datetime
 
