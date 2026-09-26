@@ -288,11 +288,15 @@ struct PlayerBottomBar: View {
     }
 }
 
-/// 进度条：文件时间轴，已缓冲区、章节刻度；拖动时上方浮出缩略图与落点时间。
+/// 进度条：文件时间轴、已缓冲区；拖动时上方浮出缩略图与落点时间（含章节名）。
 /// 跳转便宜（落点在缓冲里 / 原文件直出停住时）拖动途中画面就跟过去，松手再精确落地。
 ///
 /// 细条只有 4pt，但整条带子 44pt 高都能按（系统最小触控尺寸），细条在带子正中。
 /// 圆点在条内滑动（同 UISlider）：落点 0 时圆点左缘与条左缘齐平，不探出左右那条对齐线。
+///
+/// 进度条上不画章节：原先在细条上切深色竖线，章节一多整条就像断成了十几截（真机反馈：蜘蛛侠 16 个章节）；
+/// 改成拖动时在细条上方点小圆点也被否了——电影的章节多是压片时按编号随手分的（「Part 01」「Chapter 3」），
+/// 位置不对应剧情，点出来没有信息量。系统播放器同样不在进度条上画章节。章节名只在拖动预览里跟着落点显示。
 struct PlayerProgressBar: View {
     let controller: PlaybackController
     let trickplay: TrickplayImages
@@ -323,15 +327,6 @@ struct PlayerProgressBar: View {
                 Capsule().fill(.white.opacity(0.22)).frame(height: track)
                 Capsule().fill(.white.opacity(0.35)).frame(width: x(buffered), height: track)
                 Capsule().fill(Theme.accentStrong).frame(width: x(ratio), height: track)
-                // 章节刻度（合成章节服务端不下发）
-                ForEach(controller.session?.chapters ?? [], id: \.startMs) { chapter in
-                    if duration > 0, chapter.startMs > 0 {
-                        Rectangle()
-                            .fill(.black.opacity(0.7))
-                            .frame(width: 2, height: track)
-                            .offset(x: x(Double(chapter.startMs) / duration) - 1)
-                    }
-                }
                 Circle()
                     .fill(.white)
                     .frame(width: dragging ? 18 : 12, height: dragging ? 18 : 12)
