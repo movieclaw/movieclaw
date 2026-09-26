@@ -189,8 +189,11 @@ private struct BarButton: View {
             Image(systemName: systemImage)
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 42, height: 38)
+                .frame(width: 44, height: 44)
                 .background(open ? Color.white.opacity(0.15) : .clear, in: .capsule)
+                // 无样式按钮只在不透明像素上响应点击：背景透明时只有图标笔画能点中，
+                // 「⋯」只剩三个小圆点，真机上几乎点不到（用户反馈），必须显式给整块点击区域
+                .contentShape(.capsule)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
