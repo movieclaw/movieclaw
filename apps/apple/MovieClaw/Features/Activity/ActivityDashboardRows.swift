@@ -155,7 +155,7 @@ struct ActivityBoostSummaryRow: View {
 
 // MARK: - 最近播放 / 观看统计 / 最近完成
 
-/// 最近播放一行：小海报 · 片名 / 成员 · 设备 · 右侧上下两行「相对时间 / 看到哪」。
+/// 最近播放一行：小海报 · 片名 / 成员 · 设备 · 右侧上下两行「看到哪 / 相对时间」。
 /// 观看进度放右列且不截断：设备名（Jellyfin 客户端常带长长的型号与系统版本）只截断它自己那一行，
 /// 不会再把「看到 42%」挤没。
 struct ActivityRecentPlayRow: View {
@@ -175,15 +175,17 @@ struct ActivityRecentPlayRow: View {
                     .font(.footnote).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
             Spacer(minLength: 8)
+            // 结果在上（与片名同一行、字重高一档），时间在下（与副标题同一行、更淡）
             VStack(alignment: .trailing, spacing: 2) {
-                Text(playing ? "播放中" : ActivityFormat.relative(entry.startedAt))
-                    .foregroundStyle(playing ? Theme.success : Theme.textFaint)
+                if playing {
+                    Text("播放中").fontWeight(.medium).foregroundStyle(Theme.success)
+                } else if entry.completed {
+                    Label("看完", systemImage: "checkmark").labelStyle(.titleAndIcon).fontWeight(.medium).foregroundStyle(Theme.success)
+                } else if let percent = entry.progressPercent {
+                    Text("看到 \(percent)%").fontWeight(.medium).foregroundStyle(Theme.textMuted)
+                }
                 if !playing {
-                    if entry.completed {
-                        Label("看完", systemImage: "checkmark").labelStyle(.titleAndIcon).foregroundStyle(Theme.success)
-                    } else if let percent = entry.progressPercent {
-                        Text("看到 \(percent)%").foregroundStyle(Theme.textMuted)
-                    }
+                    Text(ActivityFormat.relative(entry.startedAt)).foregroundStyle(Theme.textFaint)
                 }
             }
             .font(.footnote)
