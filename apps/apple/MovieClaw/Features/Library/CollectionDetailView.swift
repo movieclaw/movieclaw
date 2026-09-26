@@ -3,7 +3,10 @@ import SwiftUI
 /// 合集详情（Web `library-collection-detail-view.tsx`，路由 `/library/{id}/c/{cid}` 与 `/library/c/{cid}`）。
 ///
 /// 页头：名称、「已有 N / 共 M」（系列合集拉到上游档案时）、只有我可见 / 已隐藏；
-/// 下面一行说清这个合集怎么来的：系列 / 固定名单 / 自动收录（规则画成「且 / 或」胶囊）。
+/// 下面一行说清这个合集怎么来的：系列 / 固定名单 / 自动收录。自动收录按 iOS 的「摘要 + 点开看详情」：
+/// 页头一枚玻璃胶囊只放一句摘要（「✦ 自动收录 · 地区：中国大陆、台湾、香港 ›」，与下面的排序胶囊同一质感），
+/// 点开是底部弹层（`CollectionRulesSheet`），按维度分组列出条件、把「且 / 或」写成人话，能编辑的给「编辑条件」。
+/// 原先照搬 Web 的「标签框 + 值 + 或 + 且」小胶囊拼图在手机上又密又不像可点，维度名还会被挤成「…」。
 /// 排序：默认档是合集自己的序（手动合集叫「自定顺序」，系列叫「按上映顺序」），其余同单库页，按合集分别记忆。
 /// 系列合集在默认序下把库里缺的几部按上映时间插进墙里（「未入库 / 追踪中」）。
 ///
@@ -32,6 +35,8 @@ struct CollectionDetailView: View {
     @State private var ordering: [API.LibraryItemView]?
     @State private var share: ShareRequest?
     @State private var membersEpoch = 0
+    /// 「自动收录」条件详情弹层
+    @State private var showingRules = false
     /// 海报墙当前窗口是按哪个排序载入的
     @State private var wallSortKey: String?
 
@@ -133,6 +138,20 @@ struct CollectionDetailView: View {
                 .sheetFeedback()
             }
         }
+        .sheet(isPresented: $showingRules) {
+            if let collection {
+                CollectionRulesSheet(
+                    groups: ruleGroups(LibraryFilter(rules: collection.rules)),
+                    onEdit: libraryId != nil && collection.editable
+                        ? {
+                            showingRules = false
+                            editing = LibraryFilter(rules: collection.rules)
+                        }
+                        : nil
+                )
+                .sheetFeedback()
+            }
+        }
         .sheet(isPresented: Binding(get: { ordering != nil }, set: { if !$0 { ordering = nil } })) {
             if let ordering {
                 CollectionOrderSheet(collectionId: collectionId, items: ordering) { membersChanged() }
@@ -191,33 +210,37 @@ struct CollectionDetailView: View {
         } else if !collection.ruleDriven {
             note("固定名单 · 不会自动收录新片")
         } else {
-            let filter = LibraryFilter(rules: collection.rules)
-            let groups = ruleGroups(filter)
+            let groups = ruleGroups(LibraryFilter(rules: collection.rules))
             if groups.isEmpty {
                 note("自动收录 · 收录本库全部作品")
             } else {
-                TrackFlowLayout(spacing: 8, lineSpacing: 8) {
-                    Text("自动收录").font(.caption).foregroundStyle(Theme.textFaint)
-                    ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
-                        HStack(spacing: 8) {
-                            if index > 0 { Text("且").font(.caption).foregroundStyle(.white.opacity(0.3)) }
-                            HStack(spacing: 6) {
-                                Text(group.label).font(.caption).foregroundStyle(.white.opacity(0.4))
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(.black.opacity(0.25), in: .rect(cornerRadius: 4))
-                                ForEach(Array(group.values.enumerated()), id: \.offset) { i, value in
-                                    if i > 0 { Text("或").font(.caption).foregroundStyle(.white.opacity(0.3)) }
-                                    Text(value).font(.caption.weight(.semibold)).foregroundStyle(.white)
-                                }
-                            }
-                            .padding(.horizontal, 8)
-                            .frame(height: 28)
-                            .background(.white.opacity(0.1), in: .rect(cornerRadius: 8))
-                        }
+                Button {
+                    showingRules = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles").foregroundStyle(Theme.accent)
+                        Text("自动收录").fontWeight(.semibold).foregroundStyle(Theme.text)
+                        Text("·").foregroundStyle(Theme.textFaint)
+                        Text(ruleSummary(groups)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                        Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(Theme.textFaint)
                     }
+                    .font(.footnote)
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    .contentShape(.capsule)
                 }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: .capsule)
+                .accessibilityLabel("自动收录条件：\(ruleSummary(groups))")
+                .accessibilityHint("查看收录条件")
+                .accessibilityIdentifier("collection-rules")
             }
         }
+    }
+
+    /// 一行摘要：维度之间用「 · 」，维度内的取值用顿号（「地区：中国大陆、台湾、香港 · 类型：剧情」）
+    private func ruleSummary(_ groups: [(label: String, values: [String])]) -> String {
+        groups.map { "\($0.label)：\($0.values.joined(separator: "、"))" }.joined(separator: " · ")
     }
 
     private func note(_ text: String) -> some View {
@@ -500,6 +523,57 @@ struct CollectionDetailView: View {
         } catch {
             feedback.error(error.localizedDescription.isEmpty ? "保存失败" : error.localizedDescription)
         }
+    }
+}
+
+/// 「自动收录」条件详情（合集页头胶囊点开）。
+///
+/// 系统分组列表：每个维度一组、列出取值（组内满足其一即可），顶部一句话说清「同时满足每一组」与
+/// 「以后入库的新片也会自动归进来」——把 Web 胶囊里的「且 / 或」符号写成人话。
+/// 能编辑的合集（本库视图里、用户自建的规则合集）底部给「编辑条件」，回到页头的条件编辑器。
+private struct CollectionRulesSheet: View {
+    let groups: [(label: String, values: [String])]
+    /// nil = 不可编辑（系统生成的合集、跨库视图）
+    let onEdit: (() -> Void)?
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                } footer: {
+                    Text(groups.count > 1
+                        ? "同时满足下面每一组条件的作品会自动收进这个合集，以后入库的新片也会自动归进来。"
+                        : "满足下面条件的作品会自动收进这个合集，以后入库的新片也会自动归进来。")
+                }
+                ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                    Section {
+                        ForEach(Array(group.values.enumerated()), id: \.offset) { _, value in
+                            Text(value)
+                        }
+                    } header: {
+                        Text(group.label)
+                    } footer: {
+                        if group.values.count > 1 { Text("满足其中之一即可") }
+                    }
+                }
+                if let onEdit {
+                    Section {
+                        Button("编辑条件", systemImage: "slider.horizontal.3", action: onEdit)
+                    }
+                }
+            }
+            .navigationTitle("自动收录")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .accessibilityIdentifier("collection-rules-sheet")
     }
 }
 
