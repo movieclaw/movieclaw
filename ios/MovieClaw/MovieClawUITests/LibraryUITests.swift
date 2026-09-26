@@ -103,14 +103,17 @@ final class LibraryUITests: XCTestCase {
         let height = app.windows.firstMatch.frame.height
         let cells = wall.buttons.allElementsBoundByIndex
         let top: CGFloat = height * 0.3
-        let bottom: CGFloat = height * 0.8
+        let bottom: CGFloat = height * 0.7
         var picked: XCUIElement?
         for cell in cells where cell.isHittable && !cell.label.isEmpty {
             let frame: CGRect = cell.frame
-            if frame.minY > top, frame.maxY < bottom {
+            if frame.midY > top, frame.midY < bottom {
                 picked = cell
                 break
             }
+        }
+        if picked == nil {
+            print("[LibraryUITests] 墙上按钮：\(cells.prefix(12).map { "\($0.identifier)|\($0.label)|\($0.frame)|\($0.isHittable)" })")
         }
         let target = try XCTUnwrap(picked, "视口中部没有可点的海报")
         let label = target.label
