@@ -6,7 +6,7 @@ import SwiftUI
 /// 类型 / 系列与合集 → 媒体轨道（先挑版本与音轨字幕）→ 播放键（落点）+ 收藏 / 已看 → 简介 →
 /// 分集（剧集）→ 章节条 → 演职员 → 文件（管理员可删除 / 恢复 / 立即清理）→ 外部词条。
 ///
-/// - 播放键三态：播放 / 继续 · 从 mm:ss 起播（下方进度条 + 剩余 X）/ 重新播放；续播点来自 `GET /playback/resume`，
+/// - 播放键三态：播放 / 继续 mm:ss（下方进度条 + 剩余 X）/ 重新播放；续播点来自 `GET /playback/resume`，
 ///   关掉播放器、服务端收下「停止」后重拉（`.playbackStopReported`），按钮立即跟上刚才看到的位置；
 /// - 收藏针对整部作品，已看针对当前单元（电影本身 / 选中的那一集），都走 `POST /playback/marks`；
 /// - 刮削进行中每 2 秒、章节图生成中每 3 秒（最多 20 次）重拉详情；
@@ -385,7 +385,7 @@ struct LibraryItemDetailView: View {
         let percent: Int? = resumable && (duration ?? 0) > 0 ? min(100, max(2, Int((Double(position) / Double(duration!) * 100).rounded()))) : nil
         let remaining: Int? = resumable && (duration ?? 0) > position ? Int((Double(duration! - position) / 60000).rounded()) : nil
         // 看过一段：按钮直接写从哪里起播（点它就从这里接着放），下方进度条只说还剩多少
-        let label = finished ? "重新播放" : resumable ? "继续 · 从 \(Formatters.clock(Double(position) / 1000)) 起播" : "播放"
+        let label = finished ? "重新播放" : resumable ? "继续 \(Formatters.clock(Double(position) / 1000))" : "播放"
         let progressText: String? = resumable
             ? remaining.map { $0 >= 1 ? "剩余 \(Self.runtimeText($0))" : "即将看完" } ?? (duration != nil ? "即将看完" : nil)
             : nil
