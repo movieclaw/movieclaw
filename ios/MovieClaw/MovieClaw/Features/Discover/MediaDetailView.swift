@@ -599,9 +599,10 @@ struct DetailPhotoWall: View {
         let client = api
         var action: LightboxAction?
         if active.id == "backdrops" {
-            action = LightboxAction(label: "设为背景", busyLabel: "正在下载并设置…", doneLabel: "已设为背景", systemImage: "photo") { i in
-                _ = try await client.uploadBackdrop(fromRemote: images[i].fullUrl)
-            }
+            action = MediaDetailView.setBackdropAction(
+                upload: { try await client.uploadBackdrop(fromRemote: images[$0].fullUrl) },
+                apply: { await AppBackdropStore.shared.apply(appearance: $0, api: client) }
+            )
         }
         lightbox = DiscoverLightboxContent(
             urls: images.map { api.image($0.fullUrl) },
@@ -662,5 +663,20 @@ extension API.DiscoveredTitleDetailsView {
             recommendations: [],
             libraryLinks: []
         )
+    }
+}
+
+extension MediaDetailView {
+    /// 剧照灯箱「设为背景」：上传成功后**立即**把后端回显的外观视图应用到全站背景
+    /// （同 Web lib/backdrop.tsx 上传后 applyView）。曾经丢掉回显，提示「已设为背景」
+    /// 背景却要重启才变（第二轮审计 N-03-1）。拆成静态函数便于单元测试核对这条接线
+    static func setBackdropAction(
+        upload: @escaping (Int) async throws -> API.AppearanceView,
+        apply: @escaping (API.AppearanceView) async -> Void
+    ) -> LightboxAction {
+        LightboxAction(label: "设为背景", busyLabel: "正在下载并设置…", doneLabel: "已设为背景", systemImage: "photo") { index in
+            let view = try await upload(index)
+            await apply(view)
+        }
     }
 }

@@ -112,6 +112,18 @@ struct FavoritesView: View {
         }
         .onAppear { if pager.items != nil { Task { await pager.refresh() } } }
         .refreshable { await pager.refresh() }
+        // 挂后台 30 分钟以上再回来算重新进入（同 Web useWallRecall）：复位到墙首，重新询问
+        .onWallReentry(scope: Self.recallScope) { resetForReentry() }
+    }
+
+    private func resetForReentry() {
+        guard didOfferRecall else { return } // 首载还没问过：正常流程会问
+        galleryStart = 0
+        Task {
+            await pager.jump(to: 0)
+            if let first = pager.items?.first { scrollProxy?.scrollTo(first.id, anchor: .top) }
+        }
+        recallOffset = LibraryWallRecall.read(scope: Self.recallScope, view: recallView).flatMap { $0 < (pager.total ?? 0) ? $0 : nil }
     }
 
     @ViewBuilder

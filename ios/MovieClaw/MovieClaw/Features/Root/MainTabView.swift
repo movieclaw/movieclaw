@@ -85,6 +85,8 @@ struct MainTabView: View {
             model.captureResume(tab: router.selectedTab, path: router.paths[router.selectedTab] ?? [])
         }
         .onChange(of: scenePhase) { _, phase in
+            // 墙位置的「久别回归」判定全站共用一个时刻（各面墙出现时比较，见 LibraryWallRecall）
+            LibraryWallRecall.noteScenePhase(phase)
             // 回到前台：后台静默重新校验身份与权限（Web AuthGate 每次挂载重取 /auth/me），
             // 管理员顺带刷新待更新快照（Web 窗口获得焦点即刷新）
             guard phase == .active else { return }

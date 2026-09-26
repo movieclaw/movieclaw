@@ -92,13 +92,16 @@ struct PlaybackWatchdogsTests {
     @Test func networkRestartBudgetCapsConsecutiveRestarts() {
         var budget = NetworkRestartBudget()
         // 连续两次没出画还能重开，第三次不再相信「网络」归因
-        #expect(budget.allowRestart())
-        #expect(budget.allowRestart())
-        #expect(!budget.allowRestart())
-        #expect(!budget.allowRestart())
+        let first = budget.allowRestart()
+        let second = budget.allowRestart()
+        let third = budget.allowRestart()
+        let fourth = budget.allowRestart()
+        #expect(first && second)
+        #expect(!third && !fourth)
         // 放起来过一次就清零，下次断线照常重开
         budget.reachedPlaying()
-        #expect(budget.allowRestart())
+        let afterPlaying = budget.allowRestart()
+        #expect(afterPlaying)
         budget.reset()
         #expect(budget.consecutive == 0)
     }

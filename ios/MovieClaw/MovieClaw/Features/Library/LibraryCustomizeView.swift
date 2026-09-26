@@ -11,6 +11,7 @@ import SwiftUI
 struct LibraryCustomizeView: View {
     @Environment(\.api) private var api
     @Environment(Feedback.self) private var feedback
+    @Environment(AppModel.self) private var model
     @State private var prefs = LibraryHomePrefs.shared
 
     @State private var libraries: [API.LibraryView]?
@@ -107,6 +108,8 @@ struct LibraryCustomizeView: View {
             let (l, c, u) = try await (libs, cols, ui)
             collections = c
             fullPrefs = u
+            // 副本记在当前账号名下（换过账号时旧账号的清单随之作废）
+            prefs.adopt(owner: LibraryHomePrefs.ownerKey(api: api, username: model.session?.username))
             prefs.rows = u.home.rows
             libraries = l
             loadFailed = false

@@ -155,6 +155,65 @@ enum LibraryWallRecall {
         all[scope] = ["view": view, "offset": offset, "at": Date.now.timeIntervalSince1970]
         UserDefaults.standard.set(all, forKey: key)
     }
+
+    // MARK: 久别回归（全局，同 Web library-wall-recall 的 returnedAt）
+
+    /// 最近一次「挂后台 ≥ 30 分钟再回到前台」的时刻；nil = 本次运行还没发生过
+    private(set) static var returnedAt: Date?
+    private static var backgroundedAt: Date?
+    /// 久别回归发生时广播：正显示着的墙即时复位
+    static let returnedNotification = Notification.Name("movieclaw.library.wall-returned")
+
+    /// 根视图按前后台切换调用（所有记位置的墙共用这一个时刻，而不是各墙自己监听——
+    /// 墙压在详情页下面时收不到前后台切换，回到墙上时要能补判）
+    static func noteScenePhase(_ phase: ScenePhase) {
+        switch phase {
+        case .background:
+            backgroundedAt = .now
+        case .active:
+            guard let since = backgroundedAt else { return }
+            backgroundedAt = nil
+            guard Date.now.timeIntervalSince(since) >= reentryGap else { return }
+            returnedAt = .now
+            NotificationCenter.default.post(name: returnedNotification, object: nil)
+        default:
+            break
+        }
+    }
+
+    /// 久别回归是否发生在「上次在这面墙上记录位置」之后——是的话这次算重新进入（同 Web isReentry）。
+    /// 用户只要在墙上滚一下，记录时间就会超过它，不会反复复位
+    static func isReentry(scope: String) -> Bool {
+        guard let returnedAt else { return false }
+        let saved = (UserDefaults.standard.dictionary(forKey: key)?[scope] as? [String: Any])?["at"] as? Double ?? 0
+        return returnedAt.timeIntervalSince1970 > saved
+    }
+}
+
+extension View {
+    /// 久别回归时执行 `action`（复位到墙首、重新询问「回到上次位置」）：墙正显示时即时触发；
+    /// 墙当时压在别的页面下面，就在它下次出现时补触发。同一次回归每面墙只处理一次
+    func onWallReentry(scope: String, perform action: @escaping () -> Void) -> some View {
+        modifier(LibraryWallReentryModifier(scope: scope, action: action))
+    }
+}
+
+private struct LibraryWallReentryModifier: ViewModifier {
+    let scope: String
+    let action: () -> Void
+    @State private var handled: Date?
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: LibraryWallRecall.returnedNotification)) { _ in check() }
+            .onAppear { check() }
+    }
+
+    private func check() {
+        guard let at = LibraryWallRecall.returnedAt, at != handled, LibraryWallRecall.isReentry(scope: scope) else { return }
+        handled = at
+        action()
+    }
 }
 
 /// 进页面时问一句要不要跳回上次位置；不理它、往下滑一屏就自己消失

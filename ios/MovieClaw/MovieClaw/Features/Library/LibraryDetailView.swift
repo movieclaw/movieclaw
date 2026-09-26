@@ -67,8 +67,10 @@ struct LibraryDetailView: View {
     @State private var galleryStart = 0
     @State private var photoJump: PhotoWallJump?
     @State private var pendingOpened = false
-    @State private var backgroundedAt: Date?
-    @Environment(\.scenePhase) private var scenePhase
+    /// 换排序/筛选触发的整墙重载（新的一次作废旧的）
+    @State private var wallTask: Task<Void, Never>?
+    /// 页面滚动代理：久别回归复位时滚回墙顶
+    @State private var scrollProxy: ScrollViewProxy?
 
     enum WallView: String { case items, collections }
 
@@ -161,8 +163,17 @@ struct LibraryDetailView: View {
             await probeMetaRefresh()
         }
         .task(id: refreshingMeta) { await pollMetaRefresh() }
-        .onChange(of: scenePhase) { _, phase in handleScenePhase(phase) }
-        .task(id: wallKey) { await reloadWall() }
+        .onWallReentry(scope: recallScope) { resetForReentry() }
+        // 首载与换排序分开（同收藏页）：`.task` 每次重新出现都会重跑，把 reset 放在里面会让
+        // 从条目详情返回时整面墙清空、跳回墙首（Web 这里是快照恢复 + 整窗对账，2026-09-07 用户反馈过）。
+        // 返回时的整窗对账由上面的 reload（pager.refresh）负责
+        .task { if pager.items == nil { await reloadWall() } }
+        .onChange(of: wallKey) {
+            // 换排序 / 筛选：图廊窗口也回墙首（同 Web galleryStart = 0）
+            galleryStart = 0
+            wallTask?.cancel()
+            wallTask = Task { await reloadWall() }
+        }
         .onChange(of: sort) { sort.save(Self.sortStorageKey) }
         .task(id: showHiddenCollections) { await reloadCollections() }
         .polling(every: pollInterval) { await reload() }
@@ -272,6 +283,7 @@ struct LibraryDetailView: View {
             }
             .animation(.snappy, value: recallOffset)
             .refreshable { await reload() }
+            .onAppear { scrollProxy = proxy }
         }
     }
 
@@ -600,8 +612,8 @@ struct LibraryDetailView: View {
             if library?.capabilities.playable == true, view == .items || galleryOn {
                 Button(galleryOn ? "回到海报墙" : "图床浏览") { gallery.galleryMode.toggle() }
             }
-            if view == .collections, permissions.canManageLibraries {
-                // 隐藏合集是管理员的事：普通成员在合集视图下没有这一项（同 Web）
+            if view == .collections {
+                // 只要 ⋯ 在、处于合集视图就给（同 Web：showHiddenCollections 只看视图，不看身份）
                 Button(showHiddenCollections ? "不显示已隐藏的合集" : "显示已隐藏的合集") { showHiddenCollections.toggle() }
             }
             if galleryOn || photoWall {
@@ -740,6 +752,13 @@ struct LibraryDetailView: View {
             let l = try await libs
             if l != libraries { libraries = l }
             loadFailed = false
+            // 整库元数据刷新可能是别处发起的（首页卡片、其他设备、定时任务）：库列表里带着状态，
+            // 据此补种进度面板；已有进行中的状态时不覆盖（专用 2 秒轮询更新鲜），同 Web
+            if let remote = l.first(where: { $0.id == id })?.metadataRefresh, remote.refreshing, metaRefresh?.refreshing != true {
+                metaRefresh = remote
+            }
+            // 首轮墙可能比库列表先回来：那时还问不了「回到上次位置」，这里补问
+            if pager.items != nil { checkRecall() }
             if let p = await prov, p != provisional { provisional = p }
             let (m, u, r, i, j) = await (miss, unknown, rev, ign, jobs)
             var partialFailure = false
@@ -791,11 +810,16 @@ struct LibraryDetailView: View {
         if sort == "title" || sort == "release_date" {
             index = (try? await api.libraryIndexFiltered(libraryId: id, filter: filter, sort: sort, order: order)) ?? []
         }
-        if !recallChecked, libraries != nil {
-            recallChecked = true
-            let offset = LibraryWallRecall.read(scope: recallScope, view: recallView)
-            if let offset, offset < (library?.stats.itemCount ?? 0) { recallOffset = offset }
-        }
+        checkRecall()
+    }
+
+    /// 进页后问一次「回到上次位置」：墙与库列表（要用作品总数判断记录是否还有效）都到齐才问，
+    /// 两者谁先回来都行——另一方回来时会再调一次
+    private func checkRecall() {
+        guard !recallChecked, libraries != nil, pager.items != nil else { return }
+        recallChecked = true
+        let offset = LibraryWallRecall.read(scope: recallScope, view: recallView)
+        if let offset, offset < (library?.stats.itemCount ?? 0) { recallOffset = offset }
     }
 
     private func trackVisible(_ ids: [Int]) {
@@ -818,23 +842,18 @@ struct LibraryDetailView: View {
         }
     }
 
-    /// 挂后台 30 分钟以上再回来算「重新进入」（同 Web library-wall-recall）：墙复位到墙首，重新问一次要不要回去
-    private func handleScenePhase(_ phase: ScenePhase) {
-        switch phase {
-        case .background:
-            backgroundedAt = .now
-        case .active:
-            guard let since = backgroundedAt else { return }
-            backgroundedAt = nil
-            guard Date.now.timeIntervalSince(since) >= LibraryWallRecall.reentryGap else { return }
-            let offset = LibraryWallRecall.read(scope: recallScope, view: recallView)
-            galleryStart = 0
-            photoJump = PhotoWallJump(offset: 0)
-            Task { await pager.jump(to: 0) }
-            if let offset, offset < (library?.stats.itemCount ?? 0) { recallOffset = offset }
-        default:
-            break
+    /// 挂后台 30 分钟以上再回来算「重新进入」（同 Web library-wall-recall，判定见 `onWallReentry`）：
+    /// 墙复位到墙首（连滚动位置一起），重新问一次要不要回去
+    private func resetForReentry() {
+        guard recallChecked else { return } // 首载还没问过：正常流程会问
+        let offset = LibraryWallRecall.read(scope: recallScope, view: recallView)
+        galleryStart = 0
+        photoJump = PhotoWallJump(offset: 0)
+        Task {
+            await pager.jump(to: 0)
+            if let first = pager.items?.first { scrollProxy?.scrollTo(first.id, anchor: .top) }
         }
+        if let offset, offset < (library?.stats.itemCount ?? 0) { recallOffset = offset }
     }
 
     // MARK: 元数据刷新状态
@@ -852,11 +871,14 @@ struct LibraryDetailView: View {
             try? await Task.sleep(for: .seconds(2))
             if Task.isCancelled { return }
             guard let next = try? await api.libraryMetadataGetRefreshStatus(libraryId: libraryId) else { continue }
-            if next != metaRefresh { metaRefresh = next }
             if !next.refreshing {
+                // 先重拉再写状态：写状态会让 refreshingMeta 变 false，本任务（task(id:)）随之被取消，
+                // 先写就会把收尾这次重拉一起取消掉，新海报要等下一轮 30 秒轮询才出现
                 await reload()
+                metaRefresh = next
                 return
             }
+            if next != metaRefresh { metaRefresh = next }
         }
     }
 

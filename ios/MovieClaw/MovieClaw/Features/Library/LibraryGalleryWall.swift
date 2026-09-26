@@ -270,8 +270,14 @@ struct LibraryGalleryWall: View {
             .frame(maxWidth: .infinity)
             .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
             .task(id: LoadKey(reload: reloadKey, start: startOffset)) {
+                // `.task` 每次重新出现都会重跑：从条目详情返回时取数口径没变，窗口原样保留
+                // （同 Web：图廊窗口按「来源 + 排序」记键，键没变就不重拉），不跳回墙首
+                let key = AnyHashable(LoadKey(reload: reloadKey, start: startOffset))
+                guard !feed.holdsWindow(for: key) else { return }
                 visibleRows = [:]
                 await feed.reload(fetch: fetch, from: startOffset)
+                // 被更新的口径打断的这一轮不记键（窗口里可能还是旧口径的数据）
+                if !Task.isCancelled { feed.markWindow(key) }
             }
             .fullScreenCover(item: $lightbox, onDismiss: {
                 afterDismiss?()
@@ -444,6 +450,18 @@ private final class GalleryFeed {
     /// 排版缓存：灯箱翻页等无关状态变化时不重算几千张瓦片的位置
     @ObservationIgnored private var rowsCache: (key: String, rows: [GalleryRow])?
     @ObservationIgnored private var version = 0
+    /// 当前窗口是按哪个取数口径（来源 + 排序 + 起点）载入的
+    @ObservationIgnored private var windowKey: AnyHashable?
+
+    /// 已经按这个口径载好了窗口（失败或还在转圈的不算）
+    func holdsWindow(for key: AnyHashable) -> Bool {
+        guard windowKey == key, case .loaded = phase else { return false }
+        return true
+    }
+
+    func markWindow(_ key: AnyHashable) {
+        if case .loaded = phase { windowKey = key }
+    }
 
     func reload(fetch: (Int, Int) async throws -> [API.LibraryGalleryGroupView], from offset: Int = 0) async {
         generation += 1

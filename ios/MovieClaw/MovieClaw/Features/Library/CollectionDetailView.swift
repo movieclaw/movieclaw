@@ -17,6 +17,7 @@ struct CollectionDetailView: View {
     @Environment(\.permissions) private var permissions
     @Environment(Feedback.self) private var feedback
     @Environment(Router.self) private var router
+    @Environment(AppModel.self) private var model
     @State private var homePrefs = LibraryHomePrefs.shared
     @State private var gallery = GalleryPrefs.shared
 
@@ -31,6 +32,8 @@ struct CollectionDetailView: View {
     @State private var ordering: [API.LibraryItemView]?
     @State private var share: ShareRequest?
     @State private var membersEpoch = 0
+    /// 海报墙当前窗口是按哪个排序载入的
+    @State private var wallSortKey: String?
 
     private struct ShareRequest: Identifiable {
         var initial: API.ShareView?
@@ -73,6 +76,8 @@ struct CollectionDetailView: View {
     private var sortKey: String { "\(sort.sort == "default" ? "" : sort.sort)\(sort.reversed ? ":rev" : "")" }
     private var rows: [API.LibraryItemView] { pager.items ?? [] }
     private var galleryOn: Bool { gallery.galleryMode && !rows.isEmpty }
+    private var homePrefsOwner: String { LibraryHomePrefs.ownerKey(api: api, username: model.session?.username) }
+
     private var homeRow: API.HomeRowPref? { homePrefs.rows?.first { $0.collectionId == collectionId } }
     private var onHome: Bool { homeRow.map { $0.hidden != true } ?? false }
 
@@ -107,7 +112,14 @@ struct CollectionDetailView: View {
         .tracksSubscriptionIndex()
         .task(id: "\(sortKey)|\(sortLoaded)") {
             guard sortLoaded else { return }
+            // `.task` 每次重新出现都会重跑：排序没变（从条目详情返回）就只整窗对账、位置不动，
+            // 不能 reset 回墙首（同 Web 快照恢复；第二轮审计 N-04a-2）
+            if wallSortKey == sortKey, pager.items != nil {
+                await pager.refresh()
+                return
+            }
             sort.save(sortStorageKey)
+            wallSortKey = sortKey
             await reloadItems()
         }
         .sheet(item: $share) { request in
@@ -357,7 +369,7 @@ struct CollectionDetailView: View {
                 sort = WallSortState.load(sortStorageKey, default: WallSortState(sort: "default"), allowed: ["default"] + Self.prefLabels.map(\.0))
                 sortLoaded = true
             }
-            if homePrefs.rows == nil { homePrefs.rows = (try? await api.uiPrefsShow())?.home.rows }
+            await homePrefs.ensureLoaded(api: api, owner: homePrefsOwner)
             if row.kind == "series" { series = try? await api.collectionSeriesGet(collectionId: collectionId) }
             if !row.rules.isEmpty, let libraryId {
                 let filter = LibraryFilter(rules: row.rules)
@@ -423,8 +435,11 @@ struct CollectionDetailView: View {
     private func toggleOnHome(_ collection: API.CollectionView) async {
         let wasOnHome = onHome
         do {
-            // 首页偏好还没读到（或上次读取失败）时先强制重拉：以空清单为底整份保存会覆盖用户自定义的行
-            if homePrefs.rows == nil { homePrefs.rows = try await api.uiPrefsShow().home.rows }
+            // 首页偏好还没读到（或上次读取失败、刚换了账号）时先强制重拉：以空清单或别的账号的清单为底
+            // 整份保存会覆盖用户自定义的行
+            let owner = homePrefsOwner
+            homePrefs.adopt(owner: owner)
+            if homePrefs.rows == nil { homePrefs.accept(try await api.uiPrefsShow().home.rows, for: owner) }
             let rows: [API.HomeRowPrefInput]
             if homeRow != nil {
                 let saved = homePrefs.rows ?? []
