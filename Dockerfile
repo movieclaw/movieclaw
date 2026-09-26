@@ -319,6 +319,10 @@ VOLUME /app/data
 # 默认对外端口。改了端口（MOVIECLAW_WEB_PORT 或应用内设置）时这行不会跟着变，
 # 它只是镜像元数据；bridge 部署真正决定映射的是 compose 的 ports。
 EXPOSE 3000
+# Jellyfin 兼容层的局域网自动发现（可选，docs/design/jellyfin-compat.md §3.1）。
+# 同样只是元数据：让 NAS 图形界面把它列进端口映射；映射与否由用户决定——
+# 宿主上已跑着 Jellyfin / Emby 时映射它会端口冲突。
+EXPOSE 7359/udp
 
 # 走对外端口打后端健康接口：验证 nginx 前门与 FastAPI（Next 进程由 entrypoint
 # 的看门狗单独探测，它挂了容器会主动退出交给 restart 策略）。

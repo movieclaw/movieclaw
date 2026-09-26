@@ -211,6 +211,10 @@ services:
       # Left side is the host port — if it's taken, change the left side
       # (e.g. "8096:3000") and keep the right side at 3000
       - "3000:3000"
+      # Optional: LAN auto-discovery for players (Jellyfin protocol). Uncomment
+      # to enable; leave it off if Jellyfin / Emby already runs on this host —
+      # the port clash would stop the container from starting
+      # - "7359:7359/udp"
     volumes:
       - ./data:/app/data              # Runtime data — backing up this folder is all you need
                                       # (includes the hidden file .secret_key; make sure your
@@ -289,7 +293,7 @@ then:
 
 > Just want one command to try it out?
 > `docker run -d --name movieclaw --init -p 3000:3000 --restart unless-stopped -e TZ=Asia/Shanghai -v "$(pwd)/data:/app/data" -v /volume1/media:/media -v /volume1/downloads:/downloads movieclaw/movieclaw:latest`
-> The mount rules are exactly the same as above.
+> The mount rules are exactly the same as above. For LAN auto-discovery by players, add `-p 7359:7359/udp`.
 
 ### Everyday upgrades skip the image pull
 
@@ -315,7 +319,7 @@ device" means someone actually connected and played on real hardware:
 | Infuse / VidHub | **Verified on device** | Connects as a Jellyfin server: browsing, direct play, progress sync — zero changes on the player side |
 | Fileball / SenPlayer | Same API | Rides the same Jellyfin-compatible path, but hasn't been individually verified on device |
 | Emby / Jellyfin official apps | Not applicable | They connect to their own servers; MovieClaw can notify an Emby/Jellyfin instance to refresh after imports |
-| LAN auto-discovery | Partial | Broadcasts can't reach the container on a bridged network; needs host networking or a manually entered address |
+| LAN auto-discovery | Partial | Requires mapping `7359/udp`. On a bridged network broadcasts may not reach the container, and when they do you need to set **Settings → Network → External URL** to a LAN address (e.g. `http://192.168.1.10:3000`); host networking or entering the address in the player is the reliable route |
 | Remote hardware transcoding | macOS Apple Silicon | Menu-bar app encoding through VideoToolbox (an always-on Mac mini is plenty). The protocol is open — other platforms can implement it |
 
 Details in [jellyfin-compat.md](docs/design/jellyfin-compat.md),
