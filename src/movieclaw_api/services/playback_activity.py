@@ -22,6 +22,7 @@ from movieclaw_api.schemas.playback import (
     ActivePlaybackSessionView,
     MediaActivityTarget,
     MediaActivityView,
+    PlaybackDeliveryView,
     PlaybackFileSpec,
 )
 from movieclaw_api.services import auth as auth_service
@@ -258,6 +259,76 @@ def _file_spec(f: LibraryFile | None) -> PlaybackFileSpec | None:
     )
 
 
+_VIDEO_CODEC_LABELS = {"h264": "H.264", "hevc": "HEVC", "h265": "HEVC", "av1": "AV1", "vp9": "VP9"}
+
+
+def _delivery_view(transcode, *, streaming: bool) -> PlaybackDeliveryView | None:
+    """一台设备的播放方式标识（活动页「直连 / 转码」小标 + 一行细节）。
+
+    判据是这台设备在服务端有没有在跑的会话（``TranscodeSession``，按 device_id 关联——
+    网页播放器与 Jellyfin 客户端两边用的是同一个设备标识）：没有 = 直连原文件；有则按档位
+    细分。分类口径与播放诊断面板一致（``_diagnostic_processing_mode``）：远程执行端优先，
+    其次看视频是否重编码，再看是否只转音频，否则就是重封装。网盘直链不经过服务器，返回 None。
+    """
+    if not streaming:
+        return None
+    if transcode is None:
+        return PlaybackDeliveryView(mode="direct", label="直连")
+    from movieclaw_api.services.playback.hwprobe import BACKEND_LABELS
+
+    plan = transcode.plan
+    reason = plan.reason or None
+    if plan.video.action == "transcode":
+        parts = []
+        if plan.video.height:
+            parts.append(f"{plan.video.height}p")
+        if plan.video.codec:
+            codec = plan.video.codec
+            parts.append(_VIDEO_CODEC_LABELS.get(codec.lower(), codec.upper()))
+        if plan.video.bitrate_cap_bps:
+            parts.append(f"{plan.video.bitrate_cap_bps / 1_000_000:.0f} Mbps")
+        backend = BACKEND_LABELS.get(transcode.hw_backend or "", transcode.hw_backend)
+        if transcode.remote:
+            label = "远程转码"
+            worker = transcode.remote_worker_id
+            where = f"远程 Worker「{worker}」" if worker else "远程 Worker"
+            executor = f"{where} · {backend}" if backend else where
+        elif transcode.hw_backend:
+            label, executor = "硬件转码", f"NAS · {backend}"
+        else:
+            label, executor = "软件转码", "NAS · 软件编码（CPU）"
+        return PlaybackDeliveryView(
+            mode="transcode", label=label, target=" · ".join(parts) or None,
+            executor=executor, reason=reason,
+        )
+    if plan.audio.action == "transcode":
+        target = None
+        if plan.audio.codec:
+            downmix = " · 降混立体声" if plan.audio.downmix else ""
+            target = f"音频 → {plan.audio.codec.upper()}{downmix}"
+        return PlaybackDeliveryView(
+            mode="audio", label="音频转码", target=target, executor="NAS", reason=reason
+        )
+    return PlaybackDeliveryView(mode="remux", label="重封装", executor="NAS", reason=reason)
+
+
+def _transcodes_by_device() -> dict[str, list]:
+    """设备 → 它在服务端在跑的会话（排除已失败 / 已停止的）。"""
+    by_device: dict[str, list] = {}
+    for item in get_session_manager().active():
+        if item.device_id and item.state not in ("failed", "stopped"):
+            by_device.setdefault(item.device_id, []).append(item)
+    return by_device
+
+
+def _pick_transcode(candidates: list, file_id: int | None):
+    """同一设备有多个会话时，优先匹配正在播的文件，再取最新创建的。"""
+    if not candidates:
+        return None
+    matching = [c for c in candidates if file_id is not None and c.file_id == file_id] or candidates
+    return max(matching, key=lambda c: c.created_at)
+
+
 async def media_activity_overview(
     session: AsyncSession,
     *,
@@ -302,6 +373,7 @@ async def media_activity_overview(
     hidden_session_count = 0
     hidden_download_count = 0
 
+    transcodes = _transcodes_by_device()
     session_views: list[ActivePlaybackSessionView] = []
     for play in sorted(play_sessions, key=lambda s: s.started_at, reverse=True):
         ctx = contexts.get(play.unit)
@@ -358,6 +430,12 @@ async def media_activity_overview(
                 ),
                 connections=len(device_meters),
                 file=_file_spec(ctx.file),
+                delivery=_delivery_view(
+                    _pick_transcode(
+                        transcodes.get(play.device_id, []), ctx.file.id if ctx.file else None
+                    ),
+                    streaming=streaming,
+                ),
                 started_at=play.started_at,
                 last_report_at=play.last_report_at,
             )

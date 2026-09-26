@@ -85,6 +85,7 @@ nonisolated extension API {
         var bytesSent: Int?
         var connections: Int
         var file: API.PlaybackFileSpec?
+        var delivery: API.PlaybackDeliveryView?
         var startedAt: String
         var lastReportAt: String
 
@@ -105,6 +106,7 @@ nonisolated extension API {
             case bytesSent = "bytes_sent"
             case connections
             case file
+            case delivery
             case startedAt = "started_at"
             case lastReportAt = "last_report_at"
         }
@@ -5870,6 +5872,28 @@ nonisolated extension API {
             case settingKey = "setting_key"
             case reason
             case suggestion
+        }
+    }
+
+    /// 这台设备此刻是怎么在播的：直连原文件，还是经服务器重封装 / 转码（活动页的播放方式标识）。
+    struct PlaybackDeliveryView: Codable, Hashable, Sendable {
+        /// direct=直连原文件；remux=重封装（音视频都不重编码）；audio=只转音频（视频直通）；transcode=视频转码
+        var mode: String
+        /// 简短中文标识：直连 / 重封装 / 音频转码 / 硬件转码 / 软件转码 / 远程转码
+        var label: String
+        /// 转码输出规格，如「1080p · H.264 · 8 Mbps」；直连 / 重封装为 null
+        var target: String?
+        /// 在哪转、用什么转，如「NAS · Intel 核显（QSV）」「远程 Worker「studio」· Apple 芯片（VideoToolbox）」
+        var executor: String?
+        /// 服务端为什么选这个播放方式（中文）
+        var reason: String?
+
+        enum CodingKeys: String, CodingKey {
+            case mode
+            case label
+            case target
+            case executor
+            case reason
         }
     }
 

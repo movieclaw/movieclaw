@@ -179,13 +179,18 @@ struct ActivityPoster: View {
     }
 }
 
-/// 正在播放的一行。按「在看什么 → 谁在哪看 → 看到哪」三层排，每层一行、不挤不截：
+/// 正在播放的一行。按「在看什么 → 谁在哪看 → 怎么在播 → 看到哪」分层，每层一行、不挤不截：
 ///
 ///     [海报]  抓特务 2026
 ///             yee · Safari · iPhone
-///             ⏸ 已暂停 · 59%                 ↓ 2.1 MB/s
+///             [远程转码] ▶ 播放中 · 59%       ↓ 2.1 MB/s
+///             1080p · H.264 · 8 Mbps · 远程 Worker「studio」· Apple 芯片（VideoToolbox）
 ///             ━━━━━━━━━━━━━━░░░░░░░░
 ///             1:23:16                     还剩 57 分钟
+///
+/// - 播放方式小标（直连 / 重封装 / 音频转码 / 硬件转码 / 软件转码 / 远程转码）来自服务端 `delivery`，
+///   颜色按对服务器的负担递进：直连绿、重封装与音频转码蓝、硬件转码橙、软件转码红、远程转码紫；
+///   转码时下面一行露出输出规格与在哪转，「为什么转码」放在长按菜单里；
 ///
 /// - 客户端名去掉「MovieClaw 」前缀（「MovieClaw Web · Safari · iPhone」→「Web · Safari · iPhone」），
 ///   客户端版本号不上行（排障用，一行放不下时最先被截断的正是有用的设备名）；
@@ -210,6 +215,12 @@ struct ActivityPlaybackSessionRow: View {
                 Text(WatchFormat.metaLine([session.memberName, Self.shortDevice(device)]))
                     .font(.footnote).foregroundStyle(Theme.textMuted).lineLimit(1)
                 statusLine
+                if let delivery = session.delivery, let detail = Self.deliveryDetail(delivery) {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(Theme.textFaint)
+                        .lineLimit(2)
+                }
                 if let percent = session.progressPercent {
                     ProgressView(value: Double(min(100, max(0, percent))), total: 100)
                         .tint(session.paused ? Color.white.opacity(0.35) : Theme.info)
@@ -224,6 +235,9 @@ struct ActivityPlaybackSessionRow: View {
                 .disabled(actions.busyDevice != nil)
         }
         .contextMenu {
+            if let reason = session.delivery?.reason, !reason.isEmpty {
+                Section("为什么是\(session.delivery?.label ?? "这个播放方式")") { Text(reason) }
+            }
             if let route = WatchFormat.detailRoute(session.media) {
                 Button("打开影片详情", systemImage: "film") { router.open(route) }
             }
@@ -247,9 +261,36 @@ struct ActivityPlaybackSessionRow: View {
         label.hasPrefix("MovieClaw ") ? String(label.dropFirst("MovieClaw ".count)) : label
     }
 
-    /// 播放状态 · 百分比，右侧只放一个实时传输指标
+    /// 转码细节：输出规格 · 在哪转、用什么转；直连没有细节
+    static func deliveryDetail(_ delivery: API.PlaybackDeliveryView) -> String? {
+        let detail = WatchFormat.metaLine([delivery.target, delivery.executor])
+        return delivery.mode == "direct" || detail.isEmpty ? nil : detail
+    }
+
+    /// 播放方式小标的颜色：按对服务器的负担递进
+    static func deliveryColor(_ delivery: API.PlaybackDeliveryView) -> Color {
+        switch delivery.mode {
+        case "direct": return Theme.success
+        case "remux", "audio": return Theme.info
+        default:
+            if delivery.label == "远程转码" { return .purple }
+            return delivery.label == "软件转码" ? Theme.danger : Theme.warning
+        }
+    }
+
+    /// 播放方式 · 播放状态 · 百分比，右侧只放一个实时传输指标
     private var statusLine: some View {
         HStack(spacing: 6) {
+            if let delivery = session.delivery {
+                let color = Self.deliveryColor(delivery)
+                Text(delivery.label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(color)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(color.opacity(0.16), in: .capsule)
+                    .accessibilityLabel("播放方式：\(delivery.label)")
+            }
             HStack(spacing: 4) {
                 Image(systemName: session.paused ? "pause.fill" : "play.fill").font(.caption2)
                 Text(session.paused ? "已暂停" : "播放中")
