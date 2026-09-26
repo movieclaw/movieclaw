@@ -4605,6 +4605,10 @@ nonisolated extension API {
         var year: Int?
         /// 完整海报 URL（按配置的图床基址拼好）
         var posterUrl: String?
+        /// 宽幅剧照 URL（w1280，沉浸场景可换 original 档）
+        var backdropUrl: String?
+        /// 片名 Logo URL（透明底 PNG）；没有时前端显示文字片名
+        var logoUrl: String?
         var status: String?
 
         enum CodingKeys: String, CodingKey {
@@ -4616,6 +4620,8 @@ nonisolated extension API {
             case originalTitle = "original_title"
             case year
             case posterUrl = "poster_url"
+            case backdropUrl = "backdrop_url"
+            case logoUrl = "logo_url"
             case status
         }
     }
@@ -6508,6 +6514,52 @@ nonisolated extension API {
 
         enum CodingKeys: String, CodingKey {
             case text
+        }
+    }
+
+    /// 「刚刚入库」一批里的一个季集单元（电影是哨兵 0/0）。
+    struct RecentArrivalUnitView: Codable, Hashable, Sendable {
+        var seasonNumber: Int
+        var episodeNumber: Int
+
+        enum CodingKeys: String, CodingKey {
+            case seasonNumber = "season_number"
+            case episodeNumber = "episode_number"
+        }
+    }
+
+    /// 订阅首页「刚刚入库」的一张卡：一部作品最近入库、当前账号还没看完的那一批。
+    /// 同一部作品只出一张卡；整批看完即不再返回（规则见
+    /// ``services/subscription/recent_arrivals.py``）。播放入口是这一批里第一个
+    /// 没看完的单元，客户端直接按 ``media.media_item_id`` + 季集起播。
+    struct RecentArrivalView: Codable, Hashable, Sendable {
+        var subscriptionId: Int
+        var media: API.MediaBrief
+        /// 播放入口：这一批里第一个没看完的单元；电影=0
+        var seasonNumber: Int
+        /// 播放入口的集号；电影=0
+        var episodeNumber: Int
+        /// 播放入口那一集的集名；电影或缺档案为空
+        var episodeName: String?
+        /// 播放入口那一集的剧照；电影或缺剧照为空（客户端改用 media.backdrop_url）
+        var stillUrl: String?
+        /// 这一批里还没看完、文件在位的全部单元（季集正序，第一个即播放入口）
+        var units: [API.RecentArrivalUnitView]
+        /// 播放入口看了一半时的进度（1~99）；没看过为空
+        var progressPercent: Int?
+        /// 这一批最近一次整理入库的时间
+        var importedAt: String
+
+        enum CodingKeys: String, CodingKey {
+            case subscriptionId = "subscription_id"
+            case media
+            case seasonNumber = "season_number"
+            case episodeNumber = "episode_number"
+            case episodeName = "episode_name"
+            case stillUrl = "still_url"
+            case units
+            case progressPercent = "progress_percent"
+            case importedAt = "imported_at"
         }
     }
 

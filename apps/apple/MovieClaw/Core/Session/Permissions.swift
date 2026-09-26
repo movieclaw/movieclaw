@@ -28,7 +28,7 @@ struct Permissions: Equatable {
     func allows(_ route: AppRoute) -> Bool {
         switch route {
         case .newSession, .session, .activity, .activityPage: isAdmin
-        case .subscriptions, .subscription: canSubscribe
+        case .subscriptions, .subscription, .subscriptionWall: canSubscribe
         case .searchHome, .search: canSearch
         case let .settingsSection(section, _): isAdmin || section.memberVisible
         case .libraryManage: isAdmin

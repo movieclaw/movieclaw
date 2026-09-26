@@ -1,6 +1,6 @@
 import XCTest
 
-/// 订阅模块端到端验收：订阅列表与类型切换、订阅详情（事实区 / 里程碑链 / 排查记录）、
+/// 订阅模块端到端验收：订阅首页各版块与海报墙、订阅详情（事实区 / 里程碑链 / 排查记录）、
 /// 「更多」里的全部对话框（只到预览为止）、订阅弹层 ready / 已订阅两态、规则组编辑器，
 /// 以及两项「可逆写操作」：切换自动续订再切回、暂停追踪再恢复。
 ///
@@ -38,7 +38,12 @@ final class SubscriptionsUITests: XCTestCase {
 
     @MainActor
     private func snapshot(_ name: String) {
-        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        let screenshot = XCUIScreen.main.screenshot()
+        // 交付对照用：设置 MC_SHOT_DIR 时同时落盘一份（模拟器上的测试进程可直接写宿主机路径）
+        if let dir = env["MC_SHOT_DIR"] {
+            try? screenshot.pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
+        }
+        let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -62,27 +67,55 @@ final class SubscriptionsUITests: XCTestCase {
         closes.element(boundBy: closes.count - 1).tap()
     }
 
-    // MARK: 列表
+    // MARK: 首页（流媒体式版式）与海报墙
 
+    /// 首页各版块按数据有无出现：Hero → 刚刚入库 → 日程 → 剧集 / 电影海报行；
+    /// 海报行标题「›」压栈到完整海报墙，墙上的海报进订阅详情。
     @MainActor
-    func testListFilterAndOpenDetail() throws {
+    func testHomeSectionsAndWall() throws {
         let app = try launch(route: "/subscriptions")
         let cell = app.buttons["subscription-cell"].firstMatch
-        XCTAssertTrue(cell.waitForExistence(timeout: 30), "应渲染订阅海报墙")
-        let count = app.staticTexts["subscriptions-count"]
-        XCTAssertTrue(count.label.hasPrefix("共 "), "计数头：\(count.label)")
-        XCTAssertTrue(app.otherElements["today-arrivals"].exists, "应有今日可能入库时间轴")
-        snapshot("订阅列表-全部")
+        XCTAssertTrue(cell.waitForExistence(timeout: 30), "应渲染剧集 / 电影海报行")
+        sleep(3) // 等剧照与片名 Logo 加载完再截
+        snapshot("订阅首页-01-首屏")
+        // Hero 有多张时左滑看后面几张（轮播手动切换后重新计时）
+        let hero = app.descendants(matching: .any)["subscriptions-hero"].firstMatch
+        if hero.exists {
+            for page in 2 ... 4 {
+                hero.swipeLeft()
+                sleep(2)
+                snapshot("订阅首页-01-Hero\(page)")
+            }
+        }
+        for step in 2 ... 4 {
+            app.swipeUp(velocity: .slow)
+            sleep(2)
+            snapshot("订阅首页-0\(step)-下滑")
+        }
+        // 剧集海报行左滑到底，露出「已收齐」分隔线后面压暗的那几部
+        let tvShelf = app.descendants(matching: .any)["section-tv"].firstMatch
+        if tvShelf.exists {
+            // 在整排容器上滑：滑过的海报会被懒加载回收，按单张海报定位找不到
+            for _ in 1 ... 3 {
+                tvShelf.swipeLeft()
+            }
+            sleep(1)
+            snapshot("订阅首页-04-剧集行左滑")
+        }
 
-        app.segmentedControls["subscription-filter"].buttons["电影"].tap()
-        XCTAssertTrue(count.label.contains("部电影"), "切到电影：\(count.label)")
-        snapshot("订阅列表-电影")
-        app.segmentedControls["subscription-filter"].buttons["剧集"].tap()
-        XCTAssertTrue(count.label.contains("部剧集"), "切到剧集：\(count.label)")
+        let tvWall = app.buttons["shelf-more-tv"]
+        let more = tvWall.exists ? tvWall : app.buttons["shelf-more-movie"]
+        XCTAssertTrue(more.waitForExistence(timeout: 10), "海报行标题应能压栈到海报墙")
+        more.tap()
+        let count = app.staticTexts["subscriptions-count"]
+        XCTAssertTrue(count.waitForExistence(timeout: 10), "海报墙应有计数头")
+        XCTAssertTrue(count.label.hasPrefix("共 "), "计数头：\(count.label)")
+        sleep(2)
+        snapshot("订阅首页-05-海报墙")
 
         app.buttons["subscription-cell"].firstMatch.tap()
         XCTAssertTrue(app.buttons["subscription-more"].waitForExistence(timeout: 30), "点海报应进入订阅详情")
-        snapshot("订阅详情-从列表进入")
+        snapshot("订阅详情-从海报墙进入")
     }
 
     // MARK: 详情与对话框（只到预览）

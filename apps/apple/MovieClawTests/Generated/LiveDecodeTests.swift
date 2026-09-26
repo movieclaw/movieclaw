@@ -207,6 +207,9 @@ struct LiveDecodeTests {
     @Test func subscriptionsCheckAutomationReadiness() async throws {
         try await LiveServer.check { try await $0.subscriptionsCheckAutomationReadiness() }
     }
+    @Test func subscriptionsListRecentArrivals() async throws {
+        try await LiveServer.check { try await $0.subscriptionsListRecentArrivals() }
+    }
     @Test func subscriptionsListTodayArrivals() async throws {
         try await LiveServer.check { try await $0.subscriptionsListTodayArrivals() }
     }
