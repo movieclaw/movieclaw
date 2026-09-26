@@ -317,6 +317,12 @@ actor WorkerClient {
                 "segment_types": ArtifactUploadProxy.supportedSegmentTypes,
                 // 能接收 job.playback（观众播放位置），面板上显示「看到 25:10 / 1:52:10」
                 "playback_progress": true,
+                // 能读原盘：源是 NAS 下发的 ffconcat 清单，各段剪辑一个 HTTP 地址
+                "disc_sources": true,
+                // NAS 按这两项装命令：能硬解的走 GPU（缩放、HDR 色调映射都在 Metal 上），
+                // 解不了的编码（VC-1、WMV……）CPU 软解、编码仍用 VideoToolbox
+                "hw_decoders": capabilities.hwDecoders,
+                "filters": capabilities.filters,
             ],
         ]
         do {

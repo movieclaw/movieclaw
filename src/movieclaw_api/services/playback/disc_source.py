@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -76,18 +77,29 @@ class DiscSource:
         """诊断/活动页用的片名：原盘目录名比 ``00001.m2ts`` 更能说明在播什么。"""
         return self.disc_dir.name
 
-    def concat_list(self) -> str:
+    def concat_list(
+        self,
+        *,
+        entry: Callable[[int, DiscClip], str] | None = None,
+        options: Sequence[tuple[str, str]] = (),
+    ) -> str:
         """ffmpeg concat demuxer 的清单文本（``-f concat -safe 0 -i 清单``）。
 
         每段写 ``inpoint``/``outpoint``（剪辑内的绝对 PTS，秒）与 ``duration``：
         concat demuxer 靠 ``duration`` 在不打开后续文件的前提下算出各段在拼接
         时间轴上的起点，``-ss`` 也据此直接定位到对应剪辑。单引号按 concat 的
         规则转义（``'`` → ``'\\''``）。
+
+        ``entry`` 把第 i 段换成别的读取地址（远程 Worker 经 HTTP 读 NAS，见
+        transcode_worker 路由），``options`` 给每段附加 ``option`` 指令（HTTP 断线
+        续读参数）。不传就是 NAS 本机读盘用的绝对路径清单。
         """
         lines = ["ffconcat version 1.0"]
-        for clip in self.clips:
-            escaped = str(clip.path).replace("'", "'\\''")
+        for index, clip in enumerate(self.clips):
+            target = entry(index, clip) if entry is not None else str(clip.path)
+            escaped = target.replace("'", "'\\''")
             lines.append(f"file '{escaped}'")
+            lines.extend(f"option {key} {value}" for key, value in options)
             lines.append(f"inpoint {clip.in_time / MPLS_CLOCK_HZ:.6f}")
             lines.append(f"outpoint {clip.out_time / MPLS_CLOCK_HZ:.6f}")
             lines.append(f"duration {clip.duration_s:.6f}")

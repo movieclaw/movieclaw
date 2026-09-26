@@ -151,6 +151,13 @@ App 启动时会检查当前 ffmpeg 是否包含 `h264_videotoolbox`。缺少可
 如果官方 Release 没有唯一的 macOS arm64 资产或缺少可验证的 digest，App 会拒绝安装，
 不会回退到第三方镜像或任意下载地址。
 
+能转的片源：蓝光原盘（BDMV 目录，单剪辑与多剪辑）、4K HDR10 / HLG / 杜比视界（在 GPU
+上做色调映射，杜比视界 Profile 5 也不偏色）、以及 VC-1、WMV、RealVideo、FLV 这类老格式
+（这台 Mac 硬解不了的编码用 CPU 解码、编码仍走硬件）。连上 NAS 时 App 会把这台 Mac 能
+硬解哪些编码、ffmpeg 带了哪些 Metal 滤镜告诉 NAS，NAS 据此决定每个任务怎么转。GPU 色调
+映射依赖 Jellyfin-ffmpeg 自带的 Metal 滤镜，换成别的 ffmpeg 时 HDR 会退回 CPU，慢一倍多、
+占满多个核。ISO 镜像与 DVD 暂不支持。
+
 ## 5. HTTPS 和可信内网 HTTP
 
 公网或不可信网络必须使用 HTTPS。若服务端和 Mac 位于可信内网，可以在网页和 App 中

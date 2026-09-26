@@ -154,6 +154,15 @@ REMOTE_IO_TIMEOUT_US = 30_000_000
 #: 26 秒），与 NAS 30 秒的分片等待窗口相当。
 REMOTE_RECONNECT_DELAY_MAX_S = 15
 
+#: 远程 HTTP 输入的断线续读参数。原盘清单（ffconcat）里的每一段也要逐个带上
+#: （concat 的 ``option`` 指令）：命令行上的这几项只作用于清单这一个输入，
+#: 管不到清单里各段剪辑自己的 HTTP 连接。
+REMOTE_RECONNECT_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("reconnect", "1"),
+    ("reconnect_on_network_error", "1"),
+    ("reconnect_delay_max", str(REMOTE_RECONNECT_DELAY_MAX_S)),
+)
+
 #: 软件 HDR→SDR 色调映射。必须用 BT.2390 EETF——简单 clip 会把高光全压成
 #: 死白（雪景、天空、爆炸场面直接糊掉）。
 #:
@@ -210,6 +219,39 @@ _DOWNMIX_PAN = (
 NVENC_TONEMAP = (
     "tonemap_cuda=tonemap=bt2390:desat=0:p=bt709:t=bt709:m=bt709:format=yuv420p"
 )
+
+
+#: Mac 上整条 GPU 链路的 HDR → SDR（jellyfin-ffmpeg 的 Metal 滤镜）。参数与软件档
+#: ``_SOFTWARE_TONEMAP`` 对齐：BT.2390 EETF + 落到 BT.709 三件套 + 8-bit 输出；
+#: 杜比视界由滤镜默认的 ``apply_dovi`` 按元数据还原（CPU 那条链做不到，DV P5 会偏色）。
+VIDEOTOOLBOX_TONEMAP = (
+    "tonemap_videotoolbox=tonemap=bt2390:desat=0:p=bt709:t=bt709:m=bt709:format=nv12"
+)
+
+
+@dataclass(frozen=True)
+class WorkerVideoCaps:
+    """接单的远程 Worker 在握手里申报的视频能力，决定 VideoToolbox 命令怎么装。
+
+    NAS 探测不到远程 Mac 的硬件，只能信它的申报（Worker 用系统接口
+    ``VTIsHardwareDecodeSupported`` 实测、从 ``ffmpeg -filters`` 读出来）：
+
+    - ``hw_decoders``：VideoToolbox 能硬解的片源编码（ffmpeg 编码名）。不在里面
+      的（VC-1、WMV、RealVideo、VP6……）**不能要硬件帧**：硬解初始化失败后
+      ffmpeg 退回软解，软件帧再喂给 ``hwdownload`` 直接以 -22 失败（实测）。
+      这类片源整段走 CPU 软解 + 软件滤镜，只有编码留在 VideoToolbox 上。
+    - ``filters``：Metal 版的缩放 / 色调映射滤镜。齐全时整条链留在 GPU 上，帧
+      不下载回内存：4K HDR 原盘实测 5.7 倍速、约半个核；CPU 版 tonemapx 是
+      2.6 倍速、占 4 个核。
+    """
+
+    hw_decoders: frozenset[str] = frozenset()
+    filters: frozenset[str] = frozenset()
+
+
+#: VideoToolbox 命令的三种形态（见 ``_videotoolbox_mode``）。
+VT_GPU = "gpu"
+VT_SOFTWARE_DECODE = "software_decode"
 
 
 @dataclass(frozen=True)
@@ -392,6 +434,7 @@ def build_hls_command(
     output_base_url: str | None = None,
     output_url_suffix: str = "",
     input_format: str | None = None,
+    worker_caps: WorkerVideoCaps | None = None,
 ) -> TranscodeCommand:
     """把播放计划翻成 ffmpeg 命令。档 0（Direct Play）不该走到这里。
 
@@ -404,6 +447,9 @@ def build_hls_command(
     分片编号从它开始接上全片规划，并加 ``-copyts`` 三件套让分片内部时间戳
     保持**文件绝对时间**——这是预生成列表与实际分片能对上的根本（EXTINF
     只是索引近似，播放器按分片真实时间戳自我校正，Jellyfin 同款取舍）。
+
+    ``worker_caps`` 是接单的远程 Worker 申报的视频能力（远程任务恒传，本机执行为
+    None），VideoToolbox 命令按它分流，见 ``_videotoolbox_mode``。
     """
     if plan.tier is PlaybackTier.DIRECT_PLAY:
         raise ValueError("档 0 是原文件直出，不需要 ffmpeg")
@@ -415,8 +461,13 @@ def build_hls_command(
         HW_BACKENDS.get(effective_hw_backend(plan, hw_backend) or "") if transcoding_video else None
     )
     burn_index = _burn_subtitle_index(plan) if transcoding_video else None
-    software_filters = transcoding_video and _needs_software_filters(
-        plan, backend, burn=burn_index is not None
+    vt_mode = _videotoolbox_mode(plan, backend, worker_caps, burn=burn_index is not None)
+    software_filters = transcoding_video and (
+        vt_mode == VT_SOFTWARE_DECODE
+        or (
+            vt_mode != VT_GPU
+            and _needs_software_filters(plan, backend, burn=burn_index is not None)
+        )
     )
 
     # -ss 必须在 -i 之前：input seek 快得多（不用解码到该点）
@@ -442,7 +493,7 @@ def build_hls_command(
             "-readrate", str(READRATE_COPY if not transcoding_video else READRATE),
             "-readrate_initial_burst", str(READRATE_BURST_SECONDS),
         ]
-    if backend and backend.hwaccel:
+    if backend and backend.hwaccel and vt_mode != VT_SOFTWARE_DECODE:
         # 解码**恒定留在硬件上**，哪怕滤镜链是软件的：不发
         # ``-hwaccel_output_format`` 时 ffmpeg 自己把解码帧下载回系统内存，
         # 软件滤镜照样接得上，而最贵的那步（4K HEVC 10-bit 解码）不再压回
@@ -459,11 +510,8 @@ def build_hls_command(
         argv += ["-rw_timeout", str(REMOTE_IO_TIMEOUT_US)]
         # 远程源是 HTTP：连接断了按断点续读，不能当成读到了片尾（理由见常量注释）。
         # 只重试网络错误，不重试 HTTP 4xx——会话已结束时源地址返回 404，该停就停。
-        argv += [
-            "-reconnect", "1",
-            "-reconnect_on_network_error", "1",
-            "-reconnect_delay_max", str(REMOTE_RECONNECT_DELAY_MAX_S),
-        ]
+        for key, value in REMOTE_RECONNECT_OPTIONS:
+            argv += [f"-{key}", value]
     if input_format == "concat":
         # -safe 0：清单里是绝对路径（默认的 safe 模式只认相对路径）
         argv += ["-f", "concat", "-safe", "0"]
@@ -485,7 +533,9 @@ def build_hls_command(
         argv += ["-map", f"0:a:{audio_index}"]
     argv += ["-sn", "-dn", "-map_metadata", "-1"]
 
-    argv += _video_args(plan, backend, software_filters, skip_filters=burn_index is not None)
+    argv += _video_args(
+        plan, backend, software_filters, skip_filters=burn_index is not None, vt_mode=vt_mode
+    )
     argv += _audio_args(
         plan, has_audio=audio_index is not None, absolute_ts=start_number is not None
     )
@@ -599,6 +649,7 @@ def _video_args(
     software_filters: bool,
     *,
     skip_filters: bool = False,
+    vt_mode: str | None = None,
 ) -> list[str]:
     if plan.video.action == "copy":
         args = ["-c:v", "copy"]
@@ -610,7 +661,9 @@ def _video_args(
         return args
 
     # 烧录时滤镜已在 filter_complex 图里（-vf 与 filter_complex 互斥）
-    filters = "" if skip_filters else _filter_chain(plan, backend, software_filters)
+    filters = (
+        "" if skip_filters else _filter_chain(plan, backend, software_filters, vt_mode=vt_mode)
+    )
     args = []
     if filters:
         args += ["-vf", filters]
@@ -625,8 +678,15 @@ def _video_args(
         args += ["-profile:v", "high"]
         if backend.name != "videotoolbox":
             args += ["-level:v", "4.1"]
-        if backend.name == "videotoolbox":
+        if backend.name == "videotoolbox" and vt_mode != VT_GPU:
+            # GPU 链路的帧是硬件帧、已是 8-bit NV12；再要 yuv420p 会逼 ffmpeg 插一个
+            # 接不上硬件帧的软件格式转换
             args += ["-pix_fmt", "yuv420p"]
+        if backend.name == "videotoolbox":
+            # 不把源里的 A53 隐藏字幕写进 SEI：MPEG-2 源（DVD、广电录制）常带，而
+            # h264_videotoolbox 写它时报「Unexpected end of SEI NAL Unit」整条失败
+            # （实测）。字幕另行投递，用不上这份
+            args += ["-a53cc", "0"]
         # 明确 H.264 的 ISO BMFF sample entry。默认通常也是 avc1，但不同编码器
         # 或封装器版本可能落成 avc3；Safari 原生 HLS 需要稳定、可预告的标签。
         args += ["-tag:v", "avc1"]
@@ -665,9 +725,67 @@ def _video_args(
     return args
 
 
+def _videotoolbox_mode(
+    plan: PlaybackPlan,
+    backend: HwBackend | None,
+    caps: WorkerVideoCaps | None,
+    *,
+    burn: bool,
+) -> str | None:
+    """远程 VideoToolbox 任务装成哪种命令；None = 维持原来的装法。
+
+    - 片源编码不在 ``hw_decoders`` 里 → ``VT_SOFTWARE_DECODE``：不发 ``-hwaccel``，
+      CPU 软解 + 软件滤镜，编码仍用 VideoToolbox（VC-1 原盘实测 5.8 倍速）；
+    - 能硬解、Metal 滤镜齐全、链上没有只有软件做得了的步骤（烧录、BT.2020 SDR
+      的色彩空间转换、位深未知）→ ``VT_GPU``：见 ``_videotoolbox_gpu_chain``；
+    - 其余 → None：硬解 + 帧下载回内存走软件滤镜（原来的装法）。
+    """
+    if caps is None or backend is None or backend.name != "videotoolbox":
+        return None
+    if plan.video.action != "transcode":
+        return None
+    if (plan.video.source_codec or "").lower() not in caps.hw_decoders:
+        return VT_SOFTWARE_DECODE
+    if (
+        not burn
+        and _color_convert_filter(plan) is None
+        and plan.video.source_bit_depth in (8, 10)
+        and "scale_vt" in caps.filters
+        and (not plan.video.tone_map or "tonemap_videotoolbox" in caps.filters)
+    ):
+        return VT_GPU
+    return None
+
+
+def _videotoolbox_gpu_chain(plan: PlaybackPlan) -> str:
+    """整条留在 GPU 上的 VideoToolbox 滤镜链（帧是 ``videotoolbox_vld``，不下载）。
+
+    - 先缩放后色调映射：在 1080p 上映射比在 4K 上省四分之三的算力。
+    - HDR 缩放时一律转成 10-bit（``p010le``）：``tonemap_videotoolbox`` 只收 10-bit，
+      8-bit 的 HLG（广电 4K 节目常见）直接报「Unsupported input format depth: 8」。
+    - SDR 缩放时转成 8-bit NV12：10-bit 源（HEVC 压制常见）的硬件帧，H.264 硬件编码器
+      不吃。要输出 BT.709 时再用 ``setparams`` 给帧打上标签：ffmpeg 8 的 ``-colorspace``
+      会参与格式协商，帧上是 unknown（无标签的源）就自动插软件 scale 去转换，而软件
+      scale 接不了硬件帧，整条链失败（实测）。HDR 那条不用：色调映射本身就输出 BT.709。
+    """
+    size = f"w=-2:h={plan.video.height}:" if plan.video.height else ""
+    if plan.video.tone_map:
+        return f"scale_vt={size}format=p010le,{VIDEOTOOLBOX_TONEMAP}"
+    chain = f"scale_vt={size}format=nv12"
+    if _outputs_bt709(plan):
+        chain += ",setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
+    return chain
+
+
 def _filter_chain(
-    plan: PlaybackPlan, backend: HwBackend | None, software_filters: bool
+    plan: PlaybackPlan,
+    backend: HwBackend | None,
+    software_filters: bool,
+    *,
+    vt_mode: str | None = None,
 ) -> str:
+    if vt_mode == VT_GPU:
+        return _videotoolbox_gpu_chain(plan)
     parts: list[str] = []
     height = plan.video.height
     if plan.video.tone_map:

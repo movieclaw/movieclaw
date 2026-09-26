@@ -66,6 +66,9 @@ var knownNonGenerated = []string{
 	// playback.stats.watch（观看统计）不是一回事，别看名字近就一起放出来
 	"playback.stats",
 	"transcode.source",
+	// 原盘的远程取源：ffconcat 清单与各段剪辑，只给转码 Worker 用（remote-transcode.md §5.2）
+	"transcode.source.ffconcat",
+	"transcode.source.clip",
 	"transcode.artifact.put",
 	"playback.progress",
 	"playback.resume",

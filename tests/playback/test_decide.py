@@ -1152,3 +1152,42 @@ def test_capped_transcode_rejections(profile, policy, keyword):
     decision = plan_capped_transcode(profile, policy)
     assert isinstance(decision, PlaybackRejected)
     assert keyword in decision.reason
+
+
+# ---------------------------------------------------------------------------
+# 硬件档在执行时落空（远程 Worker 接不了）后的降档
+# ---------------------------------------------------------------------------
+
+SOFT_ON_WITH_GPU = PlaybackPolicy(hardware_available=True, software_transcode_enabled=True)
+
+
+def test_hdr_is_not_handed_to_the_cpu_after_the_hardware_tier_failed():
+    """决策时远程 Mac 算作硬件，执行时它却接不了：降下来的 HDR 不能让 NAS 用 CPU
+    做色调映射（真机：4K HDR 原盘首帧 12.6 秒、33 秒卡 3 次）。"""
+    decision = decide_playback(
+        media(video_codec="hevc", resolution="2160p", hdr="HDR10"),
+        CHROME_NO_HEVC,
+        SOFT_ON_WITH_GPU,
+        failed_tiers=frozenset({PlaybackTier.HARDWARE_TRANSCODE}),
+    )
+    assert isinstance(decision, PlaybackRejected)
+    assert "色调映射" in decision.reason
+
+
+def test_sdr_still_falls_back_to_software_after_the_hardware_tier_failed():
+    decision = decide_playback(
+        media(video_codec="hevc"),
+        CHROME_NO_HEVC,
+        SOFT_ON_WITH_GPU,
+        failed_tiers=frozenset({PlaybackTier.HARDWARE_TRANSCODE}),
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.SOFTWARE_TRANSCODE
+
+
+def test_transcode_plan_carries_the_source_codec():
+    """远程 Mac 按片源编码决定硬解还是软解（VC-1 硬要硬件帧会失败）。"""
+    decision = decide_playback(media(video_codec="vc1"), CHROME_NO_HEVC, WITH_GPU)
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.video.action == "transcode"
+    assert decision.video.source_codec == "vc1"

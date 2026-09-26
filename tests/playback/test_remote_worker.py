@@ -674,3 +674,46 @@ async def test_playback_position_is_pushed_only_to_workers_declaring_it():
     # 不属于任何 Worker 的任务：安静地什么都不发
     await new_registry.report_playback("job-unknown", snapshot)
     assert len(new_socket.messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_disc_jobs_only_go_to_workers_that_can_read_discs(monkeypatch):
+    """原盘的源是 ffconcat 清单（各段带 option 续读参数），旧版 Worker 的 ffmpeg 未必认。"""
+    monkeypatch.setattr(remote_worker_module, "remote_worker_enabled", lambda: True)
+    registry = RemoteWorkerRegistry()
+    base_caps = {"backends": ["videotoolbox"], "encoders": ["h264_videotoolbox"]}
+    await registry.register(FakeWebSocket(), {"worker_id": "old-mac", "capabilities": base_caps})
+    assert registry.has_capable_worker("videotoolbox") is True
+    assert registry.has_capable_worker("videotoolbox", disc=True) is False
+    with pytest.raises(RemoteWorkerUnavailable, match="不支持原盘"):
+        registry.reserve("disc-job", backend="videotoolbox", disc=True)
+
+    await registry.register(
+        FakeWebSocket(),
+        {"worker_id": "new-mac", "capabilities": {**base_caps, "disc_sources": True}},
+    )
+    connection = registry.reserve("disc-job", backend="videotoolbox", disc=True)
+    assert connection.worker_id == "new-mac"
+
+
+def test_undeclared_video_caps_fall_back_to_h264_hevc_without_metal_filters():
+    """旧版 Worker 没申报：只按 H.264 / HEVC 能硬解算，其余编码走软解；不用 Metal 滤镜。"""
+    caps = RemoteWorkerRegistry._parse_capabilities(
+        {"backends": ["videotoolbox"], "encoders": ["h264_videotoolbox"]}
+    )
+    assert caps.disc_sources is False
+    assert caps.video_caps.hw_decoders == frozenset({"h264", "hevc"})
+    assert caps.video_caps.filters == frozenset()
+
+    declared = RemoteWorkerRegistry._parse_capabilities(
+        {
+            "backends": ["videotoolbox"],
+            "encoders": ["h264_videotoolbox"],
+            "disc_sources": True,
+            "hw_decoders": ["h264", "hevc", "mpeg2video", 3],
+            "filters": ["scale_vt", "tonemap_videotoolbox"],
+        }
+    )
+    assert declared.disc_sources is True
+    assert declared.video_caps.hw_decoders == frozenset({"h264", "hevc", "mpeg2video"})
+    assert declared.video_caps.filters == frozenset({"scale_vt", "tonemap_videotoolbox"})

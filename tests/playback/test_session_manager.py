@@ -23,6 +23,7 @@ import pytest
 
 from movieclaw_api.services.playback import session as session_mod
 from movieclaw_api.services.playback.ffmpeg_args import TranscodeCommand
+from movieclaw_api.services.playback.remote_worker import WorkerCapabilities
 from movieclaw_api.services.playback.session import (
     DiskQuotaError,
     SessionLimitError,
@@ -766,10 +767,13 @@ async def test_remote_session_dispatches_job_without_local_process(manager, monk
             backend: str,
             segment_type: str = "fmp4",
             attempt_id: str | None = None,
+            disc: bool = False,
         ):
             self.reserved = (job_id, backend)
             return SimpleNamespace(
-                worker_id="mac-mini-a", observed_base_url="http://192.168.1.10:8000"
+                worker_id="mac-mini-a",
+                observed_base_url="http://192.168.1.10:8000",
+                capabilities=WorkerCapabilities(),
             )
 
         def release_job(self, job_id: str) -> None:
@@ -860,9 +864,12 @@ async def test_remote_session_uses_worker_connect_address_without_any_config(
             backend: str,
             segment_type: str = "fmp4",
             attempt_id: str | None = None,
+            disc: bool = False,
         ):
             return SimpleNamespace(
-                worker_id="mac-mini-a", observed_base_url="http://192.168.1.10:8000/"
+                worker_id="mac-mini-a",
+                observed_base_url="http://192.168.1.10:8000/",
+                capabilities=WorkerCapabilities(),
             )
 
         def release_job(self, job_id: str) -> None:
@@ -942,6 +949,7 @@ async def test_remote_start_failure_does_not_fallback_to_local_software(manager,
             backend: str,
             segment_type: str = "fmp4",
             attempt_id: str | None = None,
+            disc: bool = False,
         ):
             raise session_mod.RemoteWorkerUnavailable("Worker 刚刚断线")
 
@@ -1041,9 +1049,12 @@ async def test_remote_restart_failure_cleans_up_new_job(manager, tmp_path, monke
             backend: str,
             segment_type: str = "fmp4",
             attempt_id: str | None = None,
+            disc: bool = False,
         ):
             return SimpleNamespace(
-                worker_id="mac-mini-a", observed_base_url="http://192.168.1.10:8000"
+                worker_id="mac-mini-a",
+                observed_base_url="http://192.168.1.10:8000",
+                capabilities=WorkerCapabilities(),
             )
 
         def release_job(self, job_id: str) -> None:
@@ -1129,10 +1140,13 @@ async def test_remote_seek_restart_uses_the_worker_that_took_the_job(
             backend: str,
             segment_type: str = "fmp4",
             attempt_id: str | None = None,
+            disc: bool = False,
         ):
             self.reserved.append((job_id, backend))
             return SimpleNamespace(
-                worker_id="mac-mini-b", observed_base_url="http://192.168.1.10:3000"
+                worker_id="mac-mini-b",
+                observed_base_url="http://192.168.1.10:3000",
+                capabilities=WorkerCapabilities(),
             )
 
         def release_job(self, job_id: str) -> None:
@@ -1952,3 +1966,108 @@ sys.exit(187)
         assert summary and "测试结束" in summary[0] and session.id in summary[0]
     finally:
         await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_remote_disc_session_reads_ffconcat_and_follows_worker_caps(manager, monkeypatch):
+    """原盘派给 Mac：只落到能读原盘的 Worker 上，源是 ffconcat 清单，命令按它申报的
+    能力装——4K HDR HEVC 走 scale_vt + tonemap_videotoolbox 的 GPU 链路。"""
+
+    class FakeRemoteRegistry:
+        def __init__(self) -> None:
+            self.dispatches: list[tuple[str, dict]] = []
+            self.reserved_disc: bool | None = None
+
+        def create_job_waiter(self, job_id: str) -> None:
+            self.waiting = job_id
+
+        def reserve(
+            self,
+            job_id: str,
+            *,
+            backend: str,
+            segment_type: str = "fmp4",
+            attempt_id: str | None = None,
+            disc: bool = False,
+        ):
+            self.reserved_disc = disc
+            return SimpleNamespace(
+                worker_id="mac-mini-a",
+                observed_base_url="http://192.168.1.10:3000",
+                capabilities=WorkerCapabilities(
+                    disc_sources=True,
+                    filters=("scale_vt", "tonemap_videotoolbox"),
+                ),
+            )
+
+        def release_job(self, job_id: str) -> None:
+            pass
+
+        async def start_job(self, connection, job_id: str, payload: dict) -> str:
+            self.dispatches.append((job_id, payload))
+            return connection.worker_id
+
+        async def wait_job_event(self, job_id: str) -> dict[str, str]:
+            return {"type": "job.accepted"}
+
+        def job_state(self, job_id: str) -> dict[str, str]:
+            return {"type": "job.accepted"}
+
+        def worker_online(self, worker_id: str | None) -> bool:
+            return True
+
+        def remove_job_waiter(self, job_id: str) -> None:
+            pass
+
+        async def cancel(self, job_id: str) -> None:
+            pass
+
+        def remove_job(self, job_id: str) -> None:
+            pass
+
+    async def fake_issue_remote_grant(**kwargs: object) -> str:
+        return f"{kwargs['kind']}-grant"
+
+    registry = FakeRemoteRegistry()
+    monkeypatch.setattr(session_mod, "get_remote_worker_registry", lambda: registry)
+    monkeypatch.setattr(session_mod, "issue_remote_grant", fake_issue_remote_grant)
+    plan = PlaybackPlan(
+        tier=PlaybackTier.HARDWARE_TRANSCODE,
+        file_id=1,
+        container="hls-fmp4",
+        video=VideoPlan(
+            action="transcode",
+            codec="h264",
+            height=1080,
+            source_bit_depth=10,
+            source_codec="hevc",
+            tone_map=True,
+        ),
+        audio=AudioPlan(action="copy", track_ref=None),
+        reason="测试",
+    )
+
+    session = await manager.start(
+        plan,
+        source_path="/media/蜘蛛侠 (2021)",
+        member_id=1,
+        hw_backend="videotoolbox",
+        segment_plan=_boundaries(2),
+        use_remote=True,
+        source_concat="ffconcat version 1.0\nfile '/media/蜘蛛侠 (2021)/BDMV/STREAM/00001.m2ts'\n",
+    )
+
+    assert registry.reserved_disc is True
+    _, payload = registry.dispatches[0]
+    args = payload["ffmpeg_args"]
+    source = args[args.index("-i") + 1]
+    assert source == (
+        f"http://192.168.1.10:3000/api/v1/transcode-worker/sessions/{session.id}"
+        "/source.ffconcat?token=source-grant"
+    )
+    assert args[args.index("-i") - 4 : args.index("-i")] == ["-f", "concat", "-safe", "0"]
+    assert args[args.index("-vf") + 1].startswith(
+        "scale_vt=w=-2:h=1080:format=p010le,tonemap_videotoolbox="
+    )
+    assert "-pix_fmt" not in args
+    assert await manager.stop(session.id) is True
