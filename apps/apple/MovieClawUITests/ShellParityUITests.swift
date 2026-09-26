@@ -61,7 +61,7 @@ final class ShellParityUITests: XCTestCase {
 
     // MARK: 外壳
 
-    /// 「更多」页（标签栏最右的头像页签）：「新会话」入口、会话行常驻 ⋯（菜单四项）、切换账号弹层文案
+    /// 「更多」页（标签栏最右的头像页签）：「新会话」入口、会话行长按菜单（三项）、切换账号弹层文案
     @MainActor
     func testMoreTabAndAccountSwitcher() throws {
         let app = try launch(route: "/library")
@@ -69,13 +69,15 @@ final class ShellParityUITests: XCTestCase {
         XCTAssertTrue(avatarTab.waitForExistence(timeout: 15), "标签栏最右应有头像页签")
         avatarTab.tap()
         XCTAssertTrue(avatarTab.isSelected, "点头像应切到「更多」页签")
-        let menu = app.buttons.matching(identifier: "会话操作").firstMatch
-        XCTAssertTrue(menu.waitForExistence(timeout: 15), "会话行应常驻 ⋯")
+        let row = app.buttons.matching(identifier: "more-session-row").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "应列出最近会话")
+        XCTAssertFalse(app.buttons["会话操作"].exists, "会话行不再挂「⋯」（按 iOS 惯例左滑 / 长按出操作）")
         snapshot("更多-页签")
         XCTAssertTrue(app.buttons["more-new-session"].exists, "最近会话首行应有「新会话」入口")
-        tapSafely(app, menu, "会话 ⋯")
-        for title in ["在新会话中继续", "复制会话 ID", "重命名", "删除会话"] {
-            XCTAssertTrue(app.buttons[title].waitForExistence(timeout: 5), "⋯ 菜单应有「\(title)」")
+        XCTAssertTrue(row.isHittable, "会话行不可点，停止操作")
+        row.press(forDuration: 1.2)
+        for title in ["在新会话中继续", "重命名", "删除会话"] {
+            XCTAssertTrue(app.buttons[title].waitForExistence(timeout: 5), "长按菜单应有「\(title)」")
         }
         snapshot("更多-会话菜单")
         // 收起菜单：点菜单里无副作用的地方不存在，改为重启 App 进入下一段

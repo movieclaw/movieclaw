@@ -2,7 +2,7 @@ import SwiftUI
 
 /// AI 会话页（`/sessions/{id}`，对应 Web `components/agent-conversation-view.tsx`）。
 ///
-/// ChatGPT / Claude 式对话：顶栏会话标题 + 返回，可滚动消息列（用户右侧气泡 / Agent 整栏正文），
+/// ChatGPT / Claude 式对话：顶栏会话标题 + 返回 + 右上角「⋯」会话菜单，可滚动消息列（用户右侧气泡 / Agent 整栏正文），
 /// 底部贴底输入框随键盘上移。沉浸式：进入时隐藏标签栏（Web 手机端 `/sessions/*` 同样隐藏底栏）。
 ///
 /// 交互要点：
@@ -45,7 +45,12 @@ struct AgentConversationView: View {
             .navigationTitle(conversation.loaded ? conversation.title : "AI 会话")
             .navigationBarTitleDisplayMode(.inline)
             .hidesTabBar()
-            .toolbar { AgentTopBarActions() }
+            .toolbar {
+                // 右上角只留「⋯」，操作的是当前会话；Web 顶栏的搜索与「+」在会话页里用不上（2026-09-26 用户决定去掉）
+                if conversation.loaded {
+                    ToolbarItem(placement: .topBarTrailing) { sessionMenu }
+                }
+            }
             .environment(\.openURL, OpenURLAction { url in
                 // 站内链接（相对路径或指向当前服务器）走原生路由；外链交给系统浏览器（同 Web 新窗口打开）
                 if url.scheme == nil || url.host() == api.server.apiBase.host(), router.open(webPath: url.path() + (url.query().map { "?\($0)" } ?? "")) {
@@ -255,6 +260,68 @@ struct AgentConversationView: View {
         }
     }
 
+    // MARK: 会话菜单
+
+    /// 当前会话的操作：从此处创建新会话（聊天记录页最常用，放第一位）/ 重命名 / 删除
+    /// （「更多」页最近会话的行尾菜单与此同图标、同顺序）
+    private var sessionMenu: some View {
+        Menu {
+            Button("从此处创建新会话", systemImage: "arrow.triangle.branch") { Task { await fork() } }
+            Button("重命名", systemImage: "pencil") { Task { await rename() } }
+            Divider()
+            Button("删除会话", systemImage: "trash", role: .destructive) { Task { await remove() } }
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .accessibilityLabel("会话操作")
+        .accessibilityIdentifier("agent-session-menu")
+    }
+
+    /// 从此处创建新会话：服务端带上本会话的上下文开一个新会话（同 Web「在新会话中继续」），打开后接着聊
+    private func fork() async {
+        guard await feedback.confirm(
+            "从此处创建新会话？",
+            message: "会带上这段对话的上下文开一个新会话接着聊，原会话保留不变。",
+            confirmTitle: "创建新会话"
+        ) else { return }
+        do {
+            let forked = try await api.sessionFork(sessionId: sessionId)
+            router.open(.session(id: forked.session.id))
+        } catch {
+            feedback.error("创建新会话失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func rename() async {
+        // 初值是顶栏显示的标题；去空白、截 80 字，没变化就不发请求（同 Web）
+        let current = conversation.title
+        guard let input = await feedback.prompt("重命名会话", placeholder: "会话标题（最多 80 字）", initial: current, maxLength: 80) else { return }
+        let name = String(input.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        guard !name.isEmpty, name != current else { return }
+        do {
+            let updated = try await api.sessionRename(sessionId: sessionId, body: .init(title: name))
+            conversation.title = updated.title ?? name
+        } catch {
+            feedback.error("重命名失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func remove() async {
+        let title = conversation.title.isEmpty ? "未命名会话" : conversation.title
+        guard await feedback.confirm(
+            "彻底删除会话「\(title)」？",
+            message: "服务器上的完整对话记录将一并删除，此操作不可恢复。",
+            confirmTitle: "彻底删除", destructive: true
+        ) else { return }
+        do {
+            _ = try await api.sessionDelete(sessionId: sessionId)
+            feedback.success("会话已删除")
+            router.pop()
+        } catch {
+            feedback.error("删除失败：\(error.localizedDescription)")
+        }
+    }
+
     private func stop() {
         Task {
             do {
@@ -263,32 +330,6 @@ struct AgentConversationView: View {
                 // 停止失败时 Agent 可能仍在执行，不在客户端伪造终态；真实终态仍会经事件流落到界面
                 feedback.error("停止失败，请稍后重试：\(error.localizedDescription)")
             }
-        }
-    }
-}
-
-/// 会话页顶栏右侧：搜索 + 新会话（Web 手机顶栏在会话页同样保留这两个按钮）
-struct AgentTopBarActions: ToolbarContent {
-    @Environment(Router.self) private var router
-    @Environment(\.permissions) private var permissions
-
-    var body: some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            if permissions.canSearch {
-                Button {
-                    router.push(.searchHome)
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                }
-                .accessibilityLabel("搜索")
-            }
-            Button {
-                router.push(.newSession)
-            } label: {
-                Image(systemName: "plus")
-            }
-            .accessibilityLabel("新会话")
-            .accessibilityIdentifier("agent-new-session")
         }
     }
 }
