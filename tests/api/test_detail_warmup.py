@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -101,12 +102,24 @@ def _open_detail(client: TestClient, user_agent: str) -> None:
     assert resp.status_code == 200, resp.text
 
 
+def _settle(probed: list[str], *, expect: int, timeout: float = 3.0) -> list[str]:
+    """预热是 TestClient 事件循环里的后台任务，响应返回时它未必跑完。
+
+    等到采样次数达到 ``expect``（或超时）再交给断言；expect=0 时等满一小段，
+    让本该不发生的采样有机会冒出来——否则「没读盘」的断言没有意义。
+    """
+    deadline = time.monotonic() + (timeout if expect else 0.3)
+    while time.monotonic() < deadline and len(probed) < max(expect, 1):
+        time.sleep(0.02)
+    return probed
+
+
 def test_app_opening_details_never_reads_the_file(stack) -> None:
     """App / UI 测试没上报过网页能力：批量打开详情，一次采样都不做。"""
     client, probed = stack
     for _ in range(3):
         _open_detail(client, IOS_UA)
-    assert probed == []
+    assert _settle(probed, expect=0) == []
 
 
 def test_browser_that_reported_capability_is_warmed(stack) -> None:
@@ -121,6 +134,6 @@ def test_browser_that_reported_capability_is_warmed(stack) -> None:
     probed.clear()  # 决策接口本身的现场采样不算预热
 
     _open_detail(client, IOS_UA)  # 同一账号的 App 不借用浏览器的能力
-    assert probed == []
+    assert _settle(probed, expect=0) == []
     _open_detail(client, CHROME_UA)
-    assert len(probed) == 1
+    assert len(_settle(probed, expect=1)) == 1
