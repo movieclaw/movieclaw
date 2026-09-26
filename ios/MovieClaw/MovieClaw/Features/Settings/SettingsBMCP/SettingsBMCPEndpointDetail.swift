@@ -15,21 +15,38 @@ struct SettingsBMCPEndpointDetail: View {
     let store: SettingsBMCPStore
     let endpointId: String
 
-    private enum Tab: String, CaseIterable, Identifiable {
+    enum Tab: String, CaseIterable, Identifiable {
         case overview = "概览", tools = "工具", settings = "设置"
         var id: String { rawValue }
+
+        /// Web 地址栏 `?tab=` 的取值（overview / tools / settings）
+        init?(query: String?) {
+            switch query {
+            case "overview": self = .overview
+            case "tools": self = .tools
+            case "settings": self = .settings
+            default: return nil
+            }
+        }
     }
 
     @Environment(\.api) private var api
     @Environment(Feedback.self) private var feedback
     @Environment(\.dismiss) private var dismiss
-    @State private var tab: Tab = .overview
+    @State private var tab: Tab
     @State private var preview: API.PreviewView?
     @State private var check: API.SelfCheckView?
     @State private var checking = false
     @State private var draft: SettingsBMCPDraft?
     @State private var confirmText = ""
     @State private var issued: SettingsBMCPIssued?
+
+    /// - Parameter initialTab: 深链 `?endpoint=&tab=` 直达的栏目；缺省概览
+    init(store: SettingsBMCPStore, endpointId: String, initialTab: Tab = .overview) {
+        self.store = store
+        self.endpointId = endpointId
+        _tab = State(initialValue: initialTab)
+    }
 
     var body: some View {
         Group {

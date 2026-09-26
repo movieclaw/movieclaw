@@ -122,27 +122,11 @@ func libraryBytes(_ bytes: Int?) -> String {
     return String(format: rounded >= 100 || i == 0 ? "%.0f %@" : "%.2f %@", rounded, units[i])
 }
 
-/// 相对时间（Web dayjs `fromNow` 中文口径）：「几秒前」「18 天前」「1 个月前」「3 天内」
+/// 相对时间（Web dayjs `fromNow` 中文口径）：「几秒前」「18 天前」「1 个月前」「3 天内」；空值「从未」。
+/// 算法统一在 `Formatters.fromNow`（R-3：全 App 一套口径）。
 func libraryFromNow(_ raw: String?) -> String {
     guard let date = Formatters.date(raw) else { return "从未" }
-    let delta = Date.now.timeIntervalSince(date)
-    let future = delta < 0
-    let s = abs(delta)
-    let text: String
-    switch s {
-    case ..<45: text = "几秒"
-    case ..<90: text = "1 分钟"
-    case ..<(45 * 60): text = "\(Int((s / 60).rounded())) 分钟"
-    case ..<(90 * 60): text = "1 小时"
-    case ..<(22 * 3600): text = "\(Int((s / 3600).rounded())) 小时"
-    case ..<(36 * 3600): text = "1 天"
-    case ..<(26 * 86400): text = "\(Int((s / 86400).rounded())) 天"
-    case ..<(46 * 86400): text = "1 个月"
-    case ..<(320 * 86400): text = "\(max(2, Int((s / 86400 / 30.4).rounded()))) 个月"
-    case ..<(548 * 86400): text = "1 年"
-    default: text = "\(Int((s / 86400 / 365).rounded())) 年"
-    }
-    return future ? "\(text)内" : "\(text)前"
+    return Formatters.fromNow(date)
 }
 
 /// S01E02 形式的集号

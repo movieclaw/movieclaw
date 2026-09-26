@@ -357,9 +357,14 @@ struct SettingsBSiteBoostSheet: View {
             error = "刷流预算必须是不小于 1 的整数（单位 GiB）"
             return
         }
+        // 粘贴超长数字时先挡住：Int 转换或换算成字节的乘法溢出会直接闪退
+        guard gibRaw.rounded() <= Double(Int.max / SettingsBSiteFormat.gib) else {
+            error = "刷流预算数值过大，请填写合理的 GiB 数"
+            return
+        }
         let gib = Int(gibRaw.rounded())
         guard let daysRaw = Double(holdDays.trimmingCharacters(in: .whitespaces)), daysRaw.isFinite,
-              (0...30).contains(Int(daysRaw.rounded())) else {
+              daysRaw.rounded() >= 0, daysRaw.rounded() <= 30 else {
             error = "汰换保留期须是 0～30 之间的整数（天）"
             return
         }

@@ -85,6 +85,8 @@ final class SettingsLogModel {
     /// 「加载全部」后的 tail 口径（0 = 全量），自动刷新沿用同一口径
     private var tail: Int?
     private var inFlight = false
+    /// 请求代次：手动刷新 / 切日期总会发出新请求，旧请求（含在途的自动刷新）回来时按代次作废
+    private var generation = 0
 
     init() {
         // 区分「从未设置」与「主动选了关闭(0)」
@@ -132,12 +134,19 @@ final class SettingsLogModel {
         }
     }
 
-    /// 拉取某天内容；silent 为真时不动加载态（自动刷新不闪屏），失败也不打扰
+    /// 拉取某天内容；silent 为真时不动加载态（自动刷新不闪屏），失败也不打扰。
+    ///
+    /// 并发口径：只有自动刷新（silent）在有请求在途时跳过；手动刷新、切日期、改行数一律照发，
+    /// 并以代次作废在途的旧请求——否则它们撞上自动刷新会被守卫吞掉，界面卡在「加载中…」、
+    /// 切了日期内容却还是旧日期（Web system-logs-section 同款缺陷，这里一并修掉）。
     @MainActor
     func loadDay(_ day: String, tail newTail: Int? = nil, silent: Bool = false) async {
-        guard let api, !inFlight else { return }
+        guard let api else { return }
+        if silent, inFlight { return }
+        generation += 1
+        let mine = generation
         inFlight = true
-        defer { inFlight = false }
+        defer { if mine == generation { inFlight = false } }
         if let newTail { tail = newTail }
         if !silent {
             loading = true
@@ -145,6 +154,8 @@ final class SettingsLogModel {
         }
         do {
             let next = try await api.logsRead(day: day, tail: tail)
+            // 已被更新的请求取代：结果作废，加载态交给最新那次收尾
+            guard mine == generation else { return }
             let added = next.totalLines - (content?.day == day ? content?.totalLines ?? 0 : 0)
             if silent, !atBottom, added > 0 { pendingNew += added }
             content = next
@@ -152,13 +163,14 @@ final class SettingsLogModel {
             error = nil
         } catch is CancellationError {
         } catch {
+            guard mine == generation else { return }
             if !silent {
                 content = nil
                 entries = []
                 self.error = error.localizedDescription
             }
         }
-        if !silent { loading = false }
+        if !silent, mine == generation { loading = false }
     }
 
     /// 切换日期：重置 tail 口径与跟随状态，回到「贴底看最新」

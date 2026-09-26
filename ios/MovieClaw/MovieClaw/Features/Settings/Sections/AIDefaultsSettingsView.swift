@@ -132,6 +132,7 @@ struct AIDefaultsSettingsView: View {
                 agentModel: purpose == .agent ? value : sibling(previous.agentModel),
                 subtitleModel: purpose == .subtitle ? value : sibling(previous.subtitleModel)
             ))
+            AgentCatalog.invalidateModels()
             feedback.success("AI 设定已保存")
         } catch {
             defaults = previous

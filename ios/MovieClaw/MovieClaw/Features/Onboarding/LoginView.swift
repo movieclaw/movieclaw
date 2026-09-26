@@ -21,7 +21,8 @@ struct LoginView: View {
     @State private var username = ""
     @State private var password = ""
     @State private var confirm = ""
-    @State private var remember = true
+    /// 「30 天内记住我」默认不勾（同 Web 登录页；不勾时会话 7 天有效）
+    @State private var remember = false
     @State private var busy = false
     @State private var error: String?
 
@@ -49,11 +50,7 @@ struct LoginView: View {
                             .textContentType(Self.autofill ? .newPassword : nil)
                     }
                 } header: {
-                    Text(mode == .setup ? "创建管理员账号" : mode == .addAccount ? "登录另一个账号；之后可在「切换账号」里一键切换，不用再输密码。" : "使用你的 MovieClaw 账号进入")
-                } footer: {
-                    if mode == .setup {
-                        Text("这台服务器还没有初始化。创建的账号将成为超级管理员。")
-                    }
+                    Text(headerText)
                 }
 
                 if mode != .setup {
@@ -77,7 +74,7 @@ struct LoginView: View {
                             Spacer()
                         }
                     }
-                    .disabled(busy || username.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
+                    .disabled(busy || username.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty || (mode == .setup && confirm.isEmpty))
                     .accessibilityIdentifier("login-submit")
                 }
 
@@ -96,12 +93,27 @@ struct LoginView: View {
                 }
             }
             .navigationTitle(mode == .setup ? "初始化" : mode == .addAccount ? "添加账号" : "登录")
+            // 登录页铺背景图直出（Web AuthScreen：未登录时后端给的是管理员为登录页设的全局背景）
+            .appBackground(.sharp)
+            .task {
+                guard mode != .addAccount, let api = model.api else { return }
+                await AppBackdropStore.shared.refresh(api: api, includePrefs: false)
+            }
+        }
+    }
+
+    /// 表单上方的说明（Web AuthScreen 的副标题，逐字对齐）
+    private var headerText: String {
+        switch mode {
+        case .setup: "欢迎使用。请设置超级管理员账号——它是本站唯一的管理身份，此流程仅在首次部署时出现。"
+        case .login: "使用你的 MovieClaw 账号进入。"
+        case .addAccount: "登录另一个账号；之后可在「切换账号」里一键切换，不用再输密码。"
         }
     }
 
     private var buttonTitle: String {
         switch mode {
-        case .setup: busy ? "创建中…" : "创建并进入"
+        case .setup: busy ? "创建中…" : "创建账号并进入"
         case .login: busy ? "登录中…" : "登录"
         case .addAccount: busy ? "登录中…" : "添加并切换"
         }

@@ -139,8 +139,18 @@ struct SettingsBDlLimitsSheet: View {
         return count >= 0 ? count : nil
     }
 
+    /// 粘贴超长数字（numberPad 也能粘贴）时 Int 转换或 ×1024 会溢出直接闪退：先挡在提交前
+    private static func tooLarge(_ raw: String) -> Bool {
+        guard let value = Double(raw.trimmingCharacters(in: .whitespaces)), value.isFinite else { return false }
+        return abs(value.rounded()) > Double(Int.max / kib)
+    }
+
     private func save() async {
         guard !busy else { return }
+        if [dlKib, upKib, maxDown, maxUp, maxTotal].contains(where: Self.tooLarge) {
+            error = "数值过大，请填写合理的数字"
+            return
+        }
         busy = true
         error = nil
         defer { busy = false }

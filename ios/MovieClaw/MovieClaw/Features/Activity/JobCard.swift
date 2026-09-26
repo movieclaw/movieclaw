@@ -14,7 +14,6 @@ struct JobCard: View {
 
     @Environment(\.api) private var api
     @Environment(Router.self) private var router
-    @Environment(Feedback.self) private var feedback
     @State private var busyAction: String?
     @State private var actionError: String?
     @State private var usageExpanded = false
@@ -330,7 +329,8 @@ struct JobCard: View {
             store.upsert(try await api.jobsDismiss(jobId: job.id, body: API.JobDismissRequest(muteSource: muteSource)).job)
             dismissOpen = false
         } catch {
-            feedback.error(error.localizedDescription.isEmpty ? "忽略失败，请稍后重试" : error.localizedDescription)
+            // 与卡片上其他动作同一展示方式：错误写在卡片内，弹层保持打开（Web dismissCurrentJob）
+            actionError = error.localizedDescription.isEmpty ? "忽略失败，请稍后重试" : error.localizedDescription
         }
     }
 

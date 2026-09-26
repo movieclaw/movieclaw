@@ -6,6 +6,8 @@ import SwiftUI
 struct SettingsBIwEditorTarget: Identifiable {
     let id = UUID()
     var rule: API.ImportWatchView?
+    /// 新建时预选的导入目标（体检修复卡的「自动路由」预填）；nil 用默认（第一个库）
+    var initialTarget: SettingsBIwTarget?
 }
 
 /// 规则下方展开中的条目清单（数据放在根视图，按规则 id 存）

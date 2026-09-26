@@ -476,6 +476,8 @@ struct SettingsBLLMProviderForm: View {
                 _ = try await api.llmProvidersCreate(body: payload)
                 LLMCapabilityProbe.shared.invalidate()
             }
+            // 增改后对话框的模型清单立即失效（Web afterChange → invalidateModelOptionsCache）
+            AgentCatalog.invalidateModels()
             onSaved()
             dismiss()
         } catch is CancellationError {

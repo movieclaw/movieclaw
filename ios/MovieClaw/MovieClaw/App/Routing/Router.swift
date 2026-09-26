@@ -90,8 +90,23 @@ final class Router {
         )
     }
 
+    /// 当前账号的权限（由 MainTabView 写入），路由守卫据此把越权目标改道。
+    /// nil = 还没写入（主界面刚挂载、启动深链抢在权限同步之前）：此时不拦，交给页面与后端兜底
+    var permissions: Permissions?
+
+    /// 路由守卫（同 Web `accessiblePathFor` 与设置页的越权回退）：
+    /// - 成员打开仅管理员可见的设置分区 → 改去「个人信息」（Web settings-view 的 replace 到 /settings/profile）；
+    /// - 其余越权页面（AI 会话、无能力的订阅/搜索、活动、媒体库管理）→ 落到媒体库首页。
+    /// 界面上本就不给这些入口，守卫兜的是通知、AI 卡片、深链等「从别处跳过来」的情况。
+    func guarded(_ route: AppRoute) -> AppRoute {
+        guard let permissions, !permissions.allows(route) else { return route }
+        if case .settingsSection = route { return .settingsSection(.profile) }
+        return .libraryHome
+    }
+
     /// 在当前标签内压栈
     func push(_ route: AppRoute) {
+        let route = guarded(route)
         if let root = Self.tabRoot(of: route) {
             selectedTab = root
             paths[root] = []
@@ -103,6 +118,7 @@ final class Router {
 
     /// 切到路由归属的标签后压栈（通知、AI 卡片等「从别处跳过来」的场景）
     func open(_ route: AppRoute) {
+        let route = guarded(route)
         if let root = Self.tabRoot(of: route) {
             selectedTab = root
             paths[root] = []
@@ -121,7 +137,11 @@ final class Router {
     /// 打开 Web 站内链接；解析失败返回 false
     @discardableResult
     func open(webPath: String) -> Bool {
-        guard let route = AppRoute(webPath: webPath) else { return false }
+        guard var route = AppRoute(webPath: webPath) else { return false }
+        // 「/」对成员同样收敛到媒体库（Web accessiblePathFor：成员的 / → /library）
+        if let permissions, !permissions.isAdmin, URLComponents(string: webPath)?.path.split(separator: "/").isEmpty ?? false {
+            route = .libraryHome
+        }
         open(route)
         return true
     }
@@ -154,7 +174,8 @@ final class Router {
     /// 记下标签根路由携带的参数
     private func rememberRootParameter(of route: AppRoute) {
         switch route {
-        case let .activity(view?): rootParameter = RootParameter(tab: .activity, value: view)
+        // 活动页不带 view 也要下发（空串）：Web 缺省/非法 view 一律回到「观看 · 正在播放」
+        case let .activity(view): rootParameter = RootParameter(tab: .activity, value: view ?? "")
         case let .discover(kind): rootParameter = RootParameter(tab: .discover, value: kind)
         default: break
         }

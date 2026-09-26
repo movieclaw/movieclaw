@@ -176,7 +176,7 @@ private struct SettingsBPushWeixinBody: View {
                     Button("确认") { Task { await submitVerify() } }
                         .font(.subheadline.weight(.semibold))
                         .discoverProminentButton()
-                        .disabled(busy || verifyCode.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(busy || verifyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .accessibilityIdentifier("push-weixin-verify-submit")
                 }
                 .onAppear { codeFocused = true }
@@ -228,7 +228,7 @@ private struct SettingsBPushWeixinBody: View {
     }
 
     private func submitVerify() async {
-        let code = verifyCode.trimmingCharacters(in: .whitespaces)
+        let code = verifyCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let current = binding, !code.isEmpty else { return }
         busy = true
         error = nil
@@ -258,7 +258,7 @@ private struct SettingsBPushFeishuBody: View {
     @State private var error: String?
     @State private var busy = false
 
-    private var canSubmit: Bool { !busy && !webhookUrl.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var canSubmit: Bool { !busy && !webhookUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -290,13 +290,13 @@ private struct SettingsBPushFeishuBody: View {
     }
 
     private func bind() async {
-        let url = webhookUrl.trimmingCharacters(in: .whitespaces)
+        let url = webhookUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !busy, !url.isEmpty else { return }
         busy = true
         error = nil
         defer { busy = false }
         do {
-            _ = try await api.channelsImFeishuBind(body: .init(webhookUrl: url, secret: secret.trimmingCharacters(in: .whitespaces)))
+            _ = try await api.channelsImFeishuBind(body: .init(webhookUrl: url, secret: secret.trimmingCharacters(in: .whitespacesAndNewlines)))
             onBound()
         } catch {
             self.error = error.localizedDescription
@@ -316,7 +316,7 @@ private struct SettingsBPushTokenBody: View {
     @State private var error: String?
     @State private var busy = false
 
-    private var canSubmit: Bool { !busy && !token.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var canSubmit: Bool { !busy && !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -363,7 +363,7 @@ private struct SettingsBPushTokenBody: View {
     }
 
     private func start() async {
-        let value = token.trimmingCharacters(in: .whitespaces)
+        let value = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !busy, !value.isEmpty else { return }
         busy = true
         error = nil

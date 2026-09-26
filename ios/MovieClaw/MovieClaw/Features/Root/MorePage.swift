@@ -2,13 +2,20 @@ import SwiftUI
 
 /// 「更多」页（左上角头像打开；Web `/my` 与 components/more-page.tsx）。
 ///
-/// iOS 设置式分组列表：
+/// iOS 设置式分组列表（与 Web 同序同文案）：
 /// - 用户头：头像 + 昵称 + `@用户名 · 角色`；
-/// - 常用：个人信息 / 待处理事项（管理员且有通知时）/ 设置 / 应用更新（管理员且有待更新时）；
+/// - 常用：个人信息 / 待处理（管理员且有事项时，30 秒轮询）/ 设置 / 应用更新（管理员且有待更新时，
+///   文案「新版本 vX」或「新识别模型 X」）；
 /// - 账号：切换账号 / 退出登录；
-/// - 最近会话（管理员）：AI 会话，默认 5 条，其余就地展开；每行菜单：
-///   在新会话中继续 / 复制会话 ID / 重命名 / 删除。
+/// - 最近会话（管理员）：AI 会话（取最近 20 条），默认露出 5 条，其余就地展开、可再收起；
+///   行尾常驻「⋯」菜单：在新会话中继续 / 复制会话 ID / 重命名 / 删除会话。
+///
+/// 两种打开方式：点头像以 sheet 弹出（`inSheet`，右上「完成」关闭）；站内链接 `/my` 压栈打开
+/// （只有系统返回键，不再叠一个「完成」）。
 struct MorePage: View {
+    /// 是否以 sheet 形式弹出（决定右上角要不要「完成」）
+    var inSheet = false
+
     @Environment(AppModel.self) private var model
     @Environment(Router.self) private var router
     @Environment(Feedback.self) private var feedback
@@ -20,7 +27,10 @@ struct MorePage: View {
     @State private var sessions: [API.SessionSummary] = []
     @State private var notices: [API.NoticeView] = []
     @State private var showAllSessions = false
+    /// 默认露出的会话条数（Web RECENT_SESSIONS_LIMIT）
     private static let recentLimit = 5
+    /// 会话列表取回条数（Web agent-conversations 的 PAGE_SIZE）
+    private static let pageSize = 20
 
     var body: some View {
         List {
@@ -40,7 +50,8 @@ struct MorePage: View {
             }
 
             Section("常用") {
-                MoreRouteRow(route: .settingsSection(.profile)) {
+                // Web 的返回链是 /settings/profile → /settings，这里同样先压「设置」再压「个人信息」
+                MoreRouteRow(routes: [.settings, .settingsSection(.profile)]) {
                     Label("个人信息", systemImage: "person.crop.circle")
                 }
                 if permissions.isAdmin, !notices.isEmpty {
@@ -49,27 +60,31 @@ struct MorePage: View {
                     } label: {
                         Label {
                             HStack {
-                                Text("待处理事项")
+                                Text("待处理").fontWeight(.medium)
                                 Spacer()
-                                Text("\(notices.count)").foregroundStyle(Theme.textMuted)
+                                Text("\(notices.count)")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Theme.danger, in: .capsule)
                             }
                         } icon: {
-                            Image(systemName: "bell.badge").foregroundStyle(Theme.danger)
+                            Image(systemName: "bell")
                         }
+                        .foregroundStyle(Theme.danger)
                     }
+                    .accessibilityIdentifier("more-notices")
                 }
-                MoreRouteRow(route: .settings) {
+                MoreRouteRow(routes: [.settings]) {
                     Label("设置", systemImage: "gearshape")
                 }
                 .accessibilityIdentifier("more-settings")
-                if permissions.isAdmin, badges.updatePending {
-                    MoreRouteRow(route: .settingsSection(.app)) {
-                        Label {
-                            Text("有可用更新")
-                        } icon: {
-                            Image(systemName: "arrow.down.app").foregroundStyle(Theme.info)
-                        }
+                if permissions.isAdmin, let label = badges.updateLabel {
+                    MoreRouteRow(routes: [.settingsSection(.app)], tint: Theme.info) {
+                        Label(label, systemImage: "arrow.down.app")
                     }
+                    .accessibilityIdentifier("more-update")
                 }
             }
 
@@ -93,28 +108,46 @@ struct MorePage: View {
             if permissions.isAdmin {
                 Section("最近会话") {
                     if sessions.isEmpty {
-                        Text("还没有会话。点右上角「+」开始一个新任务。")
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.textMuted)
+                        Text("还没有会话，点上方的「新会话」开始。")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textFaint)
                     }
                     ForEach(visibleSessions, id: \.id) { item in
                         sessionRow(item)
                     }
-                    if !showAllSessions, sessions.count > Self.recentLimit {
-                        Button("显示全部 \(sessions.count) 个会话") { showAllSessions = true }
-                            .foregroundStyle(Theme.textMuted)
+                    if sessions.count > Self.recentLimit {
+                        // 展开/收起行：文字居中弱化 + 上下箭头（Web 同款，区别于「点进去」的右箭头）
+                        Button {
+                            withAnimation { showAllSessions.toggle() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Spacer()
+                                Text(showAllSessions ? "收起" : "显示全部 \(sessions.count) 个会话")
+                                Image(systemName: "chevron.down")
+                                    .font(.footnote.weight(.semibold))
+                                    .rotationEffect(.degrees(showAllSessions ? 180 : 0))
+                                Spacer()
+                            }
+                        }
+                        .foregroundStyle(Theme.textMuted)
+                        .accessibilityIdentifier("more-sessions-toggle")
                     }
                 }
             }
         }
+        .appBackground()
         .navigationTitle("更多")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("完成") { dismiss() }
+            if inSheet {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
             }
         }
-        .task { await load() }
+        .task { await loadSessions() }
+        // 待处理事项与 Web NoticeCenter 同频 30 秒轮询（首轮立即拉）
+        .polling(every: 30, immediately: true) { await loadNotices() }
     }
 
     private var visibleSessions: [API.SessionSummary] {
@@ -123,29 +156,42 @@ struct MorePage: View {
 
     @ViewBuilder
     private func sessionRow(_ item: API.SessionSummary) -> some View {
-        MoreRouteRow(route: .session(id: item.id)) {
-            HStack {
-                if item.running {
-                    Circle().fill(Theme.success).frame(width: 7, height: 7)
-                        .symbolEffect(.pulse)
-                }
-                VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 8) {
+            MoreRouteRow(routes: [.session(id: item.id)], showsChevron: false) {
+                HStack(spacing: 10) {
+                    if item.running {
+                        MoreRunningDot()
+                    }
                     Text(title(of: item)).lineLimit(1)
-                    Text(Formatters.relative(item.updatedAt))
-                        .font(.caption)
-                        .foregroundStyle(Theme.textFaint)
                 }
             }
-        }
-        .contextMenu {
-            Button("在新会话中继续", systemImage: "arrow.triangle.branch") { Task { await fork(item) } }
-            Button("复制会话 ID", systemImage: "doc.on.doc") {
-                UIPasteboard.general.string = item.id
-                feedback.success("已复制会话 ID")
+            // 一行里有两个可点控件：必须各自 borderless，否则 List 会把整行点击同时派给两者
+            .buttonStyle(.borderless)
+            // 行尾常驻「⋯」（Web ConversationMenu），不再只能靠长按发现
+            Menu {
+                sessionActions(item)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Theme.textMuted)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
             }
-            Button("重命名", systemImage: "pencil") { Task { await rename(item) } }
-            Button("删除会话", systemImage: "trash", role: .destructive) { Task { await remove(item) } }
+            .buttonStyle(.plain)
+            .accessibilityLabel("会话操作")
         }
+        .contextMenu { sessionActions(item) }
+    }
+
+    @ViewBuilder
+    private func sessionActions(_ item: API.SessionSummary) -> some View {
+        Button("在新会话中继续", systemImage: "bubble.left") { Task { await fork(item) } }
+        Button("复制会话 ID", systemImage: "doc.on.doc") {
+            UIPasteboard.general.string = item.id
+            feedback.success("会话 ID 已复制")
+        }
+        Button("重命名", systemImage: "pencil") { Task { await rename(item) } }
+        Button("删除会话", systemImage: "trash", role: .destructive) { Task { await remove(item) } }
     }
 
     private func title(of item: API.SessionSummary) -> String {
@@ -154,12 +200,17 @@ struct MorePage: View {
         return "未命名会话"
     }
 
-    private func load() async {
+    private func loadSessions() async {
         guard permissions.isAdmin else { return }
-        async let sessionList = try? api.sessionList(limit: 50)
-        async let noticeList = try? api.noticesList()
-        sessions = await sessionList ?? []
-        notices = NoticeCenterView.visible(await noticeList ?? [])
+        sessions = (try? await api.sessionList(limit: Self.pageSize)) ?? sessions
+    }
+
+    private func loadNotices() async {
+        guard permissions.isAdmin else { return }
+        // 拉取失败保留上次结果，下一轮轮询自愈（同 Web）
+        if let list = try? await api.noticesList() {
+            notices = NoticeCenterView.visible(list)
+        }
     }
 
     private func fork(_ item: API.SessionSummary) async {
@@ -168,53 +219,81 @@ struct MorePage: View {
             dismiss()
             router.open(.session(id: forked.session.id))
         } catch {
-            feedback.error(error)
+            feedback.error("创建续接会话失败：\(error.localizedDescription)")
         }
     }
 
     private func rename(_ item: API.SessionSummary) async {
-        guard let name = await feedback.prompt("重命名会话", placeholder: "会话标题（最多 80 字）", initial: item.title ?? ""),
-              !name.trimmingCharacters(in: .whitespaces).isEmpty
-        else { return }
+        // 初值是界面上显示的标题；去空白、截 80 字，没变化就不发请求（同 Web）
+        let current = title(of: item)
+        guard let input = await feedback.prompt("重命名会话", placeholder: "会话标题（最多 80 字）", initial: current) else { return }
+        let name = String(input.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        guard !name.isEmpty, name != current else { return }
         do {
-            let updated = try await api.sessionRename(sessionId: item.id, body: .init(title: String(name.prefix(80))))
+            let updated = try await api.sessionRename(sessionId: item.id, body: .init(title: name))
             if let index = sessions.firstIndex(where: { $0.id == item.id }) { sessions[index] = updated }
         } catch {
-            feedback.error(error)
+            feedback.error("重命名失败：\(error.localizedDescription)")
         }
     }
 
     private func remove(_ item: API.SessionSummary) async {
-        guard await feedback.confirm("删除这个会话？", message: "会话记录将被永久删除，无法恢复。", confirmTitle: "删除", destructive: true) else { return }
+        guard await feedback.confirm(
+            "彻底删除会话「\(title(of: item))」？",
+            message: "服务器上的完整对话记录将一并删除，此操作不可恢复。",
+            confirmTitle: "彻底删除", destructive: true
+        ) else { return }
         do {
             _ = try await api.sessionDelete(sessionId: item.id)
             sessions.removeAll { $0.id == item.id }
         } catch {
-            feedback.error(error)
+            feedback.error("删除失败：\(error.localizedDescription)")
         }
+    }
+}
+
+/// 运行中会话的提示点：信息蓝 + 呼吸（Web `bg-[var(--info)] animate-pulse`）
+private struct MoreRunningDot: View {
+    @State private var dim = false
+
+    var body: some View {
+        Circle()
+            .fill(Theme.info)
+            .frame(width: 6, height: 6)
+            .opacity(dim ? 0.35 : 1)
+            .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: dim)
+            .onAppear { dim = true }
+            .accessibilityLabel("运行中")
     }
 }
 
 /// 更多页的跳转行：先关掉「更多」弹层，再在主导航里打开目标页
 /// （弹层自带的导航栈里打开会话页时隐藏不了标签栏，页内跳转也会压错栈）。
+/// `routes` 依次压栈（第一个走 `open` 定标签，其余 `push`），用于还原 Web 的返回链。
 private struct MoreRouteRow<Content: View>: View {
-    let route: AppRoute
+    let routes: [AppRoute]
+    var tint: Color = Theme.text
+    var showsChevron = true
     @ViewBuilder let label: () -> Content
     @Environment(Router.self) private var router
 
     var body: some View {
         Button {
-            router.open(route)
+            guard let first = routes.first else { return }
+            router.open(first)
+            for route in routes.dropFirst() { router.push(route) }
         } label: {
             HStack {
                 label()
                 Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Theme.textFaint)
+                if showsChevron {
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Theme.textFaint)
+                }
             }
             .contentShape(Rectangle())
         }
-        .foregroundStyle(Theme.text)
+        .foregroundStyle(tint)
     }
 }

@@ -17,6 +17,13 @@ import SwiftUI
 struct ImportWatchSettingsView: View {
     @Environment(\.api) private var api
     @Environment(Feedback.self) private var feedback
+    /// 深链参数：体检修复卡「去建规则」带 `suggest=auto&kinds=movie,tv`（Web 同名查询串）
+    @Environment(\.routeQuery) private var routeQuery
+    /// 预填队列：还要按「自动路由」新建的类型（电影建完接着建剧集）；用户中途关闭即放弃
+    @State private var suggestKinds: [String] = []
+    /// 刚保存了一条、队列里还有下一类型：弹层关闭后接着打开下一条的预填
+    @State private var suggestNext = false
+    @State private var routeQueryConsumed = false
 
     @State private var rules: [API.ImportWatchView]?
     @State private var libraries: [API.LibraryView] = []
@@ -88,13 +95,41 @@ struct ImportWatchSettingsView: View {
             }
         }
         .settingsBFormStyle()
-        .task { await reload() }
-        .sheet(item: $editor) { target in
-            SettingsBIwEditorSheet(rule: target.rule, libraries: libraries, downloaderDirs: downloaderDirs) {
+        .task {
+            await reload()
+            consumeRouteQuery()
+        }
+        .sheet(item: $editor, onDismiss: {
+            if suggestNext, let kind = suggestKinds.first {
+                suggestNext = false
+                editor = SettingsBIwEditorTarget(rule: nil, initialTarget: .auto(kind: kind))
+            } else {
+                suggestNext = false
+                suggestKinds = [] // 用户中途关闭即放弃剩余预填队列（同 Web）
+            }
+        }) { target in
+            SettingsBIwEditorSheet(rule: target.rule, libraries: libraries, downloaderDirs: downloaderDirs,
+                                   initialTarget: target.initialTarget) {
                 Task { await reload() }
+                // 还有下一个类型要建：关窗后接着预填下一类型（Web 弹窗不关、表单重置为下一类型）
+                if target.initialTarget != nil, suggestKinds.count > 1 {
+                    suggestKinds.removeFirst()
+                    suggestNext = true
+                }
             }
             .sheetFeedback()
         }
+    }
+
+    /// 体检修复卡跳转落地（Web `?suggest=auto&kinds=movie,tv`）：自动打开新建规则并预选「自动路由」，
+    /// 多个类型排成队列；kinds 缺省或全非法时按电影
+    private func consumeRouteQuery() {
+        guard !routeQueryConsumed else { return }
+        routeQueryConsumed = true
+        guard routeQuery["suggest"] == "auto" else { return }
+        let kinds = (routeQuery["kinds"] ?? "").split(separator: ",").map(String.init).filter { $0 == "movie" || $0 == "tv" }
+        suggestKinds = kinds.isEmpty ? ["movie"] : kinds
+        editor = SettingsBIwEditorTarget(rule: nil, initialTarget: .auto(kind: suggestKinds[0]))
     }
 
     /// 条目是电影还是剧集：指定库看库类型，自动路由 / 自定义目录看规则声明（同 Web）

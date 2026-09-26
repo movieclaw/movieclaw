@@ -192,14 +192,31 @@ struct NowPlayingSection: View {
 nonisolated extension APIClient {
     /// 结束一台设备本次播放（Web 把后端 message 当 Toast，这里同样返回它）
     func activityEndPlayback(deviceId: String) async throws -> String {
-        let envelope: APIEnvelope<API.JSONValue?> = try await raw("POST", "/playback/activity/sessions/\(deviceId)/end")
-        return envelope.message ?? "已结束播放"
+        try await activityDeviceAction("POST", ["playback", "activity", "sessions", deviceId, "end"], fallback: "已结束播放")
     }
 
     /// 注销一台播放设备
     func activityRevokeDevice(deviceId: String) async throws -> String {
-        let envelope: APIEnvelope<API.JSONValue?> = try await raw("DELETE", "/playback/devices/\(deviceId)")
-        return envelope.message ?? "设备已注销"
+        try await activityDeviceAction("DELETE", ["playback", "devices", deviceId], fallback: "设备已注销")
+    }
+
+    /// 设备 id 进路径前必须整段百分号编码（Web `encodeURIComponent(deviceId)`）：
+    /// Jellyfin 网页客户端的 DeviceId 是 base64，可能带 `/`、`+`、`=`，原样拼进路径会被当成分隔符而 404。
+    /// 通用的 `url(_:)` 走 `appending(path:)`，会把预先编码的 `%2F` 再编一次，所以这里自己拼已编码路径。
+    private func activityDeviceAction(_ method: String, _ segments: [String], fallback: String) async throws -> String {
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#;+=&"))
+        let encoded = segments.map { $0.addingPercentEncoding(withAllowedCharacters: allowed) ?? $0 }
+        guard var components = URLComponents(url: server.apiBase, resolvingAgainstBaseURL: false) else {
+            throw APIError.network("服务器地址异常")
+        }
+        components.percentEncodedPath += "/" + encoded.joined(separator: "/")
+        guard let url = components.url else { throw APIError.network("服务器地址异常") }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let data = try await perform(request)
+        let envelope = try? Self.decoder.decode(APIEnvelope<API.JSONValue?>.self, from: data)
+        return envelope?.message ?? fallback
     }
 }
 
@@ -382,10 +399,9 @@ struct PlaybackSessionCard: View {
                 }
                 Text(WatchFormat.metaLine([session.memberName, device, session.clientVersion]))
                     .font(.caption).foregroundStyle(Theme.textFaint).lineLimit(1)
+                // 规格串（分辨率 · 编码 · HDR · 码率 · 体积）Web 手机端不显示（max-md:hidden，
+                // 窄屏会折成孤字行，交给详情页），App 同样只留传输行
                 transferLine
-                if let specs = specLine {
-                    Text(specs).font(.caption2).foregroundStyle(Theme.textFaint.opacity(0.9)).lineLimit(1)
-                }
                 clockLine
             }
         }
@@ -410,17 +426,6 @@ struct PlaybackSessionCard: View {
         .font(.caption)
         .monospacedDigit()
         .foregroundStyle(Theme.textFaint)
-    }
-
-    /// 规格串（分辨率 · 编码 · HDR · 码率 · 体积）
-    private var specLine: String? {
-        guard let file = session.file else { return nil }
-        let parts = [
-            file.resolution, file.videoCodec?.uppercased(), file.hdr,
-            file.bitRate.map { String(format: "%.1f Mbps", Double($0) / 1_000_000) },
-            file.sizeBytes.map { ActivityFormat.bytes(Double($0)) },
-        ].compactMap { $0 }.filter { !$0.isEmpty }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     @ViewBuilder private var clockLine: some View {

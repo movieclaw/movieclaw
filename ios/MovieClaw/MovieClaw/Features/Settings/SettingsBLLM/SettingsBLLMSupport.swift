@@ -47,15 +47,12 @@ enum SettingsBLLMFormat {
         return "\(Int((Double(n) / 1000).rounded()))K"
     }
 
-    /// 能力短标（思考 / 档位可控 / 视觉 / 视频）。
-    ///
-    /// Web 用服务端推导的 `thinking_levels` 判「档位可控」，但生成模型 `API.ModelInfo`
-    /// 没有这个字段；服务端的档位菜单正是由 `thinking_control` 推导的（未声明 = 无菜单），
-    /// 所以这里以「声明了思考控制方言」近似，展示结论一致。
+    /// 能力短标（思考 / 档位可控 / 视觉 / 视频）。「档位可控」同 Web 看服务端推导的 `thinking_levels` 是否非空
+    ///（预算分段模式没设预算上限时没有档位菜单，只看是否声明了 thinking_control 会误标）。
     static func hints(_ m: API.ModelInfo) -> String {
         [
             m.supportsThinking ? "思考" : nil,
-            m.thinkingControl != nil ? "档位可控" : nil,
+            !m.thinkingLevels.isEmpty ? "档位可控" : nil,
             m.modalities.contains("image") ? "视觉" : nil,
             m.modalities.contains("video") ? "视频" : nil,
         ].compactMap { $0 }.joined(separator: " · ")

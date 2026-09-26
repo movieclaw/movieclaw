@@ -10,10 +10,14 @@ import SwiftUI
 struct AppMaintenanceSettingsView: View {
     @Environment(\.api) private var api
 
-    enum Tab: Hashable { case update, storage, tasks }
+    enum Tab: String, Hashable { case update, storage, tasks }
 
     @State private var tab: Tab = .update
-    @State private var pendingUpdate = false
+    /// 深链 `?tab=storage|tasks` 直达对应页签（Web useTabParam），只在首次出现时读一次
+    @Environment(\.routeQuery) private var routeQuery
+    @State private var routeQueryConsumed = false
+    /// 外壳常驻的待更新快照（10 分钟轮询 + 回前台刷新，同 Web usePendingUpdate）；不在外壳里时为空
+    @Environment(ShellBadges.self) private var badges: ShellBadges?
 
     var body: some View {
         Group {
@@ -25,18 +29,20 @@ struct AppMaintenanceSettingsView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .appBackground()
-        .task {
-            if let pending = try? await api.appUpdatePending() {
-                pendingUpdate = pending.appVersion != nil || pending.modelTag != nil
-            }
+        .onAppear {
+            guard !routeQueryConsumed else { return }
+            routeQueryConsumed = true
+            if let raw = routeQuery["tab"], let value = Tab(rawValue: raw) { tab = value }
         }
+        // 进页再拉一次最新快照，页签蓝点随外壳的轮询实时更新
+        .task { await badges?.refreshUpdate(api: api) }
     }
 
     private var tabs: some View {
         SettingsPillTabs(
             tabs: [(Tab.update, "版本与更新"), (Tab.storage, "缓存管理"), (Tab.tasks, "定时任务")],
             selection: $tab,
-            dotted: pendingUpdate ? [.update] : [],
+            dotted: badges?.updatePending == true ? [.update] : [],
             identifierPrefix: "app-tab"
         )
     }

@@ -15,6 +15,10 @@ import SwiftUI
 struct DownloadersSettingsView: View {
     @Environment(\.api) private var api
     @Environment(Feedback.self) private var feedback
+    /// 深链参数（Web 同名查询串）：`suggest_mapping` 体检修复卡的映射建议、`limits` 拥堵提示直达限速弹层
+    @Environment(\.routeQuery) private var routeQuery
+    /// 深链参数只消费一次（之后开合归用户，关了不复弹）
+    @State private var routeQueryConsumed = false
 
     @State private var downloaders: [API.DownloaderView] = []
     @State private var loading = true
@@ -59,14 +63,17 @@ struct DownloadersSettingsView: View {
             }
         }
         .settingsBFormStyle()
-        .task { await load() }
+        .task {
+            await load()
+            consumeRouteQuery()
+        }
         // 有下载器处于中间态时 2 秒轮询；其余时间回调里直接跳过（Web 此时不轮询）
         .polling(every: hasInProgress ? 2 : 30) {
             guard hasInProgress else { return }
             if let rows = try? await api.dlList() { downloaders = rows }
         }
         .sheet(item: $editor) { target in
-            SettingsBDlEditorSheet(downloader: target.downloader) { saved in
+            SettingsBDlEditorSheet(downloader: target.downloader, suggestMapping: target.suggestMapping) { saved in
                 upsert(saved)
             }
             .sheetFeedback()
@@ -143,6 +150,21 @@ struct DownloadersSettingsView: View {
             self.error = error.localizedDescription
         }
         loading = false
+    }
+
+    /// 落地后按深链参数自动打开对应弹层（Web：suggest_mapping 展开默认下载器并进编辑、预填映射；
+    /// limits=<id> 打开那台的「限速与队列」）
+    private func consumeRouteQuery() {
+        guard !routeQueryConsumed, !downloaders.isEmpty else { return }
+        routeQueryConsumed = true
+        if let suggest = routeQuery["suggest_mapping"], !suggest.isEmpty {
+            let target = downloaders.first(where: \.isDefault) ?? downloaders[0]
+            expanded = target.id
+            editor = SettingsBDlEditorTarget(downloader: target, suggestMapping: suggest)
+        } else if let raw = routeQuery["limits"], let id = Int(raw), let target = downloaders.first(where: { $0.id == id }) {
+            expanded = target.id
+            limitsTarget = SettingsBDlLimitsTarget(downloader: target)
+        }
     }
 
     /// 原地替换已有条目、新条目追加到末尾（保持列表顺序稳定，避免操作后跳位）

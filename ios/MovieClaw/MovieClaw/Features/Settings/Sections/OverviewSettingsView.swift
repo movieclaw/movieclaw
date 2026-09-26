@@ -156,14 +156,17 @@ enum SettingsPipelineStatus {
     }
 
     /// 修复去处 → App 内路由与文案（Web fixTarget）。
-    /// Web 修复选项还会带预填参数（fix_params，目标页读取后自动填表单）；App 的分区页面入口参数固定，只跳到分区。
-    static func fixTarget(_ section: String?) -> (route: AppRoute, label: String)? {
+    /// 修复选项还带预填参数（fix_params，Web fixOptionHref 拼成查询串）：原样作为分区路由的 query 透传，
+    /// 目标分区页读取后自动填表单（下载器 `suggest_mapping`、自动入库 `suggest=auto&kinds=`）。
+    /// 「去媒体库」同 Web 落媒体库首页（/library）。
+    static func fixTarget(_ section: String?, params: [String: String]? = nil) -> (route: AppRoute, label: String)? {
+        let query = params ?? [:]
         switch section {
-        case "sites": (.settingsSection(.sites), "去接入站点")
-        case "downloaders": (.settingsSection(.downloaders), "去下载器设置")
-        case "import-watch": (.settingsSection(.importWatch), "去自动入库")
-        case "libraries": (.libraryManage(), "去媒体库")
-        default: nil
+        case "sites": return (.settingsSection(.sites, query: query), "去接入站点")
+        case "downloaders": return (.settingsSection(.downloaders, query: query), "去下载器设置")
+        case "import-watch": return (.settingsSection(.importWatch, query: query), "去自动入库")
+        case "libraries": return (.libraryHome, "去媒体库")
+        default: return nil
         }
     }
 }
@@ -179,7 +182,7 @@ private struct SetupChecklist: View {
         let steps: [(done: Bool, label: String, hint: String, route: AppRoute, action: String)] = [
             (health.sitesConfigured, "接入资源站点", "订阅从这里搜索资源", .settingsSection(.sites), "去接入"),
             (health.downloadersConfigured, "接入下载器", "qBittorrent / Transmission，找到的资源交给它下载", .settingsSection(.downloaders), "去接入"),
-            (!health.libraries.isEmpty, "创建媒体库", "内容的家：下载完成后按「标题 (年份)」整理进库", .libraryManage(create: true), "去创建"),
+            (!health.libraries.isEmpty, "创建媒体库", "内容的家：下载完成后按「标题 (年份)」整理进库", .libraryHome, "去创建"),
         ]
         VStack(alignment: .leading, spacing: 12) {
             Text("把订阅跑起来需要三步（完成后这里会变成链路体检）：").font(.subheadline.weight(.medium))
@@ -249,7 +252,7 @@ private struct IssueCard: View {
                         Text(option.why).font(.caption).foregroundStyle(Theme.textFaint)
                     }
                     Text(option.steps).font(.subheadline).foregroundStyle(Theme.textMuted)
-                    if let target = SettingsPipelineStatus.fixTarget(option.fixSection) {
+                    if let target = SettingsPipelineStatus.fixTarget(option.fixSection, params: option.fixParams) {
                         Button("\(option.fixLabel) →") { router.push(target.route) }
                             .buttonStyle(.glass).controlSize(.small)
                     }

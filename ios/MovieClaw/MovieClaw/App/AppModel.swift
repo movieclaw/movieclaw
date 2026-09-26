@@ -35,6 +35,17 @@ final class AppModel {
         return nil
     }
 
+    /// 会话过期时的浏览位置（Web 401 → `/login?next=原路径`）：重新登录后回到这里。
+    /// 只记当前标签和它的导航栈；落地前按新身份的权限再过滤一遍（同 Web accessiblePathFor）。
+    struct ResumePoint {
+        var tab: MainTab
+        var path: [AppRoute]
+    }
+
+    private var resumePoint: ResumePoint?
+    /// 刚因 401 被打回登录页：主界面拆掉时据此决定要不要记下位置（主动退出、切换账号不记）
+    private var expiredPendingCapture = false
+
     private static let serverKey = "movieclaw.server.origin"
     private var unauthorizedObserver: (any NSObjectProtocol)?
 
@@ -125,8 +136,13 @@ final class AppModel {
 
     func createAdmin(username: String, password: String) async throws {
         guard let api else { throw ConnectError.noServer }
-        let session = try await api.authBootstrapCreate(body: .init(username: username, password: password))
-        phase = .ready(session)
+        do {
+            let session = try await api.authBootstrapCreate(body: .init(username: username, password: password))
+            phase = .ready(session)
+        } catch let error as APIError where error.status == 409 {
+            // 一次性初始化锁已闭合（别的设备/浏览器先一步完成了初始化）：转去登录（同 Web setup 页）
+            phase = .needsLogin
+        }
     }
 
     /// 改昵称、换头像、切换账号后同步全局会话
@@ -136,6 +152,7 @@ final class AppModel {
 
     /// 退出当前账号：还有别的已登录账号时自动切过去（与 Web 行为一致）。
     func logout(all: Bool = false) async {
+        resumePoint = nil
         let next = try? await api?.authLogout(body: .init(all: all))
         if let next {
             phase = .ready(next)
@@ -146,11 +163,27 @@ final class AppModel {
 
     /// 更换服务器：回到连接页。旧服务器的 Cookie 按域名隔离，保留无害。
     func changeServer() {
+        resumePoint = nil
         phase = .needsServer
     }
 
     private func sessionExpired() {
-        if case .ready = phase { phase = .needsLogin }
+        guard case .ready = phase else { return }
+        expiredPendingCapture = true
+        phase = .needsLogin
+    }
+
+    /// 主界面拆掉时调用：只有因会话过期离开才记下位置
+    func captureResume(tab: MainTab, path: [AppRoute]) {
+        guard expiredPendingCapture else { return }
+        expiredPendingCapture = false
+        resumePoint = ResumePoint(tab: tab, path: path)
+    }
+
+    /// 取走（并清空）待还原的位置
+    func takeResume() -> ResumePoint? {
+        defer { resumePoint = nil }
+        return resumePoint
     }
 
     enum ConnectError: LocalizedError {

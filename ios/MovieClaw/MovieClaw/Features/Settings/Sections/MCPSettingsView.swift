@@ -18,6 +18,10 @@ struct MCPSettingsView: View {
     @State private var openEndpoint: String?
     /// 新建弹层关闭后要推入的端点：等弹层完全收起再 push，避免转场打架
     @State private var pendingOpen: String?
+    /// 深链 `?endpoint=<slug>&tab=` 直达某端点的某一栏（Web 把视图状态写进地址栏），只消费一次
+    @Environment(\.routeQuery) private var routeQuery
+    @State private var routeQueryConsumed = false
+    @State private var openTab: SettingsBMCPEndpointDetail.Tab = .overview
 
     var body: some View {
         Group {
@@ -33,9 +37,21 @@ struct MCPSettingsView: View {
             }
         }
         .appBackground()
-        .task { await store.load(api) }
+        .task {
+            await store.load(api)
+            guard !routeQueryConsumed else { return }
+            routeQueryConsumed = true
+            if let slug = routeQuery["endpoint"], let endpoint = store.status?.endpoints.first(where: { $0.slug == slug }) {
+                openTab = SettingsBMCPEndpointDetail.Tab(query: routeQuery["tab"]) ?? .overview
+                openEndpoint = endpoint.id
+            }
+        }
         .navigationDestination(item: $openEndpoint) { id in
-            SettingsBMCPEndpointDetail(store: store, endpointId: id)
+            SettingsBMCPEndpointDetail(store: store, endpointId: id, initialTab: openTab)
+        }
+        .onChange(of: openEndpoint) { _, value in
+            // 深链栏目只作用于那一次推入；之后点行进详情一律从概览开始
+            if value == nil { openTab = .overview }
         }
         .sheet(isPresented: $creating, onDismiss: {
             if let pendingOpen {

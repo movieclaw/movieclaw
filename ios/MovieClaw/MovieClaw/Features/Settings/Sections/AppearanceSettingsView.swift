@@ -5,17 +5,24 @@ import SwiftUI
 ///
 /// 结构同 Web：置顶「主题」卡片组，下面三个胶囊页签——背景图 / 界面质感 / 导航顺序。
 /// - 主题：按**当前设备语境**落字段。App 是手机端，改的是 `theme_mobile`（没单独设过时跟随通用 `theme`），
-///   点卡即保存（`PUT /ui/preferences`，整体覆盖式，其余分组原样带回）；
+///   点卡即保存（`PUT /ui/preferences`，整体覆盖式，其余分组原样带回）。
+///   **App 固定使用银玻璃外观**（产品决定，已接受的平台差异）：Netflix 卡片置灰不可选并写明只在网页生效；
+///   账号若在网页把手机端设成了 Netflix，卡片仍如实标出，但 App 外观不变；
 /// - 背景图：账号图库（最多 20 张）的上传 / 点选切换 / 删除（`/appearance*`），上传前压到长边 2560 的 JPEG；
-/// - 界面质感：侧栏玻璃三根 + 蒙版两根滑杆，「保存」才落库，「恢复默认」回内置默认并直接保存；
+///   每次写操作后把后端视图交给 AppBackdropStore，全 App 背景即时换图；
+/// - 界面质感：侧栏玻璃三根 + 蒙版两根滑杆。拖动蒙版滑杆即实时预览（AppBackdropStore.previewScrim，
+///   同 Web setPreview），「保存」才落库，离开本页签/本页撤销未保存的预览；「恢复默认」回内置默认并直接保存；
+///   侧栏三根只作用于网页桌面端的侧栏玻璃（手机端没有侧栏）；
 /// - 导航顺序：只影响网页桌面端左侧栏（App 底栏不读它），上/下移改序，保存时保留不可见项（mergeNavOrder）。
-/// Netflix 主题是纯色平铺设计：背景图与界面质感两组置灰并说明原因（偏好字段保留不丢）。
 struct AppearanceSettingsView: View {
     @Environment(\.api) private var api
     @Environment(\.permissions) private var permissions
     @Environment(Feedback.self) private var feedback
 
-    enum Tab: Hashable { case backdrop, texture, nav }
+    enum Tab: String, Hashable { case backdrop, texture, nav }
+    /// 深链 `?tab=` 直达页签（Web useTabParam），只在首次出现时读一次
+    @Environment(\.routeQuery) private var routeQuery
+    @State private var routeQueryConsumed = false
 
     @State private var prefs: Loadable<API.UiPreferencesSetting> = .loading
     @State private var appearance: API.AppearanceView?
@@ -62,6 +69,25 @@ struct AppearanceSettingsView: View {
         }
         .appBackground()
         .task { await load() }
+        .onAppear {
+            guard !routeQueryConsumed else { return }
+            routeQueryConsumed = true
+            if let raw = routeQuery["tab"], let value = Tab(rawValue: raw) { tab = value }
+        }
+        // 离开外观页 / 离开质感页签：撤销未保存的预览，草稿回到已保存值（Web 质感组卸载即 setPreview(null)）
+        .onDisappear { AppBackdropStore.shared.previewScrim = nil }
+        .onChange(of: tab) { old, _ in
+            guard old == .texture else { return }
+            AppBackdropStore.shared.previewScrim = nil
+            if let saved = prefs.value { texture = TextureDraft(saved) }
+        }
+        .onChange(of: texture) { _, draft in
+            // 拖动即预览：只有蒙版两根作用于 App 背景
+            guard tab == .texture, let saved = prefs.value else { return }
+            let savedDraft = TextureDraft(saved)
+            AppBackdropStore.shared.previewScrim = draft.rounded == savedDraft.rounded
+                ? nil : .init(blur: draft.blur, dark: draft.dark)
+        }
         .photosPicker(isPresented: $pickingBackdrop, selection: $backdropItem, matching: .images)
         .onChange(of: backdropItem) { _, item in
             guard let item else { return }
@@ -91,6 +117,8 @@ struct AppearanceSettingsView: View {
         let stored = try await api.uiPrefsUpdate(body: next.asInput)
         prefs = .loaded(stored)
         syncDrafts(stored)
+        // 落库成功：全 App 的蒙版以新值为准，预览草稿完成使命（同 Web savePrefs 后 setPreview(null)）
+        AppBackdropStore.shared.apply(prefs: stored)
     }
 
     // MARK: 主题
@@ -115,6 +143,8 @@ struct AppearanceSettingsView: View {
             HStack(spacing: 12) {
                 ForEach(Self.themes, id: \.id) { theme in
                     let active = theme.id == current
+                    // App 只有银玻璃外观：Netflix 卡片置灰不可选（点了也不会改变 App 的样子）
+                    let unavailable = theme.id != "silver"
                     Button { Task { await pickTheme(theme.id, saved) } } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             RoundedRectangle(cornerRadius: 8)
@@ -141,11 +171,11 @@ struct AppearanceSettingsView: View {
                             RoundedRectangle(cornerRadius: 12)
                                 .strokeBorder(active ? Theme.accent : Color.white.opacity(0.12), lineWidth: active ? 2 : 1)
                         )
-                        .opacity(themeBusy != nil && themeBusy != theme.id ? 0.5 : 1)
+                        .opacity(unavailable ? 0.4 : themeBusy != nil && themeBusy != theme.id ? 0.5 : 1)
                         .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
-                    .disabled(themeBusy != nil)
+                    .disabled(themeBusy != nil || unavailable)
                     .accessibilityAddTraits(active ? .isSelected : [])
                     .accessibilityIdentifier("theme-\(theme.id)")
                 }
@@ -158,7 +188,9 @@ struct AppearanceSettingsView: View {
         } header: {
             Text("主题")
         } footer: {
-            Text("主题跟随账号保存，所有设备同步；切换立即生效。当前设置的是移动端的主题，两端可分别设置。")
+            Text(current == "netflix"
+                ? "Netflix 主题仅在网页生效，App 固定使用银玻璃。你的账号在网页手机端当前是 Netflix 主题；选「银玻璃」会把网页手机端也改回银玻璃。"
+                : "Netflix 主题仅在网页生效，App 固定使用银玻璃。主题跟随账号保存，当前设置的是移动端的主题，网页桌面端与移动端可分别设置。")
         }
     }
 
@@ -175,14 +207,14 @@ struct AppearanceSettingsView: View {
 
     // MARK: 背景图
 
-    /// Netflix 下整组置灰 + 说明（Web DisabledGlassGroup）
-    @ViewBuilder
-    private func disabledNote(_ label: String) -> some View {
-        Text("\(label)仅「银玻璃」主题生效——Netflix 主题是纯色平铺设计，没有背景大图与玻璃质感。")
+    /// 账号在网页手机端是 Netflix 时的补充说明：App 固定银玻璃，这两组在 App 里照常生效，
+    /// 只是网页手机端（纯色平铺设计）看不到（Web 在 Netflix 下把这两组置灰，App 不置灰）
+    private func netflixNote(_ label: String) -> String {
+        "网页手机端当前是 Netflix 主题（纯色平铺，没有背景大图与玻璃质感），\(label)只在 App 与银玻璃网页中可见。"
     }
 
     private func backdropSection(_ saved: API.UiPreferencesSetting) -> some View {
-        let disabled = resolvedTheme(saved) == "netflix"
+        let netflix = resolvedTheme(saved) == "netflix"
         let isCustom = appearance?.activeId != nil
         let busy = backdropBusy || appearance == nil
         return Section {
@@ -250,16 +282,11 @@ struct AppearanceSettingsView: View {
                 }
             }
             .padding(.vertical, 6)
-            .disabled(disabled)
-            .opacity(disabled ? 0.45 : 1)
         } header: {
             Text("首页背景")
         } footer: {
-            if disabled {
-                disabledNote("首页背景")
-            } else {
-                Text("建议使用 16:9、分辨率较高的横图。上传的图全部保留在服务端图库（最多 20 张），点选即切换、点缩略图角上的 × 可删除；玻璃面板的折射随生效图一并更新，跨设备访问同一实例保持一致。")
-            }
+            Text("建议使用 16:9、分辨率较高的横图。上传的图全部保留在服务端图库（最多 20 张），点选即切换、点缩略图角上的 × 可删除；玻璃面板的折射随生效图一并更新，跨设备访问同一实例保持一致。"
+                + (netflix ? "\n" + netflixNote("背景图") : ""))
         }
     }
 
@@ -273,7 +300,10 @@ struct AppearanceSettingsView: View {
         backdropError = nil
         defer { backdropBusy = false }
         do {
-            appearance = try await work()
+            let view = try await work()
+            appearance = view
+            // 全 App 背景跟随后端最新视图即时换图（Web applyView 同步 CSS 变量）
+            await AppBackdropStore.shared.apply(appearance: view, api: api)
         } catch {
             let message = error.localizedDescription
             backdropError = message.isEmpty ? fallback : message
@@ -346,7 +376,7 @@ struct AppearanceSettingsView: View {
     }
 
     private func textureSection(_ saved: API.UiPreferencesSetting) -> some View {
-        let disabled = resolvedTheme(saved) == "netflix"
+        let netflix = resolvedTheme(saved) == "netflix"
         let savedDraft = TextureDraft(saved)
         let dirty = texture.rounded != savedDraft.rounded
         let isDefault = texture.rounded == TextureDraft.defaults.rounded
@@ -366,7 +396,7 @@ struct AppearanceSettingsView: View {
                 Text(textureError).font(.footnote).foregroundStyle(Theme.danger)
             }
             HStack(spacing: 10) {
-                Text(dirty ? "有未保存的调整，保存后对所有设备生效" : "设置已保存，跨设备一致")
+                Text(dirty ? "调节实时预览中，保存后对所有设备生效" : "设置已保存，跨设备一致")
                     .font(.caption).foregroundStyle(Theme.textFaint)
                 Spacer(minLength: 4)
                 Button("恢复默认") { Task { await saveTexture(.defaults, saved) } }
@@ -382,13 +412,10 @@ struct AppearanceSettingsView: View {
         } header: {
             Text("界面质感")
         } footer: {
-            if disabled {
-                disabledNote("界面质感")
-            } else {
-                Text("侧栏玻璃与背景蒙版作用于网页端；App 使用系统液态玻璃材质。")
-            }
+            Text("侧栏透明度、明暗、厚度只作用于网页桌面端的侧栏玻璃；蒙版模糊度与暗度作用于全站背景（含 App），拖动即可预览。"
+                + (netflix ? "\n" + netflixNote("蒙版") : ""))
         }
-        .disabled(disabled || textureBusy)
+        .disabled(textureBusy)
     }
 
     private func saveTexture(_ draft: TextureDraft, _ saved: API.UiPreferencesSetting) async {

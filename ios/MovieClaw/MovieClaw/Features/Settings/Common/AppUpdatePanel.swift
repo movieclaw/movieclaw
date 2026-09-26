@@ -44,6 +44,8 @@ struct AppUpdatePanel<Header: View>: View {
     @State private var rollbackOpen = false
     @State private var retentionBusy = false
     @State private var pollTask: Task<Void, Never>?
+    /// 回退 / 重启 / 进页恢复「重启中」的等待任务：离开页面即取消，不再在后台继续探测 /health（Web unmounted 守卫）
+    @State private var restartTask: Task<Void, Never>?
     @State private var restartInfoShown = false
 
     var body: some View {
@@ -71,11 +73,15 @@ struct AppUpdatePanel<Header: View>: View {
             }
         }
         .task { await initialLoad() }
-        .onDisappear { pollTask?.cancel() }
+        .onDisappear {
+            pollTask?.cancel()
+            restartTask?.cancel()
+        }
         .sheet(isPresented: $rollbackOpen) {
             RollbackSheet(targets: rollback?.targets ?? []) { target in
                 rollbackOpen = false
-                Task { await doRollback(target) }
+                restartTask?.cancel()
+                restartTask = Task { await doRollback(target) }
             }
             .sheetFeedback()
         }
@@ -96,7 +102,8 @@ struct AppUpdatePanel<Header: View>: View {
                 startPollingProgress()
             } else if current.phase == "restarting" {
                 progress = current
-                Task { await waitForRestart(.version) }
+                restartTask?.cancel()
+                restartTask = Task { await waitForRestart(.version) }
             } else if current.phase == "failed", current.error != nil {
                 progress = current
             }
@@ -174,6 +181,16 @@ struct AppUpdatePanel<Header: View>: View {
         restartWait = .timeout
     }
 
+    /// 超时页「刷新页面」：Web 整页刷新（服务没起来就是一张打不开的页）。App 先探一次 /health，
+    /// 通了才按恢复处理并提示；还没通就留在超时页如实告知，不再无条件报「应用已恢复」
+    private func retryAfterTimeout() async {
+        guard (try? await api.health()) != nil else {
+            feedback.error("应用仍未恢复，请稍后再试")
+            return
+        }
+        await finishRestart()
+    }
+
     /// 服务恢复：Web 整页刷新，App 重新拉取本页全部数据
     private func finishRestart() async {
         restartWait = .idle
@@ -206,7 +223,7 @@ struct AppUpdatePanel<Header: View>: View {
                 Text(copy.0).font(.body.weight(.medium))
                 Text(copy.1).font(.subheadline).foregroundStyle(Theme.textMuted).multilineTextAlignment(.center)
                 if restartWait == .timeout {
-                    Button("刷新页面") { Task { await finishRestart() } }.buttonStyle(.glass)
+                    Button("刷新页面") { Task { await retryAfterTimeout() } }.buttonStyle(.glass)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -424,7 +441,10 @@ struct AppUpdatePanel<Header: View>: View {
                     label: "重启应用的说明"
                 )
                 Spacer()
-                Button("重启应用") { Task { await doRestart() } }
+                Button("重启应用") {
+                    restartTask?.cancel()
+                    restartTask = Task { await doRestart() }
+                }
                     .buttonStyle(.glass)
                     .tint(Theme.danger)
                     .disabled(updating)
@@ -542,6 +562,13 @@ private struct RollbackSheet: View {
         let pick = selected.map { targets[$0] }
         SettingsSheetScaffold(title: "选择回退版本") {
             Section {
+                // 说明在标题下方、列表之前（同 Web 回退弹窗的头部说明）
+                Text("回退会重启应用；是否需要恢复数据备份取决于目标版本的数据结构差异，结论已在每一项里标明。")
+                    .font(.subheadline).foregroundStyle(Theme.textMuted)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 4))
+            }
+            Section {
                 ForEach(Array(targets.enumerated()), id: \.offset) { index, target in
                     VStack(alignment: .leading, spacing: 8) {
                         Button {
@@ -573,8 +600,6 @@ private struct RollbackSheet: View {
                         }
                     }
                 }
-            } footer: {
-                Text("回退会重启应用；是否需要恢复数据备份取决于目标版本的数据结构差异，结论已在每一项里标明。")
             }
             Section {
                 Button(role: .destructive) {
@@ -615,37 +640,15 @@ private struct RollbackSheet: View {
     }
 }
 
-// MARK: - 简易 Markdown
+// MARK: - 更新说明
 
-/// 更新说明是 GitHub Release 的 Markdown 原文：标题行加粗、列表行加圆点，行内语法（粗体/链接/代码）交给系统解析
+/// 更新说明（新版本卡片与回退候选共用）
 struct SettingsMarkdownText: View {
     let text: String
 
+    /// 更新说明是 GitHub Release 的 Markdown 原文：与 Web 一样复用全站的 Markdown 渲染器（紧凑档），
+    /// 代码块、表格、有序列表都按结构排版，不再退化成纯文本
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(text.components(separatedBy: "\n").enumerated()), id: \.offset) { _, raw in
-                let line = raw.trimmingCharacters(in: .whitespaces)
-                if line.isEmpty {
-                    Color.clear.frame(height: 2)
-                } else if line.hasPrefix("#") {
-                    Text(inline(line.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)))
-                        .font(.subheadline.weight(.semibold)).padding(.top, 4)
-                } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("•")
-                        Text(inline(String(line.dropFirst(2))))
-                    }
-                    .font(.subheadline).foregroundStyle(Theme.textMuted)
-                } else {
-                    Text(inline(line)).font(.subheadline).foregroundStyle(Theme.textMuted)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func inline(_ string: String) -> AttributedString {
-        (try? AttributedString(markdown: string, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(string)
+        AgentMarkdownView(text: text, size: 14)
     }
 }

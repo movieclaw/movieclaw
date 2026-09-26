@@ -40,6 +40,10 @@ struct LibraryItemDetailView: View {
     /// 修正识别结果拍板过：关窗时再重拉（同 Web reidentifyDirty）
     @State private var reidentifyDirty = false
 
+    /// 标题区滚出视野后才在导航栏显示片名、恢复顶部的滚动边缘效果（R-6，同发现详情页）：
+    /// Hero 全出血到状态栏，返回 / ⋯ 直接浮在剧照上
+    @State private var titleVisible = false
+
     /// 分集区当前选中的那一集（及其文件）
     struct SelectedEpisode: Equatable {
         var season: Int
@@ -83,10 +87,16 @@ struct LibraryItemDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .appBackground()
-        .navigationTitle(detail?.title ?? "")
+        .appBackground(.plain) // 氛围页：自带沉浸大图，不铺全站蒙版（Web isHomeRoute）
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text(detail?.title ?? "")
+                    .font(.headline)
+                    .lineLimit(1)
+                    .opacity(titleVisible || detail == nil ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.2), value: titleVisible)
+            }
             if let detail {
                 ToolbarItem(placement: .topBarTrailing) { actionsMenu(detail) }
             }
@@ -173,6 +183,7 @@ struct LibraryItemDetailView: View {
                 header(detail)
                     .padding(.top, heroURL == nil ? 0 : -150)
                     .padding(.horizontal, Theme.pagePadding)
+                    .onScrollVisibilityChange(threshold: 0.2) { visible in titleVisible = !visible }
                 if let plot = isMovie ? detail.localMeta?.plot : (selectedEpisode?.episode.overview ?? detail.localMeta?.plot), !plot.isEmpty {
                     ExpandablePlot(text: plot)
                         .padding(.horizontal, Theme.pagePadding)
@@ -209,6 +220,7 @@ struct LibraryItemDetailView: View {
             }
         }
         .ignoresSafeArea(edges: .top)
+        .scrollEdgeEffectHidden(heroURL != nil && !titleVisible, for: .top)
         .refreshable { await reload() }
     }
 

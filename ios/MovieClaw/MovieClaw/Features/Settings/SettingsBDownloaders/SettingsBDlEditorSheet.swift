@@ -10,6 +10,8 @@ import SwiftUI
 /// - 保存成功后后端异步测试连接，清单靠轮询看到状态落定。
 struct SettingsBDlEditorSheet: View {
     let downloader: API.DownloaderView?
+    /// 体检跳转建议预填的映射本机侧路径（Web `?suggest_mapping=`）；无建议为 nil
+    var suggestMapping: String?
     let onSaved: (API.DownloaderView) -> Void
 
     @Environment(\.api) private var api
@@ -26,8 +28,9 @@ struct SettingsBDlEditorSheet: View {
     @State private var mappingsOpen: Bool
     @State private var busy = false
 
-    init(downloader: API.DownloaderView?, onSaved: @escaping (API.DownloaderView) -> Void) {
+    init(downloader: API.DownloaderView?, suggestMapping: String? = nil, onSaved: @escaping (API.DownloaderView) -> Void) {
         self.downloader = downloader
+        self.suggestMapping = suggestMapping
         self.onSaved = onSaved
         _clientType = State(initialValue: downloader?.clientType ?? "qbittorrent")
         _name = State(initialValue: downloader?.name ?? "")
@@ -35,8 +38,20 @@ struct SettingsBDlEditorSheet: View {
         _username = State(initialValue: downloader?.username ?? "")
         _savePath = State(initialValue: downloader?.savePath ?? "")
         let existing = (downloader?.pathMappings ?? []).map { SettingsBDlMappingDraft(local: $0.local, remote: $0.remote) }
-        _mappings = State(initialValue: existing)
-        _mappingsOpen = State(initialValue: !existing.isEmpty)
+        _mappings = State(initialValue: Self.withSuggestedMapping(existing, suggestMapping))
+        // 已有映射或带预填建议时默认展开
+        _mappingsOpen = State(initialValue: !existing.isEmpty || suggestMapping != nil)
+    }
+
+    /// 建议路径已被某条映射的本机侧覆盖（相同或是其子目录）就不再追加（Web withSuggestedMapping）
+    static func withSuggestedMapping(_ existing: [SettingsBDlMappingDraft], _ suggest: String?) -> [SettingsBDlMappingDraft] {
+        guard let suggest, !suggest.isEmpty else { return existing }
+        let target = norm(suggest)
+        let covered = existing.contains { mapping in
+            let local = norm(mapping.local)
+            return local != "/" && (target == local || target.hasPrefix(local + "/"))
+        }
+        return covered ? existing : existing + [SettingsBDlMappingDraft(local: suggest, remote: "")]
     }
 
     // MARK: - 校验（同 Web canSubmit）
@@ -159,6 +174,17 @@ struct SettingsBDlEditorSheet: View {
                     .font(.caption)
                     .foregroundStyle(Theme.textFaint)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if let suggestMapping {
+                    Text("已按体检建议预填映射的本机侧 \(suggestMapping)——右侧填下载器视角的对应路径；下载器可直达同名路径时，点中间的 → 把左侧复制过去即可。")
+                        .font(.caption)
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(Theme.accentSoft, in: .rect(cornerRadius: 8))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("downloader-form-suggest-note")
+                }
 
                 ForEach($mappings) { $mapping in
                     SettingsBDlMappingEditorRow(mapping: $mapping) {
