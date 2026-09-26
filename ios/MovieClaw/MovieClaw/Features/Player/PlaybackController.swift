@@ -129,6 +129,8 @@ final class PlaybackController {
     /// 卡顿归因 / 掉帧看门狗（每秒一个样本，见 PlaybackWatchdogs.swift）
     private var stallWatch = StallWatch()
     private var frameDrops = FrameDropTracker()
+    /// 同档网络重开的次数上限（见 NetworkRestartBudget）
+    private var networkRestarts = NetworkRestartBudget()
     /// 已发出、还没落地的 seek：这段等待不算卡顿（QoE 口径同 Web qoe.ts），看门狗也不把它当停顿
     private var seekStartedAt: Date?
     private var backgrounded = false
@@ -233,6 +235,7 @@ final class PlaybackController {
         bandwidthDegraded = false
         failedTiers = []
         failureCount = 0
+        networkRestarts.reset()
         consentGranted = false
         deadSession = false
         wantsPlay = true
@@ -574,6 +577,7 @@ final class PlaybackController {
     func retry() {
         failedTiers = []
         failureCount = 0
+        networkRestarts.reset()
         request(startMs: positionMs, phase: .deciding)
     }
 
@@ -602,6 +606,7 @@ final class PlaybackController {
             if phase == .buffering, qoe.bufferingSince != nil { qoe.endRebuffer() }
             phase = .playing
             failureCount = 0
+            networkRestarts.reachedPlaying()
             if qoe.ttffMs == nil, let requestedAt = qoe.requestedAt {
                 qoe.ttffMs = Int(Date().timeIntervalSince(requestedAt) * 1000)
             }
@@ -663,11 +668,15 @@ final class PlaybackController {
             return
         }
         if cause == .network {
-            // 取流持续失败（断线、token 过期、服务端中断）：同档原地重开（新会话 = 新 token），不降档；
-            // 真断网时重开请求本身会失败，落到错误页（同 Web onNetworkDead）
-            scope.clientLog("network-restart", ["reason": .string(reason)])
-            request(startMs: positionMs, phase: .sessionStarting)
-            return
+            if networkRestarts.allowRestart() {
+                // 取流持续失败（断线、token 过期、服务端中断）：同档原地重开（新会话 = 新 token），不降档；
+                // 真断网时重开请求本身会失败，落到错误页（同 Web onNetworkDead）
+                scope.clientLog("network-restart", ["reason": .string(reason), "attempt": .int(networkRestarts.consecutive)])
+                request(startMs: positionMs, phase: .sessionStarting)
+                return
+            }
+            // 连续重开都没能出画：「网络」归因多半不对，按这一档放不了继续往下走（降档或报错）
+            scope.clientLog("network-restart-exhausted", ["reason": .string(reason)])
         }
         let stats = engine?.stats()
         let downlink = stats?.downlinkBps

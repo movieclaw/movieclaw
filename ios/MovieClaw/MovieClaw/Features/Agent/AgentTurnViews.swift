@@ -101,6 +101,7 @@ struct AgentUserBubble: View {
                         onEdit()
                     } label: {
                         Image(systemName: "pencil").font(.system(size: 13)).frame(width: 32, height: 32)
+                            .expandedHitArea(vertical: 6)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Theme.textFaint)
@@ -109,6 +110,7 @@ struct AgentUserBubble: View {
                 }
                 Button(action: copy) {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 13)).frame(width: 32, height: 32)
+                        .expandedHitArea(vertical: 6)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(copied ? Theme.success : Theme.textFaint)
@@ -243,7 +245,7 @@ struct AgentProcessBlock: View {
                             .modifier(AgentPulse(active: active))
                     }
                     .foregroundStyle(Theme.textFaint)
-                    .contentShape(.rect)
+                    .expandedHitArea(vertical: 12)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("agent-process-toggle")
@@ -370,7 +372,7 @@ struct AgentCompactionCard: View {
                 }
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.textFaint)
-                .contentShape(.rect)
+                .expandedHitArea(vertical: 12)
             }
             .buttonStyle(.plain)
             if open {
@@ -417,6 +419,7 @@ struct AgentHandoffCard: View {
                 }
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.textMuted)
+                .expandedHitArea(vertical: 12)
             }
             .buttonStyle(.plain)
         }
@@ -472,7 +475,7 @@ struct AgentTurnFooter: View {
                                 Text(copied ? "已复制" : "复制")
                             }
                             .padding(.horizontal, 4).padding(.vertical, 2)
-                            .contentShape(.rect)
+                            .expandedHitArea(vertical: 10)
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("agent-copy-answer")

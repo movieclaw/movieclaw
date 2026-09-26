@@ -136,3 +136,28 @@ enum ScrubFollow {
         return .deferred(ms: max(0, min(settleMs, maxWaitMs - waited)))
     }
 }
+
+/// 取流失败的同档重开预算（对应 Web engine.ts：hls.js 网络错误先重试几次，仍不行才 onNetworkDead）。
+///
+/// 「网络」归因的失败走同档原地重开（新会话 = 新 token），不降档。但归因可能出错——某档格式
+/// AVPlayer 根本放不了，却被报成网络类错误——无上限地重开就会无限循环「正在准备视频流…」、
+/// 反复起停服务端会话。所以：连续重开 `limit` 次都没能真正出画，就不再信「网络」归因，
+/// 交给调用方按「这一档放不了」降档。任何一次进入播放态都把计数清零。
+struct NetworkRestartBudget {
+    static let limit = 2
+
+    private(set) var consecutive = 0
+
+    /// 又一次网络类失败：还能同档重开返回 true（并记一次），预算用完返回 false
+    mutating func allowRestart() -> Bool {
+        guard consecutive < Self.limit else { return false }
+        consecutive += 1
+        return true
+    }
+
+    /// 真正放起来了：之前的失败不再算「连续」
+    mutating func reachedPlaying() { consecutive = 0 }
+
+    /// 换单元 / 用户手动重试：从头计
+    mutating func reset() { consecutive = 0 }
+}

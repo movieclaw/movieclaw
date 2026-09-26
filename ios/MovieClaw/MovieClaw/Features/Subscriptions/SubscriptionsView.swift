@@ -548,7 +548,7 @@ struct TodayArrivalsCard: View {
         .background(color.opacity(0.1), in: .capsule)
         .overlay(Capsule().strokeBorder(color.opacity(0.22)))
         if label == "下载中", canOpenTasks {
-            Button { router.push(.activity(view: "active")) } label: { pill }.buttonStyle(.plain)
+            Button { router.push(.activity(view: "active")) } label: { pill.expandedHitArea(vertical: 13) }.buttonStyle(.plain)
         } else {
             pill
         }

@@ -3,14 +3,44 @@ import SwiftUI
 
 /// 首页行清单偏好的进程内共享副本。
 ///
-/// Web 把全站界面偏好放在一个 React Context 里（应用启动拉一次）；App 里只有媒体库首页与
-/// 自定义页用到 `home.rows`，放一个模块级单例即可：自定义页保存后直接写回这里，
+/// Web 把全站界面偏好放在一个 React Context 里（按当前会话加载）；App 里只有媒体库首页、
+/// 自定义页与合集页用到 `home.rows`，放一个模块级单例即可：自定义页保存后直接写回这里，
 /// 返回首页时立刻按新清单渲染，不必等下一轮轮询。
+///
+/// 单例跨账号存活，所以副本记着属于谁（服务器地址 + 用户名，同 SubscriptionIndex）：
+/// 切换账号后第一次使用就作废旧副本重新拉。否则新账号首页沿用旧布局，更糟的是在新账号的合集页点
+/// 「显示在首页」会以旧账号的行清单为底整份保存，覆盖新账号的偏好（第二轮审计 N-04a-1）。
 @Observable
 final class LibraryHomePrefs {
     static let shared = LibraryHomePrefs()
     /// nil = 还没从服务器拉到
     var rows: [API.HomeRowPref]?
+    /// 副本所属账号（`ownerKey`）
+    @ObservationIgnored private(set) var owner: String?
+
+    static func ownerKey(api: APIClient, username: String?) -> String {
+        "\(api.server.apiBase.absoluteString)|\(username ?? "")"
+    }
+
+    /// 以这个账号的身份使用副本：换了账号就清空旧账号的行清单
+    func adopt(owner key: String) {
+        guard key != owner else { return }
+        owner = key
+        rows = nil
+    }
+
+    /// 接收一次拉取结果：拉取期间换了账号（或已有更新的副本）就丢弃，不串到别的账号上
+    func accept(_ fetched: [API.HomeRowPref]?, for key: String) {
+        guard key == owner, rows == nil else { return }
+        rows = fetched
+    }
+
+    /// 确保副本属于这个账号且已拉到（失败保持 nil，下次再拉）
+    func ensureLoaded(api: APIClient, owner key: String) async {
+        adopt(owner: key)
+        guard rows == nil else { return }
+        accept((try? await api.uiPrefsShow())?.home.rows, for: key)
+    }
 
     /// 保存首页行清单。后端 PUT `/ui/preferences` 是整体覆盖，所以以当前完整偏好为底只换 home.rows；
     /// 成功后写回共享副本（自定义页、合集页「显示在首页」共用）。
@@ -37,6 +67,7 @@ struct LibraryHomeView: View {
     @Environment(\.api) private var api
     @Environment(\.permissions) private var permissions
     @Environment(Router.self) private var router
+    @Environment(AppModel.self) private var model
     @State private var prefs = LibraryHomePrefs.shared
 
     @State private var libraries: [API.LibraryView]?
@@ -47,6 +78,9 @@ struct LibraryHomeView: View {
     @State private var failed = false
     @State private var lastSnapshot: String?
     @State private var busyUntil: Date = .distantPast
+    /// 扫描/整理结束后的 12 秒快轮询窗口还没过（同 Web recentlyBusy）。必须是状态而不是在 body 里
+    /// 现算 `Date.now < busyUntil`：数据不变时 body 不会重算，间隔就会一直停在 3 秒
+    @State private var recentlyBusy = false
     @State private var clearingLibrary = false
 
     private static let rowCount = 20
@@ -82,6 +116,14 @@ struct LibraryHomeView: View {
         .refreshable { await reload() }
         .onAppear { Task { await reload() } }
         .polling(every: pollInterval) { await reload() }
+        .task(id: busyUntil) {
+            // 窗口到期把 recentlyBusy 落回 false，轮询间隔随之回到慢档
+            let remaining = busyUntil.timeIntervalSinceNow
+            recentlyBusy = remaining > 0
+            guard remaining > 0 else { return }
+            try? await Task.sleep(for: .seconds(remaining))
+            if !Task.isCancelled { recentlyBusy = false }
+        }
         .sheet(isPresented: $clearingLibrary) {
             ClearLibraryHistorySheet(libraries: visibleLibraries) { Task { await reload() } }
         }
@@ -97,7 +139,7 @@ struct LibraryHomeView: View {
 
     private var pollInterval: Double {
         let libs = libraries ?? []
-        if libs.contains(where: { $0.scanning || $0.organizing }) || Date.now < busyUntil { return 3 }
+        if libs.contains(where: { $0.scanning || $0.organizing }) || recentlyBusy { return 3 }
         if libs.contains(where: { $0.metadataRefresh?.refreshing == true }) { return 5 }
         if libs.contains(where: { !$0.scanning && !$0.organizing && ($0.lastScan?.deferred ?? 0) > 0 }) { return 10 }
         return 30
@@ -316,9 +358,7 @@ struct LibraryHomeView: View {
         do {
             // 偏好：拉到为止（之后由自定义页写回共享副本）。失败保持 nil、下一轮轮询再拉——
             // 写成 [] 会让合集页「显示在首页」以空清单为底整份保存，把用户自定义的行覆盖掉
-            if prefs.rows == nil {
-                prefs.rows = (try? await api.uiPrefsShow())?.home.rows
-            }
+            await prefs.ensureLoaded(api: api, owner: LibraryHomePrefs.ownerKey(api: api, username: model.session?.username))
             async let libsTask = api.libraryList(scope: "all")
             async let colsTask = try? api.collectionList()
             let libs = try await libsTask
@@ -516,6 +556,7 @@ private struct LibraryHomeCard: View {
             .padding(.horizontal, 8)
         }
         .frame(width: 230)
+        .contentShape(.rect)
     }
 }
 
@@ -543,7 +584,8 @@ private struct UpNextCard: View {
     /// 「已播 / 总时长」：只在看了一半时出现
     private var clockText: String? {
         guard item.positionMs > 0, let duration = item.durationMs, duration > 0 else { return nil }
-        return "\(Formatters.clock(Double(item.positionMs) / 1000)) / \(Formatters.clock(Double(duration) / 1000))"
+        // 四舍五入到秒（同 Web up-next-row Math.round(ms/1000)）；播放器里的时钟仍向下取整
+        return "\(Formatters.clock((Double(item.positionMs) / 1000).rounded())) / \(Formatters.clock((Double(duration) / 1000).rounded()))"
     }
 
     /// 第三行：为什么它在这儿
@@ -595,6 +637,7 @@ private struct UpNextCard: View {
                 }
                 .padding(.top, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
             }
             .buttonStyle(.plain)
         }

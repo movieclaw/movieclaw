@@ -182,6 +182,7 @@ struct SearchHomeView: View {
                         Image(systemName: "chevron.right")
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                             .frame(width: 28, height: 28)
+                            .expandedHitArea(vertical: 8)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Theme.textMuted)
@@ -235,7 +236,7 @@ struct SearchHomeView: View {
             Image(systemName: "xmark")
                 .font(.caption.weight(.semibold))
                 .frame(width: 32, height: 32)
-                .contentShape(.rect)
+                .expandedHitArea(vertical: 6)
         }
         .buttonStyle(.plain)
         .foregroundStyle(Theme.textFaint)

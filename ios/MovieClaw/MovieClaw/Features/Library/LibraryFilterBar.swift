@@ -41,11 +41,14 @@ struct LibraryFilterBar: View {
                     collectionChip(collection)
                 }
                 if ownCollections.count > shownCollections.count, let onShowAllCollections {
-                    Button("全部合集 ›", action: onShowAllCollections)
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.5))
-                        .frame(height: 28)
-                        .buttonStyle(.plain)
+                    Button(action: onShowAllCollections) {
+                        Text("全部合集 ›")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.5))
+                            .frame(height: 28)
+                            .expandedHitArea(vertical: 8)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             if !filter.isEmpty {
@@ -107,6 +110,7 @@ struct LibraryFilterBar: View {
             .padding(.horizontal, 12)
             .frame(height: 32)
             .glassEffect(active ? .regular.tint(.white.opacity(0.16)).interactive() : .regular.interactive(), in: .capsule)
+            .contentShape(.capsule)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("library-filter-button")
@@ -201,20 +205,26 @@ private struct FilterConditionRow: View {
                     groupChip(group)
                 }
             }
-            Button("清空") { filter = LibraryFilter() }
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.5))
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .buttonStyle(.plain)
-            // 已经等于某个合集时不再提「存为合集」——那只会存出一个重名的孪生体
-            if let onSaveAsCollection, collectionName == nil {
-                Button("存为合集", action: onSaveAsCollection)
+            Button { filter = LibraryFilter() } label: {
+                Text("清空")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.5))
                     .padding(.horizontal, 8)
                     .frame(height: 28)
-                    .buttonStyle(.plain)
+                    .expandedHitArea(vertical: 8)
+            }
+            .buttonStyle(.plain)
+            // 已经等于某个合集时不再提「存为合集」——那只会存出一个重名的孪生体
+            if let onSaveAsCollection, collectionName == nil {
+                Button(action: onSaveAsCollection) {
+                    Text("存为合集")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.5))
+                        .padding(.horizontal, 8)
+                        .frame(height: 28)
+                        .expandedHitArea(vertical: 8)
+                }
+                .buttonStyle(.plain)
             }
             if let facets {
                 HStack(spacing: 0) {
@@ -421,6 +431,7 @@ private struct FilterSheet: View {
                             .padding(.vertical, 7)
                             .background(on ? .white.opacity(0.14) : .clear, in: .capsule)
                             .overlay(Capsule().strokeBorder(.white.opacity(on ? 0.4 : 0.14)))
+                            .contentShape(.capsule)
                         }
                         .buttonStyle(.plain)
                         .disabled(option.count == 0 && !on)
@@ -478,17 +489,21 @@ struct LibraryFilterEmptyState: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
                         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 12))
+                        .contentShape(.rect(cornerRadius: 12))
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(.top, 16)
-            Button("清空全部条件") { filter = LibraryFilter() }
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.5))
-                .buttonStyle(.plain)
-                .padding(.vertical, 8)
-                .padding(.top, 6)
+            Button { filter = LibraryFilter() } label: {
+                Text("清空全部条件")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.5))
+                    .expandedHitArea(vertical: 14)
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 8)
+            .padding(.top, 6)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

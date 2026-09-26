@@ -224,6 +224,7 @@ struct SubscriptionDetailView: View {
                                 Text(String(year)).font(.body).monospacedDigit().foregroundStyle(.white.opacity(0.45))
                             }
                         }
+                        .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("subscription-title")

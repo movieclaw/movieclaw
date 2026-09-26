@@ -279,6 +279,7 @@ private struct ShareCollectionView: View {
                     Text(String(year)).font(.caption).foregroundStyle(.white.opacity(0.4))
                 }
             }
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("share-collection-item-\(item.mediaItemId)")

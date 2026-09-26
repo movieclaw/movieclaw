@@ -54,6 +54,7 @@ struct SettingsBScrapeOrderChips: View {
                         .padding(.vertical, 5)
                         .foregroundStyle(Theme.textFaint)
                         .overlay(Capsule().strokeBorder(Color.white.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+                        .contentShape(.capsule)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("\(identifier)-more")
@@ -142,7 +143,7 @@ struct SettingsBScrapeOrderChips: View {
                 next.swapAt(index - 1, index)
                 value = next
             } label: {
-                Image(systemName: "arrow.up").font(.caption2.weight(.semibold)).frame(width: 22, height: 22)
+                Image(systemName: "arrow.up").font(.caption2.weight(.semibold)).frame(width: 22, height: 22).contentShape(.rect)
             }
             .disabled(index == 0)
             .opacity(index == 0 ? 0.25 : 1)
@@ -151,7 +152,7 @@ struct SettingsBScrapeOrderChips: View {
             Button {
                 value.removeAll { $0 == id }
             } label: {
-                Image(systemName: "xmark").font(.caption2.weight(.semibold)).frame(width: 22, height: 22)
+                Image(systemName: "xmark").font(.caption2.weight(.semibold)).frame(width: 22, height: 22).contentShape(.rect)
             }
             .disabled(value.count <= 1)
             .opacity(value.count <= 1 ? 0.25 : 1)

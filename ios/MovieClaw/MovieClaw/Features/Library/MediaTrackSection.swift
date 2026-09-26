@@ -172,6 +172,68 @@ struct MediaTrackSection: View {
     }
 }
 
+// MARK: - 只读版（分享访客页）
+
+/// 只读的音轨 / 字幕两行（对应 Web `ReadOnlyTrackRows`，分享访客页用）。
+///
+/// 语言分组与排序、AI 字幕的语言名、芯片上的格式标记、点开后按语言分组的完整列表，
+/// 都与详情页的 `MediaTrackSection` 同一套（共用 `TrackModel` 与行/列表组件），
+/// 只是没有版本选择、字幕预览、删除与 AI 生成——访客页不暴露任何管理入口。
+/// 访客接口不下发文件名，外挂字幕的「同名前缀」无从推断，按空串处理（同 Web 传 ""）。
+struct MediaTrackReadOnlyRows: View {
+    let audioStreams: [API.AudioStreamView]?
+    let subtitleStreams: [API.SubtitleStreamView]
+
+    @State private var listTarget: TrackListTarget?
+
+    var body: some View {
+        let audioGroups = TrackModel.groupByLanguage(TrackModel.audioEntries(audioStreams ?? []))
+        let subtitleGroups = TrackModel.groupByLanguage(TrackModel.subtitleEntries(subtitleStreams, videoStem: ""))
+        let audioSpec = TrackModel.topAudioSpec(audioStreams ?? [])
+        VStack(alignment: .leading, spacing: 10) {
+            TrackRowView(
+                label: "音轨",
+                groups: audioGroups,
+                empty: audioStreams == nil ? "尚未探测" : "文件内没有音轨",
+                onOpen: { listTarget = TrackListTarget(kind: .audio, focusLanguage: $0) }
+            ) {
+                if let audioSpec {
+                    Text(audioSpec)
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(Color.white.opacity(0.8))
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.white.opacity(0.14)))
+                }
+            }
+            TrackRowView(
+                label: "字幕",
+                groups: subtitleGroups,
+                empty: "无内封或外挂字幕",
+                onOpen: { listTarget = TrackListTarget(kind: .subtitle, focusLanguage: $0) }
+            ) {
+                EmptyView()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .sheet(item: $listTarget) { target in
+            TrackListSheet(
+                kind: target.kind,
+                groups: target.kind == .audio ? audioGroups : subtitleGroups,
+                focusLanguage: target.focusLanguage,
+                footer: nil,
+                canDelete: false,
+                videoPath: "",
+                onSelect: { _ in },
+                onDelete: { _ in },
+                allowsPreview: false
+            )
+            .sheetFeedback()
+        }
+    }
+}
+
 // MARK: - 中性轨道模型：音轨与字幕拍平成同一种结构，分组 / 排序 / 渲染只写一份
 
 private enum TrackKind {
@@ -651,6 +713,8 @@ private struct TrackListSheet: View {
     let videoPath: String
     let onSelect: (TrackEntry) -> Void
     let onDelete: (TrackEntry) async -> Void
+    /// 字幕行可点开预览（访客页的只读版不给预览）
+    var allowsPreview = true
 
     @Environment(\.dismiss) private var dismiss
     /// 待确认删除的一条；确认框就挂在列表弹层上（全局确认框在根视图，会被弹层挡住）
@@ -754,7 +818,7 @@ private struct TrackListSheet: View {
     /// 列表里的一条轨。音轨没有可点动作，只是一条信息；
     /// 删除键只挂在外挂字幕（含 AI 生成）上，是独立按钮而不是整行的第二种点击语义。
     private func lineView(_ entry: TrackEntry) -> some View {
-        let selectable = entry.preview != nil && kind == .subtitle
+        let selectable = allowsPreview && entry.preview != nil && kind == .subtitle
         let deletable = canDelete && entry.deletable != nil
         return HStack(spacing: 10) {
             Group {
@@ -774,7 +838,7 @@ private struct TrackListSheet: View {
                         .font(.footnote)
                         .foregroundStyle(Color.white.opacity(0.45))
                         .frame(width: 28, height: 28)
-                        .contentShape(.rect)
+                        .contentShape(Rectangle().inset(by: -8))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("删除字幕文件：\(entry.primary)")

@@ -250,7 +250,7 @@ struct JobCard: View {
                 }
                 .font(.caption)
                 .foregroundStyle(Theme.textMuted)
-                .contentShape(.rect)
+                .expandedHitArea(vertical: 12)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("usage-toggle-\(job.id)")

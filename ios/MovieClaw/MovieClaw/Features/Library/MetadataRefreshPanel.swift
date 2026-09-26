@@ -32,9 +32,12 @@ struct MetadataRefreshPanel: View {
                     .foregroundStyle(Theme.info)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                Button(state.stopping ? "收尾中…" : "停止", action: stop)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.white.opacity(0.7))
+                Button(action: stop) {
+                    Text(state.stopping ? "收尾中…" : "停止")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .expandedHitArea(vertical: 12)
+                }
                 .buttonStyle(.plain)
                 .disabled(state.stopping)
             }

@@ -19,6 +19,9 @@ struct DownloadersSettingsView: View {
     @Environment(\.routeQuery) private var routeQuery
     /// 深链参数只消费一次（之后开合归用户，关了不复弹）
     @State private var routeQueryConsumed = false
+    /// 体检修复卡带来的映射建议：页面级状态（同 Web），之后从菜单再点任何一台的「编辑配置」都预填，
+    /// 而不是只有自动打开的那一次
+    @State private var suggestMapping: String?
 
     @State private var downloaders: [API.DownloaderView] = []
     @State private var loading = true
@@ -158,6 +161,7 @@ struct DownloadersSettingsView: View {
         guard !routeQueryConsumed, !downloaders.isEmpty else { return }
         routeQueryConsumed = true
         if let suggest = routeQuery["suggest_mapping"], !suggest.isEmpty {
+            suggestMapping = suggest
             let target = downloaders.first(where: \.isDefault) ?? downloaders[0]
             expanded = target.id
             editor = SettingsBDlEditorTarget(downloader: target, suggestMapping: suggest)
@@ -179,7 +183,7 @@ struct DownloadersSettingsView: View {
     private func perform(_ action: SettingsBDlAction, on downloader: API.DownloaderView) async {
         switch action {
         case .edit:
-            editor = SettingsBDlEditorTarget(downloader: downloader)
+            editor = SettingsBDlEditorTarget(downloader: downloader, suggestMapping: suggestMapping)
             return
         case .limits:
             limitsTarget = SettingsBDlLimitsTarget(downloader: downloader)

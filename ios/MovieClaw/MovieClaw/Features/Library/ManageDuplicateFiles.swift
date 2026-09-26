@@ -156,6 +156,7 @@ struct ManageDuplicateFilesTab: View {
                 bullets: gone.map { "\($0.fileName) · \($0.qualityLabel) · \(libraryBytes($0.sizeBytes))" }
             ),
             confirmTitle: "移入回收站 · \(gone.count)",
+            cancelTitle: "先不",
             destructive: true
         )
         guard ok else { return }
@@ -180,6 +181,7 @@ struct ManageDuplicateFilesTab: View {
             "《\(item.mediaItem.title)》S\(ManageDupText.pad(season.seasonNumber)) 整季留下这个版本？",
             message: manageBinMessage(description, bullets: bullets),
             confirmTitle: "移入回收站 · \(facts.gone.count)",
+            cancelTitle: "先不",
             destructive: true
         )
         guard ok else { return }
@@ -216,6 +218,7 @@ struct ManageDuplicateFilesTab: View {
             safe ? "清理\(scope)一模一样的文件？" : "按建议清理「\(group.label)」？",
             message: manageBinMessage(description, bullets: safe ? [] : lines),
             confirmTitle: "移入回收站 · \(min(group.files, Self.batchLimit))",
+            cancelTitle: "先不",
             destructive: !safe
         )
         guard ok else { return }
@@ -232,7 +235,8 @@ struct ManageDuplicateFilesTab: View {
         let ok = await feedback.confirm(
             "「\(group.label)」都留着？",
             message: "\(group.units) 个单元的文件全部保留、不再列为重复。不会动任何文件，之后可以在条目详情页逐个撤销。",
-            confirmTitle: "都留着 · \(group.units)"
+            confirmTitle: "都留着 · \(group.units)",
+            cancelTitle: "先不"
         )
         guard ok else { return }
         let libraryId = filter.libraryId
@@ -733,6 +737,7 @@ private struct ManageDupSeasonBlock: View {
                         router.push(.libraryItem(libraryId: item.library.id, itemId: media.id))
                     } label: {
                         Text(media.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text).lineLimit(1)
+                            .expandedHitArea(vertical: 10)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("dup-item-title-\(blockKey)")
@@ -857,6 +862,7 @@ private struct ManageDupFileRow: View {
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("查看「\(file.fileName)」的原始文件名与路径")

@@ -36,8 +36,14 @@ struct LibraryManageView: View {
     @Environment(\.permissions) private var permissions
     @Environment(Feedback.self) private var feedback
     @Environment(Router.self) private var router
+    /// 外壳的任务活动（Job SSE）：库相关作业一变就立即重拉库列表（见 libraryJobsKey）
+    @Environment(ShellBadges.self) private var badges: ShellBadges?
 
     @State private var tab: Tab = .libraries
+    /// `?tab=` 只在进页时应用一次：push 进单库页再返回（`.task` 重跑）不能把用户切过的页签拨回去
+    @State private var didApplyInitialTab = false
+    /// 刚建好的库：列表刷新后平滑滚到视口中间（同 Web revealId）
+    @State private var revealId: Int?
     @State private var libraries: [API.LibraryView]?
     @State private var failed = false
     @State private var filter = ManageLibraryFilter()
@@ -51,7 +57,6 @@ struct LibraryManageView: View {
     // 弹层
     @State private var form: ManageFormTarget?
     @State private var organizeTarget: ManageLibraryRef?
-    @State private var pendingTarget: ManagePendingTarget?
     @State private var chaptersTarget: API.LibraryView?
     @State private var reordering = false
 
@@ -72,7 +77,10 @@ struct LibraryManageView: View {
         .navigationTitle("媒体库管理")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            if let initialTab, let t = Tab(rawValue: initialTab) { tab = t }
+            if !didApplyInitialTab {
+                didApplyInitialTab = true
+                if let initialTab, let t = Tab(rawValue: initialTab) { tab = t }
+            }
             guard permissions.canManageLibraries else { return }
             // 首页空状态的「创建第一个媒体库」落到 ?create=1：进页即开建库向导（只开一次）
             if openCreate, !didOpenCreate {
@@ -88,6 +96,10 @@ struct LibraryManageView: View {
             await reloadDuplicateCount()
         }
         .polling(every: pollInterval) { await reload() }
+        // 不是从这页发起的任务（实时监控触发的自动扫描、CLI、另一台设备）只靠轮询要等到下个周期，
+        // 空闲时最长 30 秒。盯住「库相关活跃作业的 id + 状态」这份指纹：作业出现、状态变化、结束都立即重拉；
+        // 进度更新仍交给轮询（同 Web library-manage-view 的 libraryJobsKey）
+        .onChange(of: libraryJobsKey) { Task { await reload() } }
         .polling(every: 30) {
             // 列表激活时由列表自己回报计数，其余时候低频轮询
             if tab != .recycle { await reloadRecycleCount() }
@@ -95,15 +107,15 @@ struct LibraryManageView: View {
         }
         .sheet(item: $form, onDismiss: { Task { await reload() } }) { target in
             // 封面是上传即生效的，不走「保存」：关窗（含取消）也要把列表对齐
-            LibraryFormSheet(libraryId: target.libraryId) { _ in Task { await reload() } }
-                .sheetFeedback()
+            LibraryFormSheet(libraryId: target.libraryId) { saved in
+                // 新建成功：列表刷新后把新行滚到视口中间（编辑不滚）
+                if target.libraryId == nil { revealId = saved.id }
+                Task { await reload() }
+            }
+            .sheetFeedback()
         }
         .sheet(item: $organizeTarget) { target in
             LibraryOrganizeSheet(libraryId: target.id) { Task { await reload() } }
-                .sheetFeedback()
-        }
-        .sheet(item: $pendingTarget) { target in
-            IssueDrawerView(libraryId: target.libraryId, initialTab: target.tab) { Task { await reload() } }
                 .sheetFeedback()
         }
         .sheet(isPresented: $reordering) {
@@ -127,28 +139,46 @@ struct LibraryManageView: View {
     // MARK: 页面
 
     private var page: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                header
-                tabBar
-                    .padding(.top, 16)
-                switch tab {
-                case .libraries:
-                    librariesTab
-                case .recycle:
-                    ManageRecycleBinTab { recycleCount = $0 }
-                        .padding(.top, 12)
-                case .duplicates:
-                    ManageDuplicateFilesTab(libraries: libraries, initialItemId: initialItemId) { duplicateCount = $0 }
-                        .padding(.top, 12)
-                case .shares:
-                    ManageSharesTab { shareCount = $0 }
-                        .padding(.top, 12)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    header
+                    tabBar
+                        .padding(.top, 16)
+                    switch tab {
+                    case .libraries:
+                        librariesTab
+                    case .recycle:
+                        ManageRecycleBinTab { recycleCount = $0 }
+                            .padding(.top, 12)
+                    case .duplicates:
+                        ManageDuplicateFilesTab(libraries: libraries, initialItemId: initialItemId) { duplicateCount = $0 }
+                            .padding(.top, 12)
+                    case .shares:
+                        ManageSharesTab { shareCount = $0 }
+                            .padding(.top, 12)
+                    }
                 }
+                .padding(.bottom, 40)
             }
-            .padding(.bottom, 40)
+            .scrollDismissesKeyboard(.interactively)
+            .onChange(of: libraries) {
+                guard let id = revealId, libraries?.contains(where: { $0.id == id }) == true else { return }
+                revealId = nil
+                withAnimation(.smooth) { proxy.scrollTo(Self.rowAnchor(id), anchor: .center) }
+            }
         }
-        .scrollDismissesKeyboard(.interactively)
+    }
+
+    private static func rowAnchor(_ id: Int) -> String { "manage-library-\(id)" }
+
+    /// 库相关活跃作业的指纹（`id:状态`），只在变化时触发重拉
+    private var libraryJobsKey: String {
+        (badges?.tasks.jobs ?? [])
+            .filter { TaskCenter.activeJobStatuses.contains($0.status) && $0.resources.contains { $0.resourceType == "library" } }
+            .map { "\($0.id):\($0.status)" }
+            .sorted()
+            .joined(separator: "|")
     }
 
     /// 页头：大标题 + 「创建媒体库」，下一行是活的摘要（规模事实 + 在跑任务 / 待处理两枚胶囊）
@@ -320,6 +350,7 @@ struct LibraryManageView: View {
                 ForEach(Array(visible.enumerated()), id: \.element.id) { index, library in
                     if index > 0 { Divider().overlay(Color.white.opacity(0.06)) }
                     ManageLibraryRow(library: library, actions: rowActions)
+                        .id(Self.rowAnchor(library.id))
                 }
             }
         }
@@ -347,11 +378,9 @@ struct LibraryManageView: View {
         .init(
             toggleScan: toggleScan,
             openPending: { library in
-                // Web 跳到单库页的待处理清单；App 直接唤起媒体库模块的待处理抽屉（同一份清单）
-                pendingTarget = ManagePendingTarget(
-                    libraryId: library.id,
-                    tab: library.stats.missingCount > 0 ? "missing" : "unidentified"
-                )
+                // 同 Web：跳到单库页并自动打开待处理抽屉（`?pending=1`），落点按
+                // 缺失 → 待识别 → 待复核 → 已忽略 由单库页按实际清单选（只有待复核/已忽略的库也不会落到空页签）
+                router.push(.library(id: library.id, view: nil, pending: true))
             },
             organize: { organizeTarget = ManageLibraryRef(id: $0.id) },
             toggleRefresh: toggleRefresh,
@@ -521,12 +550,6 @@ struct ManageLibraryRef: Identifiable {
     let id: Int
 }
 
-struct ManagePendingTarget: Identifiable {
-    let libraryId: Int
-    let tab: String
-    var id: Int { libraryId }
-}
-
 // MARK: - 调整顺序（手机端没有拖拽）
 
 /// 手机端的排序面板：上下箭头换位，确认后一次提交整单；面板内持有顺序草稿，取消不影响列表
@@ -662,6 +685,7 @@ struct ManageSearchField: View {
                     text = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textFaint)
+                        .contentShape(Rectangle().inset(by: -12))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("清除搜索")

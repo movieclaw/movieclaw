@@ -40,6 +40,37 @@ struct PlayRequest: Identifiable, Hashable {
     var id: String { "\(shareSlug ?? "")-\(mediaItemId)-\(season ?? -1)-\(episode ?? -1)" }
 }
 
+extension PlayRequest {
+    /// 解析站内播放链接（同 Web `lib/player/play-links.ts` 的地址约定）：
+    /// - `/play/{mediaItemId}[/sXXeYY][?t=秒]`
+    /// - `/s/{slug}/play[/sXXeYY][?t=秒]`（访客播放；条目 id 要等分享页读到影片才知道，这里记 0）
+    /// 不是播放链接返回 nil。
+    init?(webPath raw: String) {
+        guard let components = URLComponents(string: raw.hasPrefix("/") ? raw : "/\(raw)") else { return nil }
+        let parts = components.path.split(separator: "/").map(String.init)
+        var unitSegment: String?
+        if parts.count >= 2, parts[0] == "play", let id = Int(parts[1]), id > 0 {
+            self.init(mediaItemId: id)
+            unitSegment = parts.count >= 3 ? parts[2] : nil
+        } else if parts.count >= 3, parts[0] == "s", parts[2] == "play" {
+            self.init(mediaItemId: 0, shareSlug: parts[1])
+            unitSegment = parts.count >= 4 ? parts[3] : nil
+        } else {
+            return nil
+        }
+        // sXXeYY 之外的写法（含 s00e00 = 电影）一律当电影 / 由服务端定起点
+        if let segment = unitSegment, let match = segment.lowercased().wholeMatch(of: /s(\d+)e(\d+)/),
+           let season = Int(match.1), let episode = Int(match.2), season > 0 || episode > 0 {
+            self.season = season
+            self.episode = episode
+        }
+        // ?t= 只接受单个非负整数（同 Web queryNumber）
+        if let t = components.queryItems?.first(where: { $0.name == "t" })?.value, t.wholeMatch(of: /\d+/) != nil, let seconds = Double(t) {
+            startSeconds = seconds
+        }
+    }
+}
+
 /// 全局弹层：多个模块都会唤起的对话框放这里，由根视图统一呈现，避免各页面重复挂载。
 enum AppSheet: Identifiable, Hashable {
     /// 订阅对话框（发现海报、详情页、搜索结果、AI 卡片、媒体库「洗版」都会用）
@@ -128,6 +159,11 @@ final class Router {
         showsMore = false
         // 切到路由归属的标签（该标签对当前账号不可见时——例如成员没有订阅页——留在当前标签）
         if let target = route.tab, availableTabs.contains(target) { selectedTab = target }
+        // 设置分区的返回固定回设置列表（Web app-shell：/settings/[x] 的返回是 /settings）：
+        // 从通知「去处理」、更多页「新版本」等处直达分区时，栈顶不是设置列表就先垫一层
+        if case .settingsSection = route, paths[selectedTab]?.last != .settings {
+            paths[selectedTab, default: []].append(.settings)
+        }
         paths[selectedTab, default: []].append(route)
     }
 
@@ -137,6 +173,16 @@ final class Router {
     /// 打开 Web 站内链接；解析失败返回 false
     @discardableResult
     func open(webPath: String) -> Bool {
+        // 站内播放链接：/play/... 直接起播；/s/{slug}/play/... 先开分享页，读到影片后由分享页接着起播
+        if let request = PlayRequest(webPath: webPath) {
+            if let slug = request.shareSlug {
+                pendingSharePlay = request
+                open(.share(slug: slug))
+            } else {
+                play(request)
+            }
+            return true
+        }
         guard var route = AppRoute(webPath: webPath) else { return false }
         // 「/」对成员同样收敛到媒体库（Web accessiblePathFor：成员的 / → /library）
         if let permissions, !permissions.isAdmin, URLComponents(string: webPath)?.path.split(separator: "/").isEmpty ?? false {
@@ -157,6 +203,9 @@ final class Router {
     func play(_ request: PlayRequest) {
         player = request
     }
+
+    /// 待起播的访客播放链接（`/s/{slug}/play/...`）：分享页读到影片（必要时先过密码）后取走并起播
+    var pendingSharePlay: PlayRequest?
 
     func present(_ sheet: AppSheet) {
         self.sheet = sheet

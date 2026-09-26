@@ -93,17 +93,25 @@ final class MPVEngine: PlayerEngine {
     var isPaused: Bool { paused }
     var videoSize: CGSize { CGSize(width: width, height: height) }
 
+    /// 诊断读数。只读上一秒后台采样的结果（`MPVPlayer.sampleReadouts`），绝不在主线程同步读 mpv 属性——
+    /// 核心线程忙时同步读会把主线程一起卡住（界面无响应、严重时被系统杀掉）
     func stats() -> EngineStats {
-        let cacheSpeed = core.double("cache-speed").map { $0 * 8 }
-        let videoBitrate = core.double("video-bitrate") ?? 0
-        let audioBitrate = core.double("audio-bitrate") ?? 0
-        let dropped = (core.int("frame-drop-count") ?? 0) + (core.int("decoder-frame-drop-count") ?? 0)
+        core.sampleReadouts(
+            doubles: ["cache-speed", "video-bitrate", "audio-bitrate"],
+            ints: ["frame-drop-count", "decoder-frame-drop-count", "estimated-frame-number", "audio-params/channel-count"],
+            strings: ["video-codec", "hwdec-current", "audio-codec-name"]
+        )
+        let readouts = core.readouts
+        let cacheSpeed = readouts.doubles["cache-speed"].map { $0 * 8 }
+        let videoBitrate = readouts.doubles["video-bitrate"] ?? 0
+        let audioBitrate = readouts.doubles["audio-bitrate"] ?? 0
+        let dropped = (readouts.ints["frame-drop-count"] ?? 0) + (readouts.ints["decoder-frame-drop-count"] ?? 0)
         var details = ["渲染 \(renderBackend)"]
-        let decoder = [core.string("video-codec"), core.string("hwdec-current").map { $0 == "no" ? "软件解码" : "硬件解码 \($0)" }]
+        let decoder = [readouts.strings["video-codec"], readouts.strings["hwdec-current"].map { $0 == "no" ? "软件解码" : "硬件解码 \($0)" }]
             .compactMap { $0 }.filter { !$0.isEmpty }
         if !decoder.isEmpty { details.append("视频 " + decoder.joined(separator: " · ")) }
-        if let audio = core.string("audio-codec-name"), !audio.isEmpty {
-            details.append("音频 \(audio)" + (core.string("audio-params/channel-count").map { " · \($0) 声道" } ?? ""))
+        if let audio = readouts.strings["audio-codec-name"], !audio.isEmpty {
+            details.append("音频 \(audio)" + (readouts.ints["audio-params/channel-count"].map { " · \($0) 声道" } ?? ""))
         }
         details.append(playsOriginalFile ? "直出原文件" : "播放服务端 HLS")
         return EngineStats(
@@ -111,7 +119,7 @@ final class MPVEngine: PlayerEngine {
             downlinkBps: cacheSpeed.flatMap { $0 > 0 ? $0 : nil },
             bitrateBps: videoBitrate + audioBitrate > 0 ? videoBitrate + audioBitrate : nil,
             droppedFrames: dropped,
-            totalFrames: core.int("estimated-frame-number"),
+            totalFrames: readouts.ints["estimated-frame-number"],
             bufferedSeconds: max(0, (cacheTime ?? time) - time),
             currentTimeSeconds: time,
             details: details

@@ -14,11 +14,15 @@ import UIKit
 /// - 按住 500ms 不动 = 长按 2 倍速（抬手恢复）；已进入倍速后的移动不再改判。暂停时不起长按，松手按轻点处理；
 /// - 从屏幕上下边缘 32pt 内起手的触摸交给系统（控制中心/主屏幕手势），不当成播放器手势；
 /// - 竖滑调节另有排除带（同 Web touch-adjust.ts）：顶部 12%、底部 24%（进度条与控制区）、左右各 32pt 起手不调；
-///   滑过「高度 × 60%」从 0 拉满。
+///   滑过「高度 × 60%」从 0 拉满；
+/// - 控制条、菜单所在的区域（`excludedRects`）整块不归手势层：`point(inside:)` 直接放行给上层按钮，
+///   起手点落在里面也不跟踪——保证一次点按钮不会同时被当成「轻点画面」（开菜单的同时又把菜单/控制层收掉）。
 struct PlayerGestureLayer: UIViewRepresentable {
     var enabled: Bool
     /// 现在能不能起长按倍速（暂停、锁屏时不能）
     var canHold: Bool
+    /// 禁区（窗口坐标）：可见的控制条与菜单
+    var excludedRects: [CGRect] = []
     var onTap: (_ xRatio: CGFloat, _ isDouble: Bool) -> Void
     var onScrub: (_ phase: GesturePhase, _ deltaRatio: CGFloat) -> Void
     var onAdjust: (_ phase: GesturePhase, _ side: AdjustSide, _ deltaRatio: CGFloat) -> Void
@@ -58,10 +62,21 @@ struct PlayerGestureLayer: UIViewRepresentable {
         private static let adjustTopExclude: CGFloat = 0.12
         private static let adjustBottomExclude: CGFloat = 0.24
 
+        /// 点在禁区里（控制条/菜单）：不认领这次触摸，让命中测试落到上层的 SwiftUI 按钮
+        private func isExcluded(_ point: CGPoint) -> Bool {
+            guard let rects = config?.excludedRects, !rects.isEmpty, window != nil else { return false }
+            let inWindow = convert(point, to: nil)
+            return rects.contains { $0.contains(inWindow) }
+        }
+
+        override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+            super.point(inside: point, with: event) && !isExcluded(point)
+        }
+
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
             guard let config, config.enabled, let touch = touches.first, event?.allTouches?.count ?? 1 == 1 else { return }
             let point = touch.location(in: self)
-            guard point.y > Self.edgeGuard, point.y < bounds.height - Self.edgeGuard else { return }
+            guard point.y > Self.edgeGuard, point.y < bounds.height - Self.edgeGuard, !isExcluded(point) else { return }
             tracking = true
             start = point
             intent = .undecided

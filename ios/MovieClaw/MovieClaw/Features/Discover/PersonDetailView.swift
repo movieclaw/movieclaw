@@ -94,7 +94,7 @@ struct PersonDetailView: View {
                 .font(.caption).foregroundStyle(Theme.textFaint).lineLimit(1)
         }
         if let libraryId = credit.libraryId {
-            Button { router.push(.libraryItem(libraryId: libraryId, itemId: credit.mediaItemId)) } label: { body }
+            Button { router.push(.libraryItem(libraryId: libraryId, itemId: credit.mediaItemId)) } label: { body.contentShape(.rect) }
                 .buttonStyle(.plain)
                 .accessibilityLabel("查看《\(credit.title)》")
         } else {

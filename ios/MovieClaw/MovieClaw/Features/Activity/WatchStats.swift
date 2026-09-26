@@ -554,13 +554,16 @@ private struct BreakdownPanel<Footer: View>: View {
                 }
                 if fold == .expand, rows.count > limit {
                     Divider().overlay(Color.white.opacity(0.06))
-                    Button(expanded ? "收起" : "展开全部 \(rows.count) \(unit)") { expanded.toggle() }
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Theme.info)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .buttonStyle(.plain)
+                    Button { expanded.toggle() } label: {
+                        Text(expanded ? "收起" : "展开全部 \(rows.count) \(unit)")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Theme.info)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
                 }
                 footer()
             }

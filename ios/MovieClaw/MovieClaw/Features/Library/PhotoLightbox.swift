@@ -143,7 +143,7 @@ extension PhotoWallView {
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.white.opacity(0.5))
                             .frame(width: 28, height: 28)
-                            .contentShape(.circle)
+                            .contentShape(Circle().inset(by: -8))
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("关闭拍摄信息")

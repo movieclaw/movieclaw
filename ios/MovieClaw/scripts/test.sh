@@ -21,7 +21,7 @@ LOG="$(mktemp -t mc-test-$(basename "$(cd ../.. && pwd)")).log"
 [[ -d MovieClaw.xcodeproj ]] || xcodegen generate >/dev/null
 
 TEST_RUNNER_MC_LIVE="${MC_LIVE:-0}" TEST_RUNNER_MC_TEST_SERVER="${MC_TEST_SERVER:-}" TEST_RUNNER_MC_TEST_USERNAME="${MC_TEST_USERNAME:-}" TEST_RUNNER_MC_TEST_PASSWORD="${MC_TEST_PASSWORD:-}" \
-TEST_RUNNER_MC_TEST_MP4_ITEM="${MC_TEST_MP4_ITEM:-}" TEST_RUNNER_MC_TEST_MKV_ITEM="${MC_TEST_MKV_ITEM:-}" TEST_RUNNER_MC_TEST_EPISODE_SHOW="${MC_TEST_EPISODE_SHOW:-}" xcodebuild -project MovieClaw.xcodeproj -scheme MovieClaw \
+TEST_RUNNER_MC_TEST_MP4_ITEM="${MC_TEST_MP4_ITEM:-}" TEST_RUNNER_MC_TEST_MKV_ITEM="${MC_TEST_MKV_ITEM:-}" TEST_RUNNER_MC_TEST_EPISODE_SHOW="${MC_TEST_EPISODE_SHOW:-}" TEST_RUNNER_MC_TEST_MPV_ITEM="${MC_TEST_MPV_ITEM:-}" xcodebuild -project MovieClaw.xcodeproj -scheme MovieClaw \
   -destination "platform=iOS Simulator,name=$SIM" -derivedDataPath "$DERIVED" \
   -clonedSourcePackagesDirPath "${MC_SPM:-$HOME/workspace/.mc-ios-spm}" -packageAuthorizationProvider netrc "$@" test \
   >"$LOG" 2>&1 &

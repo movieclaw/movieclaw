@@ -173,6 +173,7 @@ struct ManageRootsEditor: View {
                         .lineLimit(1)
                         .truncationMode(.head)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .expandedHitArea(vertical: 10)
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("点击更改：从当前路径开始重新选择目录")
@@ -434,7 +435,8 @@ struct ManageCoverEditor: View {
     @State private var stamp = Int(Date.now.timeIntervalSince1970)
 
     var body: some View {
-        RemoteImage(url: api.image("/libraries/\(libraryId)/cover?v=\(stamp)"), placeholderSymbol: "photo")
+        // 加载失败写「暂无封面」（同 Web），不是一个意义不明的图标
+        RemoteImage(url: api.image("/libraries/\(libraryId)/cover?v=\(stamp)"), placeholderText: "暂无封面")
             .aspectRatio(21 / 10, contentMode: .fit)
             .frame(maxWidth: .infinity)
             .clipShape(.rect(cornerRadius: 12))

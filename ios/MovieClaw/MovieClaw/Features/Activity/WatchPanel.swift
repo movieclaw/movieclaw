@@ -264,6 +264,7 @@ struct ActivityTitleText: View {
                 .lineLimit(large ? 2 : 1)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .disabled(route == nil)
@@ -513,10 +514,13 @@ struct HiddenCountRow: View {
                 Text("另有 \(count) \(noun)不在你的浏览范围内")
                 if let onShowAll {
                     Text("·").foregroundStyle(Theme.textFaint.opacity(0.5))
-                    Button("显示全部", action: onShowAll)
-                        .fontWeight(.medium)
-                        .foregroundStyle(Theme.info)
-                        .buttonStyle(.plain)
+                    Button(action: onShowAll) {
+                        Text("显示全部")
+                            .fontWeight(.medium)
+                            .foregroundStyle(Theme.info)
+                            .expandedHitArea(vertical: 12)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .font(.caption)

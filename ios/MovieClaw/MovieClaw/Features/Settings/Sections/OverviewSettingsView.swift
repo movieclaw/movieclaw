@@ -328,10 +328,13 @@ private struct ProblemList: View {
                         Text("\(Text(check.label).fontWeight(.medium).foregroundStyle(Theme.text))  \(check.detail)")
                             .font(.subheadline).foregroundStyle(Theme.textMuted)
                         if check.status != "ok", let fix = SettingsPipelineStatus.fixTarget(check.fixSection) {
-                            Button("\(fix.label) →") { router.push(fix.route) }
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(Theme.accent)
-                                .buttonStyle(.plain)
+                            Button { router.push(fix.route) } label: {
+                                Text("\(fix.label) →")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(Theme.accent)
+                                    .expandedHitArea(vertical: 12)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -412,8 +415,12 @@ private struct LibraryPipelineCard: View {
             if !pipeline.narrative.isEmpty {
                 Text(pipeline.narrative).font(.caption).foregroundStyle(Theme.textFaint)
             }
-            Button(showAll ? "收起" : "查看全部") { withAnimation { showAll.toggle() } }
-                .font(.caption).foregroundStyle(Theme.textFaint).buttonStyle(.plain)
+            Button { withAnimation { showAll.toggle() } } label: {
+                Text(showAll ? "收起" : "查看全部")
+                    .font(.caption).foregroundStyle(Theme.textFaint)
+                    .expandedHitArea(vertical: 14)
+            }
+            .buttonStyle(.plain)
             if !listed.isEmpty { ProblemList(checks: listed) }
         }
         .padding(14)

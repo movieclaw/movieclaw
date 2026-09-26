@@ -126,7 +126,7 @@ struct EpisodeUnitsLabel: View {
                                 .rotationEffect(.degrees(open ? 180 : 0))
                         }
                         .font(.caption).monospacedDigit().foregroundStyle(Theme.text.opacity(0.88))
-                        .contentShape(.rect)
+                        .expandedHitArea(vertical: 12)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("覆盖 \(summary.episodeCount) 集：\(summary.fullLabel)。展开查看全部集号")
@@ -369,15 +369,18 @@ struct DownloadTaskCard: View {
             .lineLimit(3)
             .textSelection(.enabled)
             if TaskCenter.shouldOfferInlineReplacement(task) {
-                Button(replacing ? "正在换种…" : "立即换种") { onReplace(task) }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color(red: 1, green: 0.89, blue: 0.89))
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(Theme.danger.opacity(0.1), in: .rect(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.danger.opacity(0.3)))
-                    .buttonStyle(.plain)
-                    .disabled(replacing)
-                    .accessibilityIdentifier("replace-\(task.infoHash)")
+                Button { onReplace(task) } label: {
+                    Text(replacing ? "正在换种…" : "立即换种")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color(red: 1, green: 0.89, blue: 0.89))
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Theme.danger.opacity(0.1), in: .rect(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.danger.opacity(0.3)))
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .disabled(replacing)
+                .accessibilityIdentifier("replace-\(task.infoHash)")
             }
         }
         .foregroundStyle(attention ? Theme.danger : Theme.textMuted)
@@ -459,11 +462,14 @@ struct DownloadTaskGroupFeed: View {
                     }
                     Spacer(minLength: 0)
                     if let subscription {
-                        Button("查看订阅") { router.open(.subscription(id: subscription.id)) }
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Theme.textFaint)
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("view-subscription-\(subscription.id)")
+                        Button { router.open(.subscription(id: subscription.id)) } label: {
+                            Text("查看订阅")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(Theme.textFaint)
+                                .expandedHitArea(vertical: 14)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("view-subscription-\(subscription.id)")
                     }
                 }
             }
@@ -548,14 +554,17 @@ struct DownloadTaskFeedItem: View {
             }
             DownloadLifecycleView(task: task, ingestJob: ingestJob, feed: true)
             if TaskCenter.shouldOfferInlineReplacement(task) {
-                Button(replacing ? "正在换种…" : "立即换种") { onReplace(task) }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color(red: 1, green: 0.89, blue: 0.89))
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(Theme.danger.opacity(0.07), in: .rect(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.danger.opacity(0.25)))
-                    .buttonStyle(.plain)
-                    .disabled(replacing)
+                Button { onReplace(task) } label: {
+                    Text(replacing ? "正在换种…" : "立即换种")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color(red: 1, green: 0.89, blue: 0.89))
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(Theme.danger.opacity(0.07), in: .rect(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.danger.opacity(0.25)))
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .disabled(replacing)
             }
         }
         .accessibilityElement(children: .contain)
@@ -648,6 +657,7 @@ private struct BoostTaskRow: View {
                     Text(TaskCenter.nonEmpty(task.name) ?? task.infoHash)
                         .font(.subheadline).foregroundStyle(Theme.text.opacity(0.8)).lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
                 .disabled(task.pageUrl == nil)

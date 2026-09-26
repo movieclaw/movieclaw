@@ -255,6 +255,7 @@ private struct SettingsBRuleSetsSection: View {
                     editing = EditorTarget(ruleSet: rule)
                 } label: {
                     Text(rule.name).font(.body.weight(.semibold)).foregroundStyle(Theme.text).lineLimit(1)
+                        .expandedHitArea(vertical: 10)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("ruleset-name-\(rule.name)")

@@ -62,6 +62,7 @@ struct SettingsHelpTip: View {
             Image(systemName: "info.circle")
                 .font(.footnote)
                 .foregroundStyle(Theme.textFaint)
+                .contentShape(Rectangle().inset(by: -14))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)

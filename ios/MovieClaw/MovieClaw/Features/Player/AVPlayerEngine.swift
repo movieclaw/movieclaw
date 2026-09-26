@@ -280,8 +280,10 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         let chain = [error] + [error.userInfo[NSUnderlyingErrorKey] as? NSError].compactMap { $0 }
         for item in chain {
             if item.domain == NSURLErrorDomain { return .network }
-            // -11863 资源不可用 / -11800 且底层是网络错误 / -12938 HTTP 4xx / -12660 HTTP 403
-            if item.domain == AVFoundationErrorDomain, [-11863, -11828].contains(item.code) { return .network }
+            // -11863 资源不可用 / -11800 且底层是网络错误 / -12938 HTTP 4xx / -12660 HTTP 403。
+            // 注意 -11828 是 AVErrorFileFormatNotRecognized（格式无法识别）：这一档本身放不了，必须走降档，
+            // 当成网络错误会同档无限重开（第二轮审计 N-05-1）
+            if item.domain == AVFoundationErrorDomain, item.code == -11863 { return .network }
             if item.domain == "CoreMediaErrorDomain", [-12938, -12660, -12971, -12645, -12889].contains(item.code) { return .network }
         }
         return .decode
