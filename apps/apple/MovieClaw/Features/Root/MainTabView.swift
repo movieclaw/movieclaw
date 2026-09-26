@@ -189,7 +189,7 @@ struct TabRoot<Root: View>: View {
     var body: some View {
         NavigationStack(path: router.path(for: tab)) {
             root()
-                .appTopBar()
+                .appTopBar(tab: tab)
                 .navigationDestination(for: AppRoute.self) { route in
                     route.destination
                 }
@@ -307,10 +307,14 @@ enum TabIcon {
 /// 返回一路退回来）。常见 App 的搜索都在右上角（2026-09-26 用户拍板）；原来左上角的头像
 /// 挪进了标签栏最右的页签。网页右上角的「+」新建 AI 会话在手机 App 里按用户决定去掉了。
 ///
-/// 页面自己的按钮用 `.toolbar` 追加（发现页的筛选与数据源、媒体库的自定义与管理）。
+/// 从媒体库页签点进去预选「媒体库」模式（在哪个页签搜就先搜那里的内容，同 iOS 音乐的资料库）；
+/// 其他页签沿用搜索页记住的模式。
+///
+/// 页面自己的按钮用 `.toolbar` 追加（发现页的筛选、媒体库的 ⋯ 菜单）。
 /// 外层注入的 `.topBarTrailing` 会排到页面按钮前面，所以放 `.primaryAction`（固定在最右），
 /// 再用固定间隔隔开：页面按钮在左边自成一组，搜索在每个标签根页都是同一位置的独立圆钮。
 struct AppTopBar: ViewModifier {
+    let tab: MainTab
     @Environment(Router.self) private var router
     @Environment(\.permissions) private var permissions
 
@@ -320,7 +324,7 @@ struct AppTopBar: ViewModifier {
                 ToolbarSpacer(.fixed, placement: .primaryAction)
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        router.push(.searchHome)
+                        router.push(.searchHome(mode: tab == .library ? .library : nil))
                     } label: {
                         Image(systemName: "magnifyingglass")
                     }
@@ -333,7 +337,7 @@ struct AppTopBar: ViewModifier {
 }
 
 extension View {
-    func appTopBar() -> some View { modifier(AppTopBar()) }
+    func appTopBar(tab: MainTab) -> some View { modifier(AppTopBar(tab: tab)) }
 }
 
 /// 头像徽标：有头像显示图片，否则显示昵称首字

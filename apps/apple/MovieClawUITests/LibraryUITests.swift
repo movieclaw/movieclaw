@@ -54,13 +54,15 @@ final class LibraryUITests: XCTestCase {
 
     // MARK: 用例
 
-    /// 首页三块内容与跳转：统计行、我的媒体库卡片、全部合集、自定义首页入口
+    /// 首页三块内容与跳转：统计行、我的媒体库卡片、全部合集、自定义首页入口（在右上角 ⋯ 菜单里）
     @MainActor
     func testHomeShowsRowsAndNavigates() {
         let app = launch(route: "/library")
         XCTAssertTrue(app.staticTexts["library-stats"].waitForExistence(timeout: 20))
         XCTAssertTrue(app.staticTexts["library-stats"].label.contains("个媒体库"))
         snapshot("媒体库首页")
+        app.buttons["library-more"].tap()
+        XCTAssertTrue(app.buttons["library-customize"].waitForExistence(timeout: 5))
         app.buttons["library-customize"].tap()
         XCTAssertTrue(app.staticTexts["customize-summary"].waitForExistence(timeout: 15))
         snapshot("自定义首页")

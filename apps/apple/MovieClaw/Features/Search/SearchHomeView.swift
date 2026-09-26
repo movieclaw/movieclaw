@@ -8,8 +8,12 @@ import SwiftUI
 ///   留空提交 = 浏览该分类的最新资源；
 /// - 最近搜索（`GET /search/history`）：同关键词的多条记录折叠成一组（可展开看各范围），输入即过滤，
 ///   可删单条 / 删整组（多条时先确认）/ 清空；点一条按它自己的垂直回放，有快照直接看快照；
-/// - 模式与分类记在本机（同 Web localStorage 的 `movieclaw.search-palette-state`）。
+/// - 模式与分类记在本机（同 Web localStorage 的 `movieclaw.search-palette-state`）；
+///   从媒体库页签进来时预选「媒体库」（`initialMode`），只作用于这一次，不改记住的模式。
 struct SearchHomeView: View {
+    /// 进页时预选的模式；nil = 沿用上次记住的模式
+    var initialMode: SearchVertical?
+
     @Environment(\.api) private var api
     @Environment(\.permissions) private var permissions
     @Environment(Router.self) private var router
@@ -24,6 +28,9 @@ struct SearchHomeView: View {
     @State private var items: [API.SearchHistoryItem]?
     @State private var collapsed: Set<String> = []
     @FocusState private var focused: Bool
+    /// 恢复记住的模式与预选只在进页时做一次：看完结果返回（`.task` 重跑）时，
+    /// 预选的「媒体库」没存进本机记忆，再恢复一遍就会被拨回记住的模式
+    @State private var didRestoreState = false
 
     private static let stateKey = "movieclaw.search-palette-state"
 
@@ -83,8 +90,14 @@ struct SearchHomeView: View {
         .autocorrectionDisabled()
         .textInputAutocapitalization(.never)
         .task {
-            restoreState()
+            if !didRestoreState {
+                didRestoreState = true
+                restoreState()
+                if let initialMode { mode = initialMode }
+            }
             access = await SearchAccess.resolve(api: api, permissions: permissions)
+            // 预选的模式没有权限：退回记住的模式，别让下一行的兜底把本机记忆改掉
+            if let initialMode, mode == initialMode, !access.available.contains(mode) { restoreState() }
             if !access.available.contains(mode), let first = access.available.first { changeMode(first) }
             tabs = await SearchTabs.visible(api: api, isAdmin: permissions.isAdmin)
             tabsLoaded = true
