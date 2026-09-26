@@ -38,6 +38,9 @@ final class MPVEngine: PlayerEngine {
     private var pendingAudio: Int?
     /// 已经 sub-add 过的外挂轨（轨引用 → 是否已挂上），避免重复下载
     private var addedSubtitles: Set<String> = []
+    /// 诊断面板「带宽」与 downlink_bps：MPV 没有逐请求计时，样本就是 cache-speed 读数（见 `BandwidthMeter`），每秒记一个
+    private var bandwidthMeter = BandwidthMeter()
+    private var lastLoadingSample: TimeInterval?
 
     var view: UIView { core.view }
 
@@ -76,6 +79,8 @@ final class MPVEngine: PlayerEngine {
         eofReached = false
         paused = !autoplay
         addedSubtitles.removeAll()
+        bandwidthMeter.reset()
+        lastLoadingSample = nil
         core.load(url, start: start > 0.5 ? start : nil, paused: !autoplay)
         emit(.buffering)
     }
@@ -112,6 +117,11 @@ final class MPVEngine: PlayerEngine {
         )
         let readouts = core.readouts
         let cacheSpeed = readouts.doubles["cache-speed"].map { $0 * 8 }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let cacheSpeed, now - (lastLoadingSample ?? -.infinity) >= 0.9 {
+            lastLoadingSample = now
+            bandwidthMeter.push(bps: cacheSpeed, at: now)
+        }
         let videoBitrate = readouts.doubles["video-bitrate"] ?? 0
         let audioBitrate = readouts.doubles["audio-bitrate"] ?? 0
         let dropped = (readouts.ints["frame-drop-count"] ?? 0) + (readouts.ints["decoder-frame-drop-count"] ?? 0)
@@ -125,7 +135,9 @@ final class MPVEngine: PlayerEngine {
         details.append(playsOriginalFile ? "直出原文件" : "播放服务端 HLS")
         return EngineStats(
             engine: kind.rawValue,
-            downlinkBps: cacheSpeed.flatMap { $0 > 0 ? $0 : nil },
+            downlinkBps: bandwidthMeter.bps,
+            // cache-speed 本身就是 libmpv 按 1 秒窗口数的实际读入字节：预读满了停下来就是 0，照实给
+            loadingBps: cacheSpeed,
             bitrateBps: videoBitrate + audioBitrate > 0 ? videoBitrate + audioBitrate : nil,
             droppedFrames: dropped,
             totalFrames: readouts.ints["estimated-frame-number"],

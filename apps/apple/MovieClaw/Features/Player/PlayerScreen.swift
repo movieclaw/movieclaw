@@ -22,6 +22,8 @@ struct PlayerScreen: View {
                 PlayerContent(controller: controller, exit: exit, openRemoteSettings: openRemoteSettings)
             }
         }
+        // 强调色显式钉成冷银：玻璃强调按钮（重试、开启并播放、立即播放）不依赖呈现方传下来的 tint
+        .tint(Theme.accentStrong)
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
         .accessibilityElement(children: .contain)
@@ -132,6 +134,9 @@ private struct PlayerContent: View {
     @State private var topBarFrame: CGRect = .zero
     @State private var bottomBarFrame: CGRect = .zero
     @State private var menuFrame: CGRect = .zero
+    @State private var lockButtonFrame: CGRect = .zero
+    /// 中央三键的位置（窗口坐标）：判断菜单会不会压住它、诊断面板该停在哪
+    @State private var centerFrame: CGRect = .zero
 
     struct AdjustState {
         var side: PlayerGestureLayer.AdjustSide
@@ -184,15 +189,18 @@ private struct PlayerContent: View {
                 }
 
                 if controller.phase.isBusy {
+                    // 与中央三键同一个中心（整屏正中），转圈结束时播放键正好接在原地
                     PlayerBusyView(controller: controller)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .ignoresSafeArea()
                 }
 
-                hud
+                hud(landscape: landscape)
 
                 if let notice = controller.notice {
                     VStack {
                         PlayerHUD { Text(notice) }
-                            .padding(.top, 70)
+                            .padding(.top, hudTop(landscape: landscape))
                         Spacer()
                     }
                     .transition(.opacity)
@@ -238,12 +246,40 @@ private struct PlayerContent: View {
         #endif
     }
 
-    /// 手势层的禁区（窗口坐标）：控制层可见时的顶栏、底栏与打开着的菜单
+    /// 手势层的禁区（窗口坐标）：控制层可见时的顶栏、底栏、横屏的锁屏键与打开着的菜单
     private var gestureExclusions: [CGRect] {
         guard chromeVisible, !locked else { return [] }
-        var rects = [topBarFrame, bottomBarFrame]
+        var rects = [topBarFrame, bottomBarFrame, lockButtonFrame]
         if menu != .none { rects.append(menuFrame) }
         return rects.filter { !$0.isEmpty }
+    }
+
+    /// 顶部 HUD（亮度 / 音量 / 倍速 / 提示）的上缘：顶栏下方再隔一个间距，控制层开着时也不压住顶栏
+    private func hudTop(landscape: Bool) -> CGFloat {
+        PlayerLayout.topBarBottom(landscape: landscape) + PlayerLayout.gap
+    }
+
+    /// 菜单最高多高：底栏按钮行上缘往上 10pt，到顶栏下缘往下一个间距为止——横屏时菜单再高也不会顶到顶栏；
+    /// 竖屏空间大，最多 460，免得一张菜单盖住大半个画面
+    private var menuMaxHeight: CGFloat {
+        guard !topBarFrame.isEmpty, !bottomBarFrame.isEmpty else { return 400 }
+        return min(460, bottomBarFrame.minY - 10 - (topBarFrame.maxY + PlayerLayout.gap))
+    }
+
+    /// 菜单压住了中央三键：这时三键让位——只露出半截的玻璃圆钮既难看，露出来的那半截还会被误点。
+    /// 菜单矮、够不着三键时（比如只有两条音轨）三键照常显示，与 Web 一致（对等审计 P-8 的「菜单会压住三键」例外）
+    private var menuCoversCenter: Bool {
+        menu != .none && !menuFrame.isEmpty && !centerFrame.isEmpty && menuFrame.intersects(centerFrame)
+    }
+
+    /// 诊断面板高度：竖屏停在中央三键上方（面板本来就按「不压住播放键」定的高）、横屏停在底栏按钮行上方，
+    /// 各留一个间距；上限仍是原来的 300 / 240
+    private func diagnosticsHeight(landscape: Bool) -> CGFloat {
+        let cap: CGFloat = landscape ? 240 : 300
+        let floor = landscape ? bottomBarFrame.minY : centerFrame.minY
+        guard !topBarFrame.isEmpty, floor > 0 else { return cap }
+        // 下限 120：窗口再矮（iPad 分屏）也不给出负高度
+        return max(120, min(cap, floor - PlayerLayout.gap - (topBarFrame.maxY + PlayerLayout.gap)))
     }
 
     /// 控制条必须常显（对应 Web `lib/player/chrome.ts` chromeMustStayVisible）：
@@ -276,38 +312,44 @@ private struct PlayerContent: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
             }
-            // 中央三键：控制层可见、不在转圈、不在等用户拍板时一直在（菜单打开时也在，同 Web video-player）。
+            // 中央三键：控制层可见、不在转圈、不在等用户拍板时一直在（菜单打开时也在，同 Web video-player；
+            // 只有菜单真压住它时才让位，见 menuCoversCenter）。
+            // 对准整屏正中而不是安全区正中：画面按整屏居中，安全区上下不对称（竖屏顶上有灵动岛），
+            // 按安全区摆会比画面中心低 17pt。拖进度时让位：画面要露出来，横滑的落点读数也正好在这个位置。
             // 摆在顶栏/底栏（含菜单）之下：菜单压住的部分点到的是菜单
-            if chromeVisible, !controller.phase.isBusy, !isModal {
+            if chromeVisible, !controller.phase.isBusy, !isModal, scrubMs == nil, !menuCoversCenter {
                 PlayerCenterControls(controller: controller)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { centerFrame = $0 }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+            }
+            if chromeVisible, landscape {
+                lockButton(unlock: false)
                     .transition(.opacity)
             }
             VStack(spacing: 0) {
                 if chromeVisible {
-                    PlayerTopBar(controller: controller, landscape: landscape, onBack: { back(landscape: landscape) }, onLock: {
-                        locked = true
-                        menu = .none
-                        revealLock()
-                    })
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { topBarFrame = $0 }
-                    .transition(.opacity)
+                    PlayerTopBar(controller: controller, landscape: landscape, onBack: { back(landscape: landscape) })
+                        .padding(.horizontal, PlayerLayout.edge)
+                        .padding(.top, PlayerLayout.topInset(landscape: landscape))
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { topBarFrame = $0 }
+                        .transition(.opacity)
                 }
                 if controller.diagnosticsOpen {
                     HStack {
-                        PlayerDiagnosticsPanel(controller: controller, height: landscape ? 240 : 300) { controller.diagnosticsOpen = false }
+                        PlayerDiagnosticsPanel(controller: controller, height: diagnosticsHeight(landscape: landscape)) { controller.diagnosticsOpen = false }
                         Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
+                    .padding(.horizontal, PlayerLayout.edge)
+                    .padding(.top, PlayerLayout.gap)
                 }
                 Spacer(minLength: 0)
                 // 高度 ≤480 的横屏（手机横放）不显示片名大字，免得压住中央三键（同 Web）
                 if showPaused, menu == .none, !(landscape && height <= 480) {
                     PausedOverlay(title: controller.title, episodeLabel: controller.episodeLabel(controller.currentEpisode))
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 12)
+                        .padding(.horizontal, PlayerLayout.edge)
+                        .padding(.bottom, PlayerLayout.gap)
                 }
                 if controller.showsUpNext, let next = controller.nextEpisode {
                     HStack {
@@ -318,8 +360,8 @@ private struct PlayerContent: View {
                             play: controller.playNext
                         )
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
+                    .padding(.horizontal, PlayerLayout.edge)
+                    .padding(.bottom, PlayerLayout.gap)
                 }
                 if chromeVisible {
                     PlayerBottomBar(
@@ -328,13 +370,14 @@ private struct PlayerContent: View {
                     )
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { bottomBarFrame = $0 }
                     // 菜单用 overlay 挂在底栏上：不参与布局（否则高菜单会把底栏挤扁），
-                    // 底边落在时间行上方、不压住进度条（同 Web 的 bottom-full 定位）
-                    .overlay(alignment: .bottomLeading) {
+                    // 底边贴在按钮组上方 10pt（对齐指南把菜单的「顶」换成它的底边），不压住进度条
+                    .overlay(alignment: .topLeading) {
                         menuPanel
+                            .environment(\.playerMenuMaxHeight, menuMaxHeight)
                             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { menuFrame = $0 }
-                            .padding(.bottom, 112)
+                            .alignmentGuide(.top) { $0[.bottom] + 10 }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, PlayerLayout.edge)
                     .padding(.bottom, 8)
                     .transition(.opacity)
                 }
@@ -343,32 +386,70 @@ private struct PlayerContent: View {
         .onChange(of: menu) { chromeActivity += 1 }
     }
 
-    @ViewBuilder
+    /// 菜单从按下的那颗按钮处缩放长出、收回时缩回那里（近似系统菜单从按钮展开的观感）。
+    /// 过渡挂在每种菜单自己身上：收起时 menu 已经是 .none，锚点得跟着被收起的那张菜单走
     private var menuPanel: some View {
-        switch menu {
-        case .none: EmptyView()
-        case .audio: AudioMenu(controller: controller) { menu = .none }
-        case .subtitles: SubtitleMenu(controller: controller) { menu = .none }
-        case .settings: SettingsMenu(controller: controller) { menu = .none }
+        Group {
+            switch menu {
+            case .none: EmptyView()
+            case .audio: AudioMenu(controller: controller) { menu = .none }.transition(menuTransition(.audio))
+            case .subtitles: SubtitleMenu(controller: controller) { menu = .none }.transition(menuTransition(.subtitles))
+            case .settings: SettingsMenu(controller: controller) { menu = .none }.transition(menuTransition(.settings))
+            }
         }
+        .animation(.spring(duration: 0.32, bounce: 0.18), value: menu)
+    }
+
+    /// 缩放锚点：菜单底边上、正对那颗按钮圆心的点（胶囊里的按钮各 44pt，从左数；没有音轨时少一颗）
+    private func menuTransition(_ kind: PlayerMenu) -> AnyTransition {
+        let hasAudio = !controller.audioOptions.isEmpty
+        let index = switch kind {
+        case .audio: 0
+        case .subtitles: hasAudio ? 1 : 0
+        default: hasAudio ? 2 : 1
+        }
+        let centerX = PlayerLayout.button * (CGFloat(index) + 0.5)
+        return .scale(scale: 0.5, anchor: UnitPoint(x: centerX / PlayerLayout.menuWidth, y: 1)).combined(with: .opacity)
     }
 
     /// 锁屏：碰哪儿都不响应，点一下只唤出「解锁」键，3 秒后自己收起
     private var lockOverlay: some View {
-        ZStack(alignment: .leading) {
-            Color.clear.contentShape(.rect).onTapGesture { revealLock() }
+        ZStack {
+            Color.clear.contentShape(.rect).ignoresSafeArea().onTapGesture { revealLock() }
             if lockHint {
+                lockButton(unlock: true)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: lockHint)
+    }
+
+    /// 横屏的锁屏 / 解锁键，两者在同一个位置：在哪儿锁的就在哪儿解，不用满屏找。
+    /// 左缘、竖直对准整屏中线（与中央三键同一水平线）——横握时左手拇指的落点；
+    /// 横向留在安全区之内，离开灵动岛（灵动岛横屏时就在左右边缘的中段）
+    private func lockButton(unlock: Bool) -> some View {
+        HStack {
+            if unlock {
                 GlassIconButton(systemImage: "lock.open", label: "解锁", identifier: "player-unlock") {
                     locked = false
                     lockHint = false
                     chromeVisible = true
                 }
-                .padding(.leading, 40)
-                .transition(.opacity)
+            } else {
+                GlassIconButton(systemImage: "lock", label: "锁屏", identifier: "player-lock") {
+                    locked = true
+                    menu = .none
+                    revealLock()
+                }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { lockButtonFrame = $0 }
+                // 键消失（转回竖屏、控制层收起）后禁区跟着撤掉，否则那块画面会一直点不动
+                .onDisappear { lockButtonFrame = .zero }
             }
+            Spacer(minLength: 0)
         }
-        .ignoresSafeArea()
-        .animation(.easeInOut(duration: 0.2), value: lockHint)
+        .padding(.leading, PlayerLayout.edge)
+        .frame(maxHeight: .infinity)
+        .ignoresSafeArea(edges: .vertical)
     }
 
     /// 唤出解锁键，3 秒后收起；再点一下重新计时（旧的倒计时作废，否则会提前把刚唤出的键收掉）
@@ -393,7 +474,7 @@ private struct PlayerContent: View {
     // MARK: HUD
 
     @ViewBuilder
-    private var hud: some View {
+    private func hud(landscape: Bool) -> some View {
         VStack {
             if controller.holdSpeedActive {
                 PlayerHUD {
@@ -413,10 +494,11 @@ private struct PlayerContent: View {
             }
             Spacer()
         }
-        .padding(.top, 16)
+        .padding(.top, hudTop(landscape: landscape))
         .allowsHitTesting(false)
         if let scrubMs, scrubbingByGesture {
-            // 横滑定位的落点读数放在眼睛看的地方：大字落点、小字相对起点的增量
+            // 横滑定位的落点读数放在眼睛看的地方：大字落点、小字相对起点的增量。
+            // 与中央三键同一个中心（整屏正中），拖动时三键让位，读数正好接在播放键的位置
             PlayerHUD {
                 VStack(spacing: 4) {
                     Text(Formatters.clock(Double(scrubMs) / 1000)).font(.title2.monospacedDigit().weight(.semibold))
@@ -426,6 +508,8 @@ private struct PlayerContent: View {
                         .foregroundStyle(.white.opacity(0.7))
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea()
         }
     }
 

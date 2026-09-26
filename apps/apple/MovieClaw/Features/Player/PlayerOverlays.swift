@@ -42,13 +42,15 @@ struct PlayerErrorView: View {
                         .foregroundStyle(.white.opacity(0.6))
                         .multilineTextAlignment(.center)
                 }
+                // 两颗按钮给同一个最小宽度：字数一样但字形宽窄不同，不等宽会让这一行显得歪
                 HStack(spacing: 12) {
-                    Button("重试", action: retry)
-                        .buttonStyle(PlayerPrimaryButtonStyle())
-                        .accessibilityIdentifier("player-retry")
-                    Button("返回", action: exit)
+                    Button(action: exit) { Text("返回").frame(minWidth: 96) }
                         .buttonStyle(.glass)
+                    Button(action: retry) { Text("重试").frame(minWidth: 96) }
+                        .discoverProminentButton()
+                        .accessibilityIdentifier("player-retry")
                 }
+                .controlSize(.large)
                 .padding(.top, 12)
             }
             .frame(maxWidth: 480)
@@ -75,6 +77,7 @@ struct PlayerInfoErrorView: View {
                     .multilineTextAlignment(.center)
                 Button("返回", action: exit)
                     .buttonStyle(.glass)
+                    .controlSize(.large)
                     .accessibilityIdentifier("player-info-error-back")
             }
             .frame(maxWidth: 480)
@@ -89,6 +92,9 @@ struct PlayerInfoErrorView: View {
 ///
 /// 保存粒度是全局开关，没有「仅本次允许」；普通成员看到的是说明而不是按钮（全局设置只有超管能改，
 /// 给一个点了必然 403 的按钮比不给更糟）。
+/// 外观同 iOS 26 系统提示框：压暗背景上一张大圆角液态玻璃卡片，底部并排两颗等宽的大按钮。
+/// 同心：大号玻璃按钮实测高 50（半径 25），离卡片边 14，卡片圆角 = 25 + 14 = 39，按钮的圆头与卡片的圆角是同心圆；
+/// 文字区离卡片边更远（24），同系统提示框「文字内收、按钮外扩」的层次。
 struct PlayerConsentView: View {
     let decision: API.PlaybackDecisionView
     let grant: () async throws -> Void
@@ -98,78 +104,101 @@ struct PlayerConsentView: View {
     @State private var saving = false
     @State private var error: String?
 
+    private static let radius: CGFloat = 39
+    private static let buttonInset: CGFloat = 14
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.75).ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 14) {
-                Text("这部片需要软件转码才能播放")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.white)
-                VStack(alignment: .leading, spacing: 10) {
-                    labeled("原因", decision.reason)
-                    if let cost = decision.costHint { labeled("代价", cost) }
-                }
-                if let error {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundStyle(.white)
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Theme.danger.opacity(0.25), in: .rect(cornerRadius: 12))
-                }
-                if decision.canSelfEnable == true {
-                    // 看到这个弹窗的一刻正是最需要远程硬件转码的时候——这里不说一句几乎没人会发现
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("局域网里有 Apple Silicon Mac 的话，可以让它替 NAS 做硬件转码，省下这里的 CPU 开销。")
-                        Button("去设置远程转码", action: openRemoteSettings)
-                            .font(.footnote.weight(.semibold))
-                    }
-                    .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .padding(10)
-                    .background(.white.opacity(0.06), in: .rect(cornerRadius: 12))
-                    Text("开启后长期生效，之后不再询问。")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.45))
-                    HStack {
-                        Spacer()
-                        Button("取消", action: cancel).buttonStyle(.glass)
-                        Button {
-                            Task {
-                                saving = true
-                                error = nil
-                                do {
-                                    try await grant()
-                                } catch {
-                                    self.error = error.localizedDescription
-                                    saving = false
-                                }
-                            }
-                        } label: {
-                            Text(saving ? "正在开启…" : "开启并播放")
-                        }
-                        .buttonStyle(PlayerPrimaryButtonStyle())
-                        .disabled(saving)
-                        .accessibilityIdentifier("consent-enable")
-                    }
-                } else {
-                    Text("当前未开启软件转码。请联系管理员开启（管理员播放此类影片时会收到开启询问）。")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.7))
-                    HStack {
-                        Spacer()
-                        Button("知道了", action: cancel).buttonStyle(.glass)
-                    }
-                }
+            VStack(alignment: .leading, spacing: 0) {
+                message
+                    .padding([.top, .horizontal], 24)
+                buttons
+                    .controlSize(.large)
+                    .padding(Self.buttonInset)
+                    .padding(.top, 6)
             }
-            .padding(24)
             .frame(maxWidth: 460)
-            .background(Color(red: 16 / 255, green: 18 / 255, blue: 26 / 255).opacity(0.92), in: .rect(cornerRadius: 20))
-            .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(0.1)))
+            .glassEffect(PlayerGlass.panel, in: .rect(cornerRadius: Self.radius))
             .padding(20)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("player-consent")
+    }
+
+    private var message: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("这部片需要软件转码才能播放")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+            VStack(alignment: .leading, spacing: 10) {
+                labeled("原因", decision.reason)
+                if let cost = decision.costHint { labeled("代价", cost) }
+            }
+            if let error {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.white)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.danger.opacity(0.25), in: .rect(cornerRadius: 12))
+            }
+            if decision.canSelfEnable == true {
+                // 看到这个弹窗的一刻正是最需要远程硬件转码的时候——这里不说一句几乎没人会发现
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("局域网里有 Apple Silicon Mac 的话，可以让它替 NAS 做硬件转码，省下这里的 CPU 开销。")
+                    Button(action: openRemoteSettings) {
+                        // 一行字只有 16pt 高：上下各扩 14pt 凑满 44pt 触控高度，外侧再收回去，不改变排版
+                        Text("去设置远程转码")
+                            .padding(.vertical, 14)
+                            .contentShape(.rect)
+                    }
+                    .padding(.vertical, -14)
+                    .font(.footnote.weight(.semibold))
+                }
+                .font(.footnote)
+                .foregroundStyle(.white.opacity(0.6))
+                .padding(12)
+                .background(.white.opacity(0.08), in: .rect(cornerRadius: 16))
+                Text("开启后长期生效，之后不再询问。")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.45))
+            } else {
+                Text("当前未开启软件转码。请联系管理员开启（管理员播放此类影片时会收到开启询问）。")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var buttons: some View {
+        if decision.canSelfEnable == true {
+            HStack(spacing: 10) {
+                Button(action: cancel) { Text("取消").frame(maxWidth: .infinity) }
+                    .buttonStyle(.glass)
+                Button {
+                    Task {
+                        saving = true
+                        error = nil
+                        do {
+                            try await grant()
+                        } catch {
+                            self.error = error.localizedDescription
+                            saving = false
+                        }
+                    }
+                } label: {
+                    Text(saving ? "正在开启…" : "开启并播放").frame(maxWidth: .infinity)
+                }
+                .discoverProminentButton()
+                .disabled(saving)
+                .accessibilityIdentifier("consent-enable")
+            }
+        } else {
+            Button(action: cancel) { Text("知道了").frame(maxWidth: .infinity) }
+                .buttonStyle(.glass)
+        }
     }
 
     private func labeled(_ title: String, _ text: String) -> some View {
@@ -180,41 +209,63 @@ struct PlayerConsentView: View {
     }
 }
 
-/// 片尾「即将播放」卡片：常驻到用户点它或关掉，不自动倒计时（倒计时会在片尾没看完时抢走画面）
+/// 片尾「即将播放」卡片：常驻到用户点它或关掉，不自动倒计时（倒计时会在片尾没看完时抢走画面）。
+///
+/// 版式同 iOS 26 的通知 / 提示卡片：关闭收成右上角的 ✕，主操作「立即播放」通栏大按钮，片尾看字幕时一抬拇指就点中。
+/// 几何：大号玻璃按钮实测高 50（半径 25），离卡片边 12，卡片圆角 37，三者同心；✕ 圆（半径 15）离上、右边各 21，
+/// 也与卡片右上角同心，圆心和左边两行字的中线对齐（两行字高 36，上边距 18）。
+/// 宽 224：横屏时离右侧「前进 10 秒」留出 18pt，不挨着。
 struct PlayerUpNextCard: View {
     let label: String
     let dismiss: () -> Void
     let play: () -> Void
 
+    private static let radius: CGFloat = 37
+    private static let buttonInset: CGFloat = 12
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("即将播放")
-                .font(.caption)
-                .textCase(.uppercase)
-                .foregroundStyle(.white.opacity(0.5))
-            Text(label)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Button("关闭", action: dismiss)
-                    .buttonStyle(.glass)
-                Button(action: play) {
-                    Text("立即播放")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("即将播放")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.5))
+                    Text(label)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.black)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(.white, in: .capsule)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .frame(width: 30, height: 30)
+                        .background(.white.opacity(0.14), in: .circle)
+                        // 看得见的圆 30pt，触控区 44pt
+                        .frame(width: 44, height: 44)
+                        .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("upnext-play")
+                // 触控区不撑高标题行
+                .padding(.vertical, -7)
+                .accessibilityLabel("不看下一集")
+                .accessibilityIdentifier("upnext-dismiss")
             }
-            .padding(.top, 8)
+            .padding(.leading, 18)
+            .padding(.trailing, 14)
+            .padding(.top, 18)
+            Button(action: play) {
+                Label("立即播放", systemImage: "play.fill").frame(maxWidth: .infinity)
+            }
+            .discoverProminentButton()
+            .controlSize(.large)
+            .padding(Self.buttonInset)
+            .padding(.top, 2)
+            .accessibilityIdentifier("upnext-play")
         }
-        .padding(16)
-        .frame(width: 260)
-        .glassEffect(.regular, in: .rect(cornerRadius: 18))
+        .frame(width: 224)
+        .glassEffect(PlayerGlass.panel, in: .rect(cornerRadius: Self.radius))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("player-upnext")
     }
@@ -250,7 +301,7 @@ struct PausedOverlay: View {
     }
 }
 
-/// 胶囊 HUD：倍速、亮度/音量调节、横滑定位预览共用
+/// 胶囊 HUD：倍速、亮度/音量调节、横滑定位预览共用（液态玻璃，同 iOS 26 系统音量 HUD）
 struct PlayerHUD<Content: View>: View {
     @ViewBuilder let content: Content
 
@@ -259,9 +310,8 @@ struct PlayerHUD<Content: View>: View {
             .font(.subheadline.weight(.medium))
             .foregroundStyle(.white)
             .padding(.horizontal, 16)
-            .padding(.vertical, 9)
-            .background(.black.opacity(0.7), in: .capsule)
-            .shadow(color: .black.opacity(0.45), radius: 14, y: 6)
+            .padding(.vertical, 10)
+            .glassEffect(PlayerGlass.panel, in: .capsule)
             .allowsHitTesting(false)
     }
 }
@@ -285,17 +335,5 @@ struct LevelBar: View {
                 .lineLimit(1)
                 .fixedSize()
         }
-    }
-}
-
-/// 播放器里的主按钮：白底黑字胶囊（同 Web 的 player-accent 按钮；系统 glassProminent 在纯黑背景上白字白底看不清）
-struct PlayerPrimaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.black)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 10)
-            .background(.white.opacity(configuration.isPressed ? 0.75 : 1), in: .capsule)
     }
 }

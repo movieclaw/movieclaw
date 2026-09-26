@@ -111,6 +111,9 @@ final class PlaybackController {
     private(set) var durationMs: Int?
     private(set) var bufferedEndMs: Int?
     private(set) var paused = true
+    /// 顶栏右侧与起播/缓冲转圈下方那行「↓」：网络此刻的加载速度（口径见 `LoadingSpeedMeter`）——
+    /// 在下载就是实际下载速度，没在下载就是「0 KB/s」；引擎还没有读数时为 nil、不显示。
+    /// 每秒按最新读数刷新，换引擎 / 换集时清掉，不沿用上一个引擎的旧值
     private(set) var speedLabel: String?
     private(set) var pipActive = false
     private(set) var notice: String?
@@ -236,6 +239,7 @@ final class PlaybackController {
         unit = next
         engine?.destroy()
         engine = nil
+        speedLabel = nil
         session = nil
         activeSessionId = nil
         pendingDecision = nil
@@ -541,6 +545,7 @@ final class PlaybackController {
         }
         engine?.destroy()
         engine = newEngine
+        speedLabel = nil
         newEngine.onEvent = { [weak self, weak newEngine] event in
             guard let self, let newEngine, self.engine === newEngine else { return }
             self.handleEngineEvent(event)
@@ -1178,7 +1183,8 @@ final class PlaybackController {
     private func tickSecond() {
         guard let engine else { return }
         let stats = engine.stats()
-        if let label = Self.formatBandwidth(stats.downlinkBps) { speedLabel = label }
+        speedLabel = Self.formatLoadingSpeed(stats.loadingBps)
+        // 带宽估计另记：申报给服务端的 downlink_bps 要的是线路能力，缓冲满了也保持上次实测值
         if let downlink = stats.downlinkBps { lastDownlinkBps = downlink }
         // 不做「线路速度低于片源码率」的预警（网页有，App 去掉，用户决定）：下载速度读数会误报——
         // MPV 预读缓存填满后暂停下载，读数掉到接近 0；临时抖一下也会触发，而播放本身并没有卡。
@@ -1225,6 +1231,12 @@ final class PlaybackController {
             frameDrops.reset()
             engineFailed(reason: "直通播放持续掉帧（\(Int((ratio * 100).rounded()))%），正在换转码重试", cause: .decode)
         }
+    }
+
+    /// 加载速度的文案：没在加载时明确写「0 KB/s」（要让人一眼看出现在没在下），还没有读数时返回 nil 不显示
+    static func formatLoadingSpeed(_ bps: Double?) -> String? {
+        guard let bps, bps.isFinite, bps >= 0 else { return nil }
+        return formatBandwidth(bps) ?? "0 KB/s"
     }
 
     /// bps → 「3.2 MB/s」（用户对下载速度的直觉来自下载器，一律 MB/s，进位 1024；同 Web formatBandwidth）

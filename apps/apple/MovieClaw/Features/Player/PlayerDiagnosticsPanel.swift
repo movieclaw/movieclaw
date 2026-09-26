@@ -36,11 +36,18 @@ struct PlayerDiagnosticsPanel: View {
                 Text("播放诊断").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.9))
                 Spacer()
                 Button(action: close) {
-                    // 点击区域放大到 36pt 并显式声明（透明背景下只有 ✕ 笔画能点中）
-                    Image(systemName: "xmark").font(.caption2.weight(.bold)).frame(width: 36, height: 36).contentShape(.rect)
+                    // 看得见的是 28pt 圆底，点击区域 44pt 并显式声明
+                    Image(systemName: "xmark")
+                        .font(.caption2.weight(.bold))
+                        .frame(width: 28, height: 28)
+                        .background(.white.opacity(0.14), in: .circle)
+                        .frame(width: 44, height: 44)
+                        .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.white.opacity(0.5))
+                // 排版上只占圆的大小：圆离面板上、右边都是 14，触控区向外溢出，不把标题行撑高
+                .padding(-8)
+                .foregroundStyle(.white.opacity(0.8))
                 .accessibilityLabel("关闭播放诊断")
             }
             ScrollView {
@@ -54,12 +61,11 @@ struct PlayerDiagnosticsPanel: View {
             }
         }
         .font(.system(size: 11.5))
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(14)
         .frame(maxWidth: 340)
         .frame(height: height)
-        .background(.black.opacity(0.7), in: .rect(cornerRadius: 14))
-        .clipShape(.rect(cornerRadius: 14))
+        .clipShape(.rect(cornerRadius: 20))
+        .glassEffect(PlayerGlass.panel, in: .rect(cornerRadius: 20))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("player-diagnostics")
     }
@@ -144,7 +150,8 @@ struct PlayerDiagnosticsPanel: View {
             Text([
                 stats?.engine ?? "—",
                 mbps(stats?.bitrateBps.map { Int($0) }).map { "实时 \($0)" },
-                PlaybackController.formatBandwidth(stats?.downlinkBps).map { "取流 \($0)" },
+                // 「带宽」是线路能跑多快（缓冲满了也保持实测值），顶栏「↓」是此刻在下多快，两者不是一个量
+                PlaybackController.formatBandwidth(stats?.downlinkBps).map { "带宽 \($0)" },
                 stats.map { String(format: "缓冲 %.1f 秒", $0.bufferedSeconds) },
                 stats.map { String(format: "播放头 %.1f 秒", $0.currentTimeSeconds) },
             ].compactMap { $0 }.joined(separator: " · "))

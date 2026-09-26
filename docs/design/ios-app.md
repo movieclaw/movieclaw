@@ -95,6 +95,12 @@ PlayerScreen（控制层 UI、手势、字幕叠加、选轨、诊断）
   MPV 只画图形字幕。MPV 播放中点画中画：在当前位置换成系统播放器，就绪后自动进画中画。
 - 开发期可用启动参数 `-movieclaw.player.engine system|mpv` 强制引擎、`-mcSubtitle <轨>` 指定起播字幕、`-mcAutoPiP <秒>` 自动点画中画。
 - 会话参数（capability、failed_tiers、audio/subtitle track、max_height、downlink_bps）按引擎能力申报。
+- 顶栏右侧与起播/缓冲转圈下方那行「↓ 速度」是**实时加载速度**（2026-09-27 用户定，Web 同时改成同一口径，
+  见 player-feel.md G3 的改动说明）：在下载就报实际下载速度，没在下载（缓冲满了）就是「0 KB/s」。
+  诊断面板的「带宽」是线路能跑多快，也是申报给服务端的 downlink_bps：HLS 按 AVMetrics 逐片计时（首字节→末字节，
+  等转码的时间不算），原文件与 MPV 用加载速度读数，都取最近 12 秒（至少最近 3 次）里最快的一次——AVPlayer
+  会自己放慢读取，按平均算会被拖低，还会比加载速度小。算法与本机限速实测见 `PlayerEngine.swift` 的
+  `LoadingSpeedMeter` / `BandwidthMeter`。
 - LGPL 合规：MPVKit 动态库形式链接；关于页列出 libmpv/FFmpeg 许可与源码地址。
 - MPV 真机渲染走 Metal（MoltenVK + gpu-next）：黑底容器铺满播放区，渲染面按视频比例居中摆放，
   横竖屏切换时渲染面随系统旋转动画等比缩放，全程不变形、不黑屏，不重建视频输出。依赖 libmpv 的两个补丁

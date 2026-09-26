@@ -32,6 +32,15 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     private var ended = false
     private var desiredRate: Float = 1
     private(set) var isPictureInPictureActive = false
+    /// 顶栏「↓」的实时加载速度（每个播放项从头量）
+    private var loadingMeter = LoadingSpeedMeter()
+    /// 诊断面板「带宽」与申报给服务端的 downlink_bps（口径见 `BandwidthMeter`）
+    private var bandwidthMeter = BandwidthMeter()
+    /// 原文件直出没有分片事件：带宽样本就是加载速度读数（同 MPV），每秒记一个
+    private var lastLoadingSample: TimeInterval?
+    /// 收到过 HLS 分片请求事件：带宽只认它，不再用字节计数推算
+    private var segmentMetricsSeen = false
+    private var metricsTask: Task<Void, Never>?
     /// master 列表字幕组里对应当前字幕的下标（nil = 不选字幕 / 没有 master 字幕组）。
     /// 只在画中画、隔空播放时真正选中，画面内交给叠加层
     var systemSubtitleIndex: Int? {
@@ -66,6 +75,11 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         self.autoplay = autoplay
         didPrepare = false
         ended = false
+        loadingMeter.reset()
+        bandwidthMeter.reset()
+        lastLoadingSample = nil
+        segmentMetricsSeen = false
+        observeSegmentMetrics(item)
         player.replaceCurrentItem(with: item)
         observeItem(item)
         onEvent?(.buffering)
@@ -116,15 +130,25 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     func stats() -> EngineStats {
         let events = player.currentItem?.accessLog()?.events ?? []
         let event = events.last
+        // 访问日志的平均传输速率：只在起播头几秒、还没攒出带宽样本时顶一下（它会被慢读拖低，理由见 BandwidthMeter）
         let observed = event.map(\.observedBitrate).flatMap { $0 > 0 ? $0 : nil }
         let indicated = event.map(\.indicatedBitrate).flatMap { $0 > 0 ? $0 : nil }
             ?? event.map(\.averageVideoBitrate).flatMap { $0 > 0 ? $0 : nil }
+        let now = ProcessInfo.processInfo.systemUptime
+        // 隔空播放时是电视自己去取流，这台手机的计数不涨，读数自然是 0——如实
+        let loading = loadingMeter.sample(
+            bytes: events.isEmpty ? nil : events.reduce(0) { $0 + max(0, $1.numberOfBytesTransferred) },
+            transferSeconds: events.reduce(0) { $0 + max(0, $1.transferDuration) },
+            at: now
+        )
+        sampleBandwidthFromLoading(loading, at: now)
         var details: [String] = []
         if player.isExternalPlaybackActive { details.append("隔空播放中") }
         if isPictureInPictureActive { details.append("画中画中") }
         return EngineStats(
             engine: kind.rawValue,
-            downlinkBps: observed,
+            downlinkBps: bandwidthMeter.bps ?? observed,
+            loadingBps: loading,
             bitrateBps: indicated,
             droppedFrames: events.isEmpty ? nil : events.reduce(0) { $0 + max(0, $1.numberOfDroppedVideoFrames) },
             totalFrames: estimatedTotalFrames(events),
@@ -132,6 +156,39 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
             currentTimeSeconds: currentTime,
             details: details
         )
+    }
+
+    /// HLS 的带宽样本：每个分片请求一条「首字节到达 → 末字节到达」（AVMetrics，iOS 18 起）。
+    /// 原文件直出不产生这类事件（实测一条都没有），走 `sampleBandwidthFromCounter`
+    private func observeSegmentMetrics(_ item: AVPlayerItem) {
+        metricsTask?.cancel()
+        metricsTask = Task { [weak self] in
+            do {
+                for try await event in item.metrics(forType: AVMetricHLSMediaSegmentRequestEvent.self) {
+                    guard let self, let request = event.mediaResourceRequestEvent else { continue }
+                    // 读自缓存的分片一个字节都没走网络，算进去等于拿内存速度冒充带宽
+                    if request.wasReadFromCache { continue }
+                    let body = request.networkTransactionMetrics?.transactionMetrics.last?.countOfResponseBodyBytesReceived
+                    let bytes = Double(body ?? Int64(request.byteRange.length))
+                    let transfer = request.responseEndTime.timeIntervalSince(request.responseStartTime)
+                    if !self.segmentMetricsSeen {
+                        // 分片事件到了就只认它：起播头几秒从字节计数推出来的样本不是逐片计时，清掉
+                        self.segmentMetricsSeen = true
+                        self.bandwidthMeter.reset()
+                    }
+                    self.bandwidthMeter.push(bytes: bytes, transfer: transfer, at: ProcessInfo.processInfo.systemUptime)
+                }
+            } catch {
+                // 播放项被换掉或引擎销毁时序列结束，照常退出
+            }
+        }
+    }
+
+    /// 原文件直出的带宽样本：加载速度读数。stats() 一秒可能被问两次（诊断面板开着），按时间每秒只记一个
+    private func sampleBandwidthFromLoading(_ loading: Double?, at now: TimeInterval) {
+        guard !segmentMetricsSeen, let loading, now - (lastLoadingSample ?? -.infinity) >= 0.9 else { return }
+        lastLoadingSample = now
+        bandwidthMeter.push(bps: loading, at: now)
     }
 
     /// AVPlayer 没有「已解码帧数」计数：按各段访问日志的观看时长 × 当前帧率估算，
@@ -207,6 +264,8 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     }
 
     func destroy() {
+        metricsTask?.cancel()
+        metricsTask = nil
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
         observations.removeAll()
