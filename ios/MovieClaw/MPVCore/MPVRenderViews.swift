@@ -7,6 +7,10 @@ import UIKit
 /// 我们只负责跟随视图尺寸更新 layer 的 frame 与像素密度，绘制完全在 mpv 的渲染线程里。
 final class MPVMetalView: UIView {
     let metalLayer = MPVMetalLayer()
+    /// 像素尺寸变化（含首次拿到有效尺寸、旋转、分屏）时回调。
+    /// mpv 的 moltenvk 上下文只在视频输出初始化/配置时读取 drawableSize，之后的尺寸变化它感知不到，需要外部触发。
+    var onDrawableSizeChange: ((CGSize) -> Void)?
+    private var lastDrawableSize: CGSize = .zero
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -29,8 +33,12 @@ final class MPVMetalView: UIView {
         // CAMetalLayer 不会随 frame 自动改像素尺寸：必须显式同步 drawableSize，
         // 否则转横屏后 mpv（MoltenVK 交换链按 drawableSize 建）仍按竖屏尺寸出图，
         // 画面被压扁/偏到一角（真机横竖屏切换实测）。尺寸变化后交换链失效，mpv 会自行重建。
-        metalLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        metalLayer.drawableSize = size
         CATransaction.commit()
+        guard size.width > 1, size.height > 1, size != lastDrawableSize else { return }
+        lastDrawableSize = size
+        onDrawableSizeChange?(size)
     }
 }
 
