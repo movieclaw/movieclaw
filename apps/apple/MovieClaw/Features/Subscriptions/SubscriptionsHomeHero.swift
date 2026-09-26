@@ -181,49 +181,29 @@ private struct SubsHomeHeroSlideView: View {
 
     private var content: some View {
         VStack(spacing: 0) {
-            eyebrow
             titleArt
-                .padding(.top, 14)
             if let clock = slide.clock {
-                // 讲时间的：小字说明 + 大号细体时刻（粗细反差是这块的主要表情）
-                VStack(spacing: 0) {
-                    if let label = slide.clockLabel {
-                        Text(label)
-                            .font(.caption.weight(.semibold))
-                            .tracking(1.2)
-                            .monospacedDigit()
-                            .foregroundStyle(.white.opacity(0.62))
-                            .lineLimit(1)
-                    }
-                    Text(clock)
-                        // 时刻数字用大号细体（粗细反差是这块的主要表情）；纯中文的词（「马上就好」「周四」）
-                        // 同样大小会压过片名 Logo，降一档用轻体
-                        .font(.system(size: clock.contains(where: \.isNumber) ? 48 : 36, weight: clock.contains(where: \.isNumber) ? .thin : .light))
-                        .monospacedDigit()
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                        .contentTransition(.numericText())
-                }
-                .padding(.top, 12)
+                // 讲时间的：状态标签 + 一句说明，下面是大号细体时刻（粗细反差是这块的主要表情）
+                statusLine(slide.clockLabel, keep: .head)
+                    .padding(.top, 16)
+                Text(clock)
+                    // 时刻数字用大号细体；纯中文的词（「马上就好」「周四」）同样大小会压过片名 Logo，降一档用轻体
+                    .font(.system(size: clock.contains(where: \.isNumber) ? 48 : 36, weight: clock.contains(where: \.isNumber) ? .thin : .light))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .contentTransition(.numericText())
+                    .padding(.top, 2)
             } else {
-                VStack(spacing: 4) {
-                    if let detail = slide.detail {
-                        Text(detail)
-                            .font(.body.weight(.semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(.white.opacity(0.92))
-                            .lineLimit(1)
+                statusLine(slide.detail, keep: .tail)
+                    .padding(.top, 16)
+                if let footnote = slide.footnote {
+                    fitted(footnote, keep: .tail) { text in
+                        text.font(.footnote).foregroundStyle(.white.opacity(0.6))
                     }
-                    if let footnote = slide.footnote {
-                        Text(footnote)
-                            .font(.footnote)
-                            .monospacedDigit()
-                            .foregroundStyle(.white.opacity(0.6))
-                            .lineLimit(1)
-                    }
+                    .padding(.top, 6)
                 }
-                .padding(.top, 14)
             }
             if let progress = slide.progress {
                 SubsHomeProgressLine(value: progress, tint: SubsHomeTone.live.color)
@@ -240,17 +220,32 @@ private struct SubsHomeHeroSlideView: View {
         .offset(y: max(0, scrollOffset) * 0.15)
     }
 
-    private var eyebrow: some View {
-        HStack(spacing: 6) {
-            SubsHomeDot(tone: slide.eyebrow.tone, pulse: slide.eyebrow.pulse)
-            Text(slide.eyebrow.text)
-                .font(.footnote.weight(.semibold))
-                .monospacedDigit()
+    /// Logo 下第一行：实心状态标签 + 一句说明（状态并进信息行，不再单独浮在画面中间）
+    private func statusLine(_ text: String?, keep: SubsHomeShortening) -> some View {
+        HStack(spacing: 8) {
+            SubsHomeTag(chip: slide.eyebrow)
+            if let text {
+                fitted(text, keep: keep) { line in
+                    line.font(.subheadline.weight(.semibold)).foregroundStyle(.white.opacity(0.9))
+                }
+            }
         }
-        .foregroundStyle(slide.eyebrow.tone == .calm ? Color.white.opacity(0.88) : slide.eyebrow.tone.color)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .glassEffect(.regular, in: .capsule)
+    }
+
+    /// 一行放不下就逐段收短（按「 · 」分段），整行永远不折行、不挤成省略号：
+    /// 说明与补充行去尾（「S01E01 · 凶 · 好端端坏了起来」→「S01E01」），时刻上方的小字留尾（「S03E05 · 预计可看」→「预计可看」）
+    private func fitted(_ text: String, keep: SubsHomeShortening, style: @escaping (Text) -> some View) -> some View {
+        let options = keep.candidates(text)
+        return ViewThatFits(in: .horizontal) {
+            ForEach(options, id: \.self) { option in
+                style(Text(option).monospacedDigit())
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            // 最短的写法仍放不下（极窄的屏）：截断兜底，不溢出
+            style(Text(options.last ?? text).monospacedDigit())
+                .lineLimit(1)
+        }
     }
 
     /// 片名：有 Logo 用 Logo（透明底 PNG，不带派生预设请求以保住透明通道），没有或加载失败退回文字片名。
@@ -294,7 +289,7 @@ private struct SubsHomeHeroSlideView: View {
             Button {
                 router.play(play)
             } label: {
-                Label("播放", systemImage: "play.fill")
+                Label(slide.resumePercent == nil ? "播放" : "继续播放", systemImage: "play.fill")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.black)
                     .padding(.horizontal, 30)
@@ -332,6 +327,50 @@ private struct SubsHomeHeroSlideView: View {
 }
 
 // MARK: - 小部件
+
+/// 一行文字按「 · 」分段收短的方向
+enum SubsHomeShortening {
+    /// 保留开头、去掉结尾（说明 / 补充行：先舍集名，再舍后半句）
+    case tail
+    /// 保留结尾（时刻上方的小字：「预计可看」是大号时刻的注解，集号可以舍）
+    case head
+
+    /// 从长到短的候选（去重），ViewThatFits 按顺序挑第一个放得下的
+    func candidates(_ text: String) -> [String] {
+        let parts = text.components(separatedBy: " · ")
+        guard parts.count > 1 else { return [text] }
+        var options = [text]
+        switch self {
+        case .tail:
+            for count in stride(from: parts.count - 1, through: 1, by: -1) {
+                options.append(parts.prefix(count).joined(separator: " · "))
+            }
+        case .head:
+            for count in stride(from: parts.count - 1, through: 1, by: -1) {
+                options.append(parts.suffix(count).joined(separator: " · "))
+            }
+        }
+        var seen = Set<String>()
+        return options.filter { seen.insert($0).inserted }
+    }
+}
+
+/// 实心状态标签（Hero 信息行开头）：绿 = 刚到 / 整理中，蓝 = 下载中，淡紫 = 今天更新，琥珀 = 等资源
+struct SubsHomeTag: View {
+    let chip: SubsHomeChip
+
+    var body: some View {
+        Text(chip.text)
+            .font(.system(size: 11, weight: .bold))
+            .monospacedDigit()
+            .foregroundStyle(chip.tone == .calm ? Color.white.opacity(0.92) : Color.black.opacity(0.82))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(chip.tone == .calm ? Color.white.opacity(0.2) : chip.tone.color, in: .rect(cornerRadius: 5, style: .continuous))
+            .shadow(color: chip.tone.glows ? chip.tone.color.opacity(0.45) : .clear, radius: 6)
+            .fixedSize()
+    }
+}
 
 /// 状态小圆点：「正在发生」的两档带柔光，下载中 / 整理中再加呼吸
 struct SubsHomeDot: View {

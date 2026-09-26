@@ -76,6 +76,8 @@ struct SubsHomeHeroSlide: Identifiable, Equatable {
     var progress: Double?
     /// 有值 = 主按钮是「播放」
     var play: PlayRequest?
+    /// 播放入口看了一半（1~99）：主按钮写「继续播放」，不再在说明行里写「看到 N%」
+    var resumePercent: Int?
 
     var id: Int { subscriptionId }
 }
@@ -376,7 +378,6 @@ enum SubscriptionsHome {
         let fresh = imported.map { now.timeIntervalSince($0) <= 24 * 3600 } ?? false
         var footnote = imported.map { "\(Formatters.fromNow($0, now: now))入库" } ?? "已入库"
         if card.units.count > 1 { footnote += " · 共 \(card.units.count) 集新内容" }
-        if let percent = card.progressPercent { footnote += " · 看到 \(percent)%" }
         return SubsHomeHeroSlide(
             subscriptionId: card.subscriptionId,
             media: card.media,
@@ -384,7 +385,8 @@ enum SubscriptionsHome {
             eyebrow: SubsHomeChip(text: fresh ? "刚刚入库" : (isTV ? "新一集" : "新入库"), tone: .ok),
             detail: recentDetail(card),
             footnote: footnote,
-            play: playRequest(card)
+            play: playRequest(card),
+            resumePercent: card.progressPercent
         )
     }
 

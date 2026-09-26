@@ -112,6 +112,9 @@ struct SubscriptionsHomeModelTests {
         #expect(slides[2].play == PlayRequest(mediaItemId: 5, season: 1, episode: 3))
         #expect(slides[2].eyebrow.text == "刚刚入库")
         #expect(slides[2].footnote?.contains("共 2 集新内容") == true)
+        // 看过一半交给播放键（「继续播放」），说明行不再写「看到 N%」
+        #expect(slides[2].resumePercent == nil)
+        #expect(slides[2].footnote?.contains("看到") == false)
         #expect(slides[4].eyebrow.text == "新一集")
         // 今天的预告：预测出种 + 历史耗时 60 分钟 = 预计入库时刻
         #expect(slides[3].clockLabel == "S01E01 · 预计入库")
@@ -238,6 +241,16 @@ struct SubscriptionsHomeModelTests {
     }
 
     // MARK: 格式
+
+    @Test func heroLinesShortenSegmentBySegment() {
+        // 说明行去尾：先舍集名，再舍后半句
+        #expect(SubsHomeShortening.tail.candidates("S01E01 · 凶 · 好端端坏了起来") == [
+            "S01E01 · 凶 · 好端端坏了起来", "S01E01 · 凶", "S01E01",
+        ])
+        // 时刻上方的小字留尾：「预计可看」是大号时刻的注解
+        #expect(SubsHomeShortening.head.candidates("S03E05 · 预计可看") == ["S03E05 · 预计可看", "预计可看"])
+        #expect(SubsHomeShortening.tail.candidates("马上就好") == ["马上就好"])
+    }
 
     @Test func clockTextOnlyNamesTheDayWhenItIsNotToday() {
         let calendar = Calendar.current
