@@ -438,23 +438,42 @@ async def _seed_movie_in_library(
         return movie.id, library.id
 
 
-async def test_ios_app_progress_is_labelled_as_ios_client(client: TestClient) -> None:
-    """原生 iOS App 与网页共用上报接口：按 User-Agent 认出来，活动页记成
-    「MovieClaw iOS · iPhone · iOS 26.0」并带 App 版本，而不是「MovieClaw Web · 浏览器」。"""
+@pytest.mark.parametrize(
+    ("user_agent", "client_name", "device_name"),
+    [
+        (
+            "MovieClaw-iOS/0.1.0 (iPhone18,4; iOS 26.0; build 7) CFNetwork/3860 Darwin/26.0.0",
+            "MovieClaw iOS",
+            "iPhone · iOS 26.0",
+        ),
+        (
+            "MovieClaw-tvOS/0.1.0 (AppleTV14,1; tvOS 26.0; build 7)",
+            "MovieClaw Apple TV",
+            "Apple TV · tvOS 26.0",
+        ),
+        (
+            "MovieClaw-Android/0.1.0 (Pixel 9; Android 16; build 7)",
+            "MovieClaw Android",
+            "Android 16",
+        ),
+    ],
+)
+async def test_native_app_progress_is_labelled_by_platform(
+    client: TestClient, user_agent: str, client_name: str, device_name: str
+) -> None:
+    """原生 App 与网页共用上报接口：按 User-Agent 认出平台，活动页记成对应的客户端名
+    （「MovieClaw iOS / Apple TV / Android」）并带 App 版本，而不是「MovieClaw Web · 浏览器」。"""
     movie_id, _ = await _seed_movie_in_library(title="盗梦空间", tmdb_id=27205, library_name="电影")
-    ua = {
-        "User-Agent": "MovieClaw-iOS/0.1.0 (iPhone; iOS 26.0; build 7) CFNetwork/3860 Darwin/26.0.0"
-    }
     resp = client.post(
         "/api/v1/playback/progress",
-        json={"media_item_id": movie_id, "event": "start", "device_id": "ios-abc"},
-        headers=ua,
+        json={"media_item_id": movie_id, "event": "start", "device_id": "app-abc"},
+        headers={"User-Agent": user_agent},
     )
     assert resp.status_code == 200, resp.text
 
     live = client.get("/api/v1/playback/activity").json()["data"]["sessions"][0]
-    assert live["client"] == "MovieClaw iOS"
-    assert live["device_name"] == "iPhone · iOS 26.0"
+    assert live["client"] == client_name
+    assert live["device_name"] == device_name
     assert live["client_version"] == "0.1.0"
 
 
