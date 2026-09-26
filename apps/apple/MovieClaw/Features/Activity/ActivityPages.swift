@@ -150,6 +150,21 @@ private struct ActivityBoostPage: View {
                     }
                     .disabled(cleaning)
                     .accessibilityIdentifier("boost-cleanup")
+                    // 挂在按钮上：iOS 26 的确认菜单是贴着来源弹出的气泡，箭头要指向这个按钮
+                    .confirmationDialog(confirmTitle, isPresented: $confirming, titleVisibility: .visible) {
+                        let plan = CleanupPlan(pool)
+                        Button(plan.enabledNames.isEmpty ? "清理" : "关闭刷流并清理", role: .destructive) {
+                            Task { await cleanup(force: false) }
+                        }
+                        if plan.protectedCount > 0 {
+                            Button("立即全部删除（可能被记 H&R）", role: .destructive) {
+                                Task { await cleanup(force: true) }
+                            }
+                        }
+                        Button("取消", role: .cancel) {}
+                    } message: {
+                        Text(CleanupPlan(pool).message)
+                    }
                 } footer: {
                     Text("从下载器删除刷流种子及其数据文件，无法恢复。还没做满站点要求做种时长的，默认等到期后再自动删除，避免被记 H&R。")
                 }
@@ -166,20 +181,6 @@ private struct ActivityBoostPage: View {
         .navigationBarTitleDisplayMode(.inline)
         .appBackground()
         .task { await loadPool() }
-        .confirmationDialog(confirmTitle, isPresented: $confirming, titleVisibility: .visible) {
-            let plan = CleanupPlan(pool)
-            Button(plan.enabledNames.isEmpty ? "清理" : "关闭刷流并清理", role: .destructive) {
-                Task { await cleanup(force: false) }
-            }
-            if plan.protectedCount > 0 {
-                Button("立即全部删除（可能被记 H&R）", role: .destructive) {
-                    Task { await cleanup(force: true) }
-                }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text(CleanupPlan(pool).message)
-        }
     }
 
     // MARK: 清理
