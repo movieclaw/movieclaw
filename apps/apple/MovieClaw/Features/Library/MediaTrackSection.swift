@@ -736,8 +736,11 @@ private struct TrackListSheet: View {
                 .subsFormStyle()
                 // 量的是这张列表的内容高度，所以挂在 Form 上而不是外层
                 .modifier(SubsFittedDetents(fullHeight: !path.isEmpty))
-                // 被点的语言组滚进视野（内容超过弹层高度时才有意义）
-                .onAppear { proxy.scrollTo(focusLanguage, anchor: .top) }
+                // 被点的语言组滚进视野（内容超过弹层高度时才有意义）。点的是第一组就不滚：
+                // 列表本来就从它开始，硬滚会把组标题顶进导航栏底下
+                .onAppear {
+                    if focusLanguage != groups.first?.language { proxy.scrollTo(focusLanguage, anchor: .top) }
+                }
             }
             .navigationTitle(kind.title)
             .navigationSubtitle(summary)
