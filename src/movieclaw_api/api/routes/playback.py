@@ -12,7 +12,7 @@ from pathlib import Path as PathLib
 from typing import Annotated, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Path, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, Path, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -708,6 +708,7 @@ async def decide_playback_route(
     payload: PlaybackDecideRequest,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
+    user_agent: Annotated[str | None, Header(include_in_schema=False)] = None,
 ) -> ApiResponse[PlaybackDecisionView]:
     """算出「这部片在你的浏览器上该怎么放」（docs/design/web-player.md §3）。
 
@@ -717,6 +718,7 @@ async def decide_playback_route(
     返回三态：``plan`` 可以播；``consent`` 需要用户同意开启软件转码；
     ``rejected`` 放不了，附中文原因与下一步建议。
     """
+    _remember_capability(payload, principal, user_agent)
     # 决策接口与开会话接口必须共享同一组参数转发和可见性规则；否则客户端
     # 在切换音轨/字幕/清晰度时会看到与实际起播不同的计划。
     decision = await _decide(payload, principal, session)
@@ -785,6 +787,17 @@ def _share_stream_kwargs(principal: Principal) -> dict[str, int]:
         "share_id": principal.share.share_id,
         "ttl_seconds": max(1, min(STREAM_TOKEN_TTL_S, remaining)),
     }
+
+
+def _remember_capability(
+    payload: PlaybackDecideRequest, principal: Principal, user_agent: str | None
+) -> None:
+    """把客户端上报的解码能力记给详情页预热：它据此判断值不值得读盘采样。"""
+    playback_warmup.remember_capability(
+        playback_warmup.identity_of(principal),
+        user_agent,
+        playback_plan.capability_from_request(payload.capability),
+    )
 
 
 async def _decide(
@@ -946,8 +959,8 @@ async def start_playback_session(
     )
     chapter_marks = _chapter_marks(file)
 
-    # 详情页可能正在为同一条目预热字幕；正式播放已经接管 IO，取消那条
-    # 后台任务，避免留下与播放无关的 ffmpeg（尤其是 PGS 的 .part.sup）。
+    # 详情页可能正在为同一条目预热；正式播放已经接管 IO，取消那条后台任务，
+    # 别让它和首片转码抢同一块盘。
     playback_warmup.cancel(file.media_item_id)
 
     # 进度条缩略图：后台起，不挡首帧；延迟 90 秒 + 读入限速，起播关键窗口
@@ -1027,6 +1040,13 @@ async def start_playback_session(
         # 决策阶段看到的硬件能力可能在准备阶段断线，或本地后端与当前滤镜链
         # 不兼容。不能把硬件档的计划悄悄交给 libx264；把硬件档标记为失败后
         # 重新走统一降档逻辑：软件开关关闭时返回 consent，开启时才允许软转。
+        logger.info(
+            "硬件转码在准备阶段落空（远程 Worker 刚断开或本地后端与滤镜链不兼容），"
+            "改走统一降档：file_id=%s 本地后端=%s 远程可用=%s",
+            file.id,
+            ",".join(local_backends) or "无",
+            remote_video_available,
+        )
         retry_failed_tiers = sorted({*payload.failed_tiers, int(Tier.HARDWARE_TRANSCODE)})
         fallback_payload = payload.model_copy(update={"failed_tiers": retry_failed_tiers})
         decision = await _decide(fallback_payload, principal, session)
@@ -1126,8 +1146,18 @@ async def start_playback_session(
             source_concat=disc.concat_list() if disc is not None else None,
         )
     except (SessionLimitError, DiskQuotaError) as exc:
+        # 这两类的文案本来就是写给用户的，前端原样展示；NAS 日志也要留一份，
+        # 用户反馈「点了播放没反应」时才对得上
+        logger.warning("播放会话被拒：file_id=%s 档 %s：%s", file.id, view.tier, exc)
         raise ServiceUnavailableException(str(exc)) from exc
     except SessionStartError as exc:
+        logger.warning(
+            "播放会话启动失败：file_id=%s 档 %s 执行=%s：%s",
+            file.id,
+            view.tier,
+            "远程 Worker" if use_remote else (hw_used or "本地软件/直通"),
+            exc,
+        )
         raise ServiceUnavailableException(f"播放启动失败：{exc}") from exc
     spawn_ms = int((time.perf_counter() - spawn_started_at) * 1000)
 

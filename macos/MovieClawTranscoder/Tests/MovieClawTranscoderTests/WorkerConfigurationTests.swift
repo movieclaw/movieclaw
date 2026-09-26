@@ -59,6 +59,26 @@ final class WorkerConfigurationTests: XCTestCase {
         XCTAssertEqual(ArtifactUploadProxy.maxArtifactBytes, 512 * 1024 * 1024)
     }
 
+    func testArtifactWhitelistAcceptsEveryDeclaredSegmentType() {
+        // issue #444：握手声明了哪种分片，白名单就必须放行它的文件名——声明了
+        // mpegts 却拒收 .ts，NAS 会把 Infuse 的任务派过来，然后白等 30 秒。
+        let segmentNames = ["fmp4": "seg00000.m4s", "mpegts": "seg00123.ts"]
+        for type in ArtifactUploadProxy.supportedSegmentTypes {
+            guard let name = segmentNames[type] else {
+                XCTFail("新声明的分片类型 \(type) 缺少白名单用例")
+                continue
+            }
+            XCTAssertTrue(ArtifactUploadProxy.isAllowedArtifactName(name), name)
+        }
+        for name in ["init.mp4", "live.m3u8", "index.m3u8"] {
+            XCTAssertTrue(ArtifactUploadProxy.isAllowedArtifactName(name), name)
+        }
+        // 编号位数不对、后缀不对、带路径的名字仍然一律挡住
+        for name in ["seg0000.ts", "seg00000.mp4", "seg00000.ts.bak", "..", "passwd"] {
+            XCTAssertFalse(ArtifactUploadProxy.isAllowedArtifactName(name), name)
+        }
+    }
+
     func testOnlyVODProgressPlaylistIsDeferred() {
         // live.m3u8 是 VOD 的内部进度列表，服务端对远程会话根本不解析它，
         // 每个分片都重传一遍纯属浪费。

@@ -146,8 +146,12 @@ jobs:
 
   # macOS Worker 的构建门禁。开发者多数在 Linux/容器里改代码，Swift 侧的
   # 编译错误在本地完全暴露不出来，只能靠这里拦。
+  #
+  # 用 macos-26：界面的液态玻璃（NSGlassEffectView 等）要 Xcode 26 的 macOS 26
+  # SDK 才编得进来。代码对旧工具链有 `#if compiler(>=6.2)` 兜底，换回旧 runner
+  # 也能编过，只是产物会退回非玻璃样式——门禁要和发版用同一套工具链才有意义。
   worker-macos:
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 

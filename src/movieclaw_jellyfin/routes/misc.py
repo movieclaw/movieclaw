@@ -155,7 +155,9 @@ async def active_encodings(
     if play_session_id:
         session_id = take_play_session(play_session_id)
         if session_id is not None:
-            await manager.stop(session_id)
+            await manager.stop(session_id, reason="播放器请求停止转码（ActiveEncodings）")
         return Response(status_code=204)
-    await manager.stop_for_device(identity.device.device_id)
+    await manager.stop_for_device(
+        identity.device.device_id, reason="播放器请求停止本设备转码（ActiveEncodings）"
+    )
     return Response(status_code=204)

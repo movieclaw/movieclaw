@@ -2508,6 +2508,7 @@ async def get_library_item(
     media_item_id: int,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
+    user_agent: Annotated[str | None, Header(include_in_schema=False)] = None,
 ) -> ApiResponse[LibraryItemDetailView]:
     """媒体库条目详情页的数据源。规格来自 ffprobe 对文件本体的探测，
     简介/评分/演职员本地 NFO 优先、TMDB 兜底（经持久缓存）。没探测过
@@ -2521,11 +2522,16 @@ async def get_library_item(
     # 判定走 access 的收口，超出上限与"条目不存在"不可区分
     await assert_item_visible(session, principal, media_item_id)
     item, rows = await _item_rows(session, library_id, media_item_id)
-    # 起播预热：用户在详情页看简介的这几秒，正好把关键帧采样与默认字幕
-    # 抽掉——点播放时缓存直接命中，首播不再现场探测（§6.10）。后台任务，
-    # 失败无感；剧集（文件多）在 warmup 内部自动跳过。
+    # 起播预热：用户在详情页看简介的这几秒，正好把关键帧采样做掉——点播放
+    # 时缓存直接命中，首播不再现场探测（§6.10）。只替上报过解码能力、且放这
+    # 部片可能走直通的网页客户端做；内封字幕不在这里抽（整文件通读，详情接口
+    # 会被批量调用）。见 warmup 模块说明。后台任务，失败无感；剧集（文件多）
+    # 在 warmup 内部自动跳过。分享页内部调用时没有 User-Agent，不预热。
     playback_warmup.schedule(
-        media_item_id, [row for row in rows if row.state == FileState.IN_PLACE]
+        media_item_id,
+        [row for row in rows if row.state == FileState.IN_PLACE],
+        identity=playback_warmup.identity_of(principal),
+        user_agent=user_agent,
     )
     # 章节场景图懒触发（docs/design/video-chapters.md §4.5）：有在位文件的图
     # 还没抓齐就后台抓这一个条目，前端按 chapters_pending 轮询几轮把图补上——

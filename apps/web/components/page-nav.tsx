@@ -222,13 +222,12 @@ export function PageNav({
         {/* 页面操作靠右：与返回键同一行，页面首屏不再单独占一条工具栏，
             滚动后又随顶栏留在原地——操作入口的位置从头到尾不动。
             移动端还要在这里补一颗搜索——本页顶栏顶掉了外壳那条全局顶栏，
-            搜索是其中唯一无处安放的入口，排在页面操作左侧；底栏已带搜索圆钮
-            （银玻璃液态玻璃底栏）时不补。必须条件渲染而不是 CSS 隐藏：
+            搜索是其中唯一无处安放的入口，排在页面操作左侧。必须条件渲染而不是 CSS 隐藏：
             SearchCommand 自带全局 ⌘K 监听，再挂一份会让一次快捷键把面板开了又关。 */}
-        {(toolbar || actions || (isMobile && chrome && !chrome.searchInTabBar)) && (
+        {(toolbar || actions || (isMobile && chrome)) && (
           <div className="ml-auto flex shrink-0 items-center gap-2">
             {toolbar}
-            {isMobile && chrome && !chrome.searchInTabBar && (
+            {isMobile && chrome && (
               <SearchCommand onSearch={chrome.onSearch} triggerClassName={PAGE_NAV_BUTTON_CLASS} />
             )}
             {actions}

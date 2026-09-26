@@ -36,4 +36,38 @@ final class ArtifactUploadProxyTests: XCTestCase {
         // 主动放弃的补传不算失败，否则一次正常的 seek 会被判成任务失败。
         XCTAssertNil(proxy.failureDescription)
     }
+
+    /// issue #444：白名单外的产物被拒收时，ffmpeg 不看响应码、照样转完整部片。
+    /// 代理必须当场把「任务注定失败」报上去，失败原因里要点名是哪个文件。
+    func testRejectedArtifactFailsJobWithItsName() async throws {
+        final class Events: @unchecked Sendable {
+            private let lock = NSLock()
+            private var items: [String] = []
+            func append(_ name: String) { lock.lock(); items.append(name); lock.unlock() }
+            var names: [String] { lock.lock(); defer { lock.unlock() }; return items }
+        }
+        let events = Events()
+        let proxy = try ArtifactUploadProxy(
+            jobID: "test-rejected",
+            remoteBaseURL: URL(string: "http://127.0.0.1:9/artifacts")!
+        ) { event in
+            if case let .rejected(name) = event {
+                events.append(name)
+            }
+        }
+        let localBase = try await proxy.start()
+        defer { proxy.stop() }
+
+        for _ in 0..<2 {
+            var request = URLRequest(url: localBase.appendingPathComponent("seg00000.vtt"))
+            request.httpMethod = "PUT"
+            request.httpBody = Data("WEBVTT".utf8)
+            let (_, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 404)
+        }
+
+        // 同一任务只报一次：任务随即被叫停，后续同类拒收不必重复
+        XCTAssertEqual(events.names, ["seg00000.vtt"])
+        XCTAssertTrue(proxy.failureDescription?.contains("seg00000.vtt") == true)
+    }
 }

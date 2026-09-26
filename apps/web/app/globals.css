@@ -1642,10 +1642,10 @@ body.cmdk-open .app-shell {
  */
 .glass-tabbar {
   --tabbar-h: 54px;
-  /* 收起态整排缩到 44px（对 iOS 26 相册收起态逐像素量出：收起圆钮、搜索圆钮
-     约 44pt，附件约 45pt，展开态标签栏 62pt），并且**贴着底边**收缩——底边不动、
+  /* 收起态整排缩到 44px（对 iOS 26 相册收起态逐像素量出：收起圆钮约 44pt，
+     附件约 45pt，展开态标签栏 62pt），并且**贴着底边**收缩——底边不动、
      顶边下来，所以原生看着「更小、更低」。--tabbar-h 一改，胶囊收起宽度、
-     搜索圆钮、收起圆钮都跟着变，各自的过渡见下 */
+     收起圆钮都跟着变，各自的过渡见下 */
   /* 胶囊展开态的整宽：页签网格按它定宽，收缩时胶囊变窄只是把网格裁掉，
      图标不会跟着挤成一团（旧版的毛病） */
   --bar-full: calc(100vw - max(21px, var(--safe-left)) - max(21px, var(--safe-right)));
@@ -1666,15 +1666,14 @@ body.cmdk-open .app-shell {
 }
 
 /* —— 底部附件（iOS 26 tab bar bottom accessory；组件 glass-tab-bar.tsx）——
-   常驻在底栏那一行、收起圆钮与搜索圆钮之间（左让 44px + 8px，有搜索键时右同），
-   与圆钮同高。主菜单展开时它隐藏（淡出 + 略缩），收回后再现——它不会浮到底栏
-   上方去挤内容（用户拍板）。
+   常驻在底栏那一行、收起圆钮右侧（左让 44px + 8px，右到底栏右缘），与圆钮同高。
+   主菜单展开时它隐藏（淡出 + 略缩），收回后再现——它不会浮到底栏上方去挤内容（用户拍板）。
    选择器带上 .glass-capsule 提一级特异度：.glass-capsule 自身声明了 position:relative
    与 transition，且排在本组之后，单类选择器会被它压掉（2026-09-24 踩过）。 */
 .glass-tabbar-accessory.glass-capsule {
   position: fixed;
   z-index: 40;
-  /* 只在收起态可见，按收起态的 44px 圆钮排：左让 44 + 8，右同（有搜索键时） */
+  /* 只在收起态可见，按收起态的 44px 圆钮排：左让 44 + 8 */
   left: calc(max(21px, var(--safe-left)) + 44px + 8px);
   right: max(21px, var(--safe-right));
   bottom: var(--tabbar-bottom);
@@ -1686,10 +1685,6 @@ body.cmdk-open .app-shell {
   transition:
     opacity 260ms ease,
     transform 420ms var(--ease-spring);
-}
-
-.glass-tabbar-accessory.glass-capsule[data-search="true"] {
-  right: calc(max(21px, var(--safe-right)) + 44px + 8px);
 }
 
 /* 主菜单展开时隐藏：胶囊展开会盖住这一段，附件淡出让位 */
@@ -1725,11 +1720,6 @@ body.cmdk-open .app-shell {
   color: #fff;
   background: rgba(255, 255, 255, 0.22);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
-}
-
-.glass-tabbar:has(.glass-tabbar__search) {
-  /* 让出搜索圆钮（= --tabbar-h 54px）+ 间距 8px */
-  --bar-full: calc(100vw - max(21px, var(--safe-left)) - max(21px, var(--safe-right)) - 62px);
 }
 
 .glass-tabbar > * {
@@ -1799,11 +1789,6 @@ body.cmdk-open .app-shell {
 
 .glass-capsule[data-rim="on"]::before {
   content: none;
-}
-
-/* 搜索键原本不定位，会被定位的厚边 canvas 盖住，提到它上面 */
-.glass-capsule[data-rim="on"] .glass-tabbar__search-btn {
-  position: relative;
 }
 
 /* 清透玻璃下不再铺滚动边缘层：它的 6px 模糊 + 压暗正落在胶囊正下方，透过清透
@@ -1999,6 +1984,24 @@ body:has(.glass-capsule[data-rim="on"]) .glass-tabbar-edge {
   transition-duration: 110ms;
 }
 
+/* 头像页签（最右的「更多」）：当前用户头像。实心圆的视觉分量比线条图标重，
+   取 26px 比 28px 图标盒略小一圈，两者看着一样大；收起圆钮里同图标一样降到 22px */
+.glass-tabbar__avatar {
+  width: 26px;
+  height: 26px;
+  transition: transform 460ms var(--ease-spring);
+}
+
+.glass-tabbar__tab:active .glass-tabbar__avatar {
+  transform: scale(0.84);
+  transition-duration: 110ms;
+}
+
+.glass-tabbar__mini .glass-tabbar__avatar {
+  width: 22px;
+  height: 22px;
+}
+
 /* 页签圆点（活动页签）：贴在图标右上角，iOS 标签栏红点的规格——7px 实心点、
    一圈与胶囊同色的描边把它从图标线条里托出来。不带数字：26px 图标旁的数字
    角标太重。永远只有一颗，颜色按优先级取最该被看见的那件事（见
@@ -2083,41 +2086,6 @@ body:has(.glass-capsule[data-rim="on"]) .glass-tabbar-edge {
     filter 200ms ease 70ms;
 }
 
-.glass-tabbar__search {
-  flex: 0 0 var(--tabbar-h);
-  transition: flex-basis 480ms var(--ease-spring);
-}
-
-.glass-tabbar__search-btn {
-  display: grid;
-  place-items: center;
-  width: 100%;
-  height: 100%;
-  border-radius: 999px;
-  color: var(--accent-strong);
-  -webkit-tap-highlight-color: transparent;
-}
-
-.glass-tabbar__search-btn svg {
-  width: 24px;
-  height: 24px;
-  transition:
-    transform 460ms var(--ease-spring),
-    width 480ms var(--ease-spring),
-    height 480ms var(--ease-spring);
-}
-
-/* 收起态搜索圆钮 44px，放大镜跟着缩到 20px（相册量约 17pt 的字形 + 描边） */
-.glass-tabbar[data-minimized="true"] .glass-tabbar__search-btn svg {
-  width: 20px;
-  height: 20px;
-}
-
-.glass-tabbar__search-btn:active svg {
-  transform: scale(0.84);
-  transition-duration: 110ms;
-}
-
 /* 滚动边缘效果（iOS 26 scroll edge effect 的 .soft 近似）：底栏后方一段从透明
    过渡到「轻糊 + 压暗」的带，内容滚进底栏底下时先被柔化，玻璃因此显得浮起、
    标签文字不被花哨的海报抢走。铺到屏幕物理底边（-vp-overshoot） */
@@ -2151,8 +2119,8 @@ body:has(.glass-capsule[data-rim="on"]) .glass-tabbar-edge {
   .glass-tabbar__tabs,
   .glass-tabbar__tab,
   .glass-tabbar__tab svg,
-  .glass-tabbar__mini,
-  .glass-tabbar__search-btn svg {
+  .glass-tabbar__avatar,
+  .glass-tabbar__mini {
     transition: none;
   }
 
@@ -2170,113 +2138,6 @@ body:has(.glass-capsule[data-rim="on"]) .glass-tabbar-edge {
   }
 
 }
-
-/*
- * —— 移动端新会话撰写面板（components/compose-sheet.tsx）——
- * 从底部升起的模态 sheet（iOS compose 惯例），盖住底栏。与原移动端抽屉同一套
- * 铺底处理：面板底边铺到屏幕物理底边（-vp-overshoot），内容仍停在视口内并让出
- * 软键盘（--keyboard-inset）与 Home 指示条。层级沿用原抽屉的 55 / 60 档。
- *
- * 动效对齐 iOS 页面 sheet：
- *   - 升起时底下的整个应用缩小、下沉、加圆角，退成一张卡片（html[data-compose-open]
- *     作用于 .app-shell），面板走 --ease-spring-soft 落定；
- *   - 按住顶部把手区可以往下拖：面板跟手、底下卡片与遮罩按拖动进度（--sheet-drag，
- *     0 = 完全打开、1 = 拖到底）同步恢复；松手时拖过 1/4 或向下甩出就收回，
- *     否则弹回原位。拖动中关掉过渡（html[data-sheet-dragging]），跟手无延迟。
- */
-.compose-scrim {
-  position: fixed;
-  inset: 0 0 calc(-1 * var(--vp-overshoot)) 0;
-  z-index: 55;
-  background: rgba(4, 6, 10, 0.55);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 420ms ease;
-}
-
-.compose-scrim[data-open="true"] {
-  opacity: calc(1 - var(--sheet-drag, 0));
-  pointer-events: auto;
-}
-
-.compose-sheet {
-  position: fixed;
-  z-index: 60;
-  left: 0;
-  right: 0;
-  top: calc(var(--safe-top) + 12px);
-  bottom: calc(-1 * var(--vp-overshoot));
-  display: flex;
-  flex-direction: column;
-  padding: 0 var(--safe-right) calc(var(--vp-overshoot) + var(--keyboard-inset) + var(--safe-bottom))
-    var(--safe-left);
-  border-radius: 22px 22px 0 0;
-  background: rgba(16, 18, 26, 0.86);
-  -webkit-backdrop-filter: blur(30px) saturate(160%);
-  backdrop-filter: blur(30px) saturate(160%);
-  box-shadow:
-    0 -20px 60px -20px rgba(0, 0, 0, 0.9),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  transform: translateY(105%);
-  visibility: hidden;
-  transition:
-    transform 520ms var(--ease-spring-soft),
-    visibility 0s linear 520ms;
-}
-
-.compose-sheet[data-open="true"] {
-  transform: translateY(var(--sheet-offset, 0px));
-  visibility: visible;
-  transition: transform 600ms var(--ease-spring-soft);
-}
-
-/* 顶部把手区：拖动下滑关闭的抓手，纵向手势归组件处理 */
-.compose-sheet__handle {
-  touch-action: none;
-  cursor: grab;
-}
-
-@media (max-width: 767px) {
-  /* 面板收起时卡片同一条曲线、同一时长恢复，与面板落下同步（桌面端命令面板
-     的 260ms 后推不受影响） */
-  .app-shell {
-    transition:
-      transform 520ms var(--ease-spring-soft),
-      border-radius 520ms var(--ease-spring-soft);
-  }
-
-  /* 底下的应用退成卡片：缩到 0.92、下沉、加圆角；拖动时按 --sheet-drag 线性恢复 */
-  html[data-compose-open] .app-shell {
-    transform-origin: 50% 0;
-    transform: translateY(calc((1 - var(--sheet-drag, 0)) * (var(--safe-top) * 0.4 + 6px)))
-      scale(calc(0.92 + 0.08 * var(--sheet-drag, 0)));
-    border-radius: calc(20px * (1 - var(--sheet-drag, 0)));
-    overflow: hidden;
-    transition:
-      transform 600ms var(--ease-spring-soft),
-      border-radius 600ms var(--ease-spring-soft);
-  }
-}
-
-html[data-sheet-dragging] .compose-sheet,
-html[data-sheet-dragging] .compose-scrim,
-html[data-sheet-dragging] .app-shell {
-  transition: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .compose-scrim,
-  .compose-sheet,
-  .compose-sheet[data-open="true"],
-  html[data-compose-open] .app-shell {
-    transition: none;
-  }
-
-  html[data-compose-open] .app-shell {
-    transform: none;
-  }
-}
-
 
 @keyframes search-palette-fade-in {
   from {

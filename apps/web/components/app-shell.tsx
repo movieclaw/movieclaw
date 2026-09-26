@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Image from "next/image";
 import type { Route } from "next";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -11,10 +10,6 @@ const SIDEBAR_COLLAPSED_KEY = "movieclaw.sidebar-collapsed";
 const SETTINGS_RETURN_KEY = "movieclaw.settings-return";
 
 import { FeedbackProvider } from "@/components/feedback";
-import { usePendingUpdate } from "@/components/app-update-entry";
-import { AvatarBadge } from "@/components/avatar-badge";
-import { MobileSheet } from "@/components/compose-sheet";
-import { MorePage } from "@/components/more-page";
 import { ChevronLeftIcon, PencilIcon, PlusIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS } from "@/components/page-nav";
 import { SearchCommand, type SearchSubmitOptions } from "@/components/search-command";
@@ -102,10 +97,6 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   const { slots } = useResolvedTheme();
   const SettingsNav = slots.settingsNav;
   const MobileSettingsNav = slots.mobileSettingsNav;
-  // 「更多」面板（银玻璃手机）：底栏减到四格后，账号/设置/会话这些非内容入口
-  // 从右上角头像圆钮弹出半屏 sheet——Apple 自家 App（App Store / Music / 播客）
-  // 的账号入口惯例；内容就是 /my 的「更多」页。
-  const [moreOpen, setMoreOpen] = useState(false);
   const { isAdmin } = usePermissions();
   // 本页是否自带顶栏（详情类页面的 PageNav 会自登记，见 lib/page-chrome.tsx）。
   // 计数而非布尔：路由切换时新旧页面短暂共存，先卸载的那个不能把状态清零。
@@ -262,16 +253,13 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   // （2026-09-24 退役）：从「更多」面板点新会话得先收一张 sheet 再开一张，
   // 而进一页再按返回回来更顺；整页还与会话页同构，发出第一条消息不跳变。
   const openCompose = useCallback(() => {
-    setMoreOpen(false);
     router.push("/new" as Route);
   }, [router]);
-  const closeMore = useCallback(() => setMoreOpen(false), []);
   const pageChrome = useMemo(
     () => ({
       registerPageNav,
       onSearch: handleSearch,
       openCompose,
-      searchInTabBar: showGlassTabBar,
       setTopBarActions,
       setTopBarTitle,
       setTabBarAccessory,
@@ -281,19 +269,12 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
       registerPageNav,
       handleSearch,
       openCompose,
-      showGlassTabBar,
       setTopBarActions,
       setTopBarTitle,
       setTabBarAccessory,
       tabBarAccessory,
     ],
   );
-
-  // 「更多」面板：切换路由即收起（点了里面的会话/设置就该露出新页面），
-  // 回到桌面版式时也一并复位，避免再切回窄屏时莫名其妙已经开着。
-  useEffect(() => {
-    setMoreOpen(false);
-  }, [pathname, isMobile]);
 
   // 移动端主区内容：设置路由挂「返回 + 标题」条（/settings 是分区列表页，
   // /settings/[x] 是分区内容页，返回链固定 /settings/[x] → /settings → /my），
@@ -307,11 +288,9 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
               ? "设置"
               : (settingsSections.find((s) => s.id === activeSettings)?.label ?? "设置")
           }
-          // 银玻璃：设置从「更多」面板进，列表页的返回按历史回到打开面板的那一页
-          // （无历史落发现页）；Netflix 维持回「我的」页
-          backHref={
-            (isSettingsIndex ? (isNetflix ? "/my" : "/discover/movie") : "/settings") as Route
-          }
+          // 设置从「更多」页进（银玻璃是底栏头像页签、Netflix 是「我的」页签）：列表页的
+          // 返回在银玻璃下按历史回（多半就是 /my），无历史时两个主题都落「更多 / 我的」页
+          backHref={(isSettingsIndex ? "/my" : "/settings") as Route}
           historyBack={isSettingsIndex && !isNetflix}
         />
         <div className="min-h-0 flex-1">{children}</div>
@@ -360,7 +339,6 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
             {showMobileTopBar && (
               <MobileTopBar
                 onSearch={handleSearch}
-                showSearch
                 actions={topBarActions}
                 title={topBarTitle?.text}
               />
@@ -427,12 +405,10 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
         {showMobileTopBar && (
           <MobileTopBar
             onSearch={handleSearch}
-            showSearch={!showGlassTabBar}
             onCompose={isAdmin ? openCompose : undefined}
             actions={topBarActions}
             title={topBarTitle?.text}
             backHref={topBarTitle?.backHref}
-            onAvatar={isNetflix ? undefined : () => setMoreOpen(true)}
           />
         )}
         {/* 主区铺满外壳（absolute 而非 flex 子项）：全站页面清一色是
@@ -465,15 +441,10 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
       </div>
     )}
 
-    {/* —— 移动端底栏与「更多」面板 ——
+    {/* —— 移动端底栏 ——
       作为 .app-shell 的兄弟节点固定定位：外壳在命令面板打开时有缩放变换，
       fixed 元素挂在里面会被一起缩放、定位基准也会变（原抽屉同理挂在这里）。 */}
     {showGlassTabBar && <slots.mobileTabBar />}
-    {isMobile && !isNetflix && (
-      <MobileSheet open={moreOpen} onClose={closeMore} title="更多" dismissLabel="完成">
-        <MorePage />
-      </MobileSheet>
-    )}
     </PageChromeProvider>
   );
 }
@@ -511,9 +482,14 @@ function pathOfNavId(id: string): Route {
 }
 
 /**
- * 移动端顶栏：品牌字标（Netflix 主题回媒体库、银玻璃回发现）+ 页面级控件 +
- * 右侧按键（Netflix = 搜索 + 新会话撰写键；银玻璃的搜索在底栏尾端的圆钮里，
- * 顶栏右侧不放全局按键——新会话入口只在「更多」页，用户不要顶栏常驻撰写键）。
+ * 移动端顶栏：左侧（Netflix = M 标回媒体库；银玻璃留空，页面标题挂上来时显示标题）+
+ * 页面级控件 + 右侧全局按键（银玻璃 = 新会话「+」（管理员）+ 搜索，搜索在最右；
+ * Netflix = 搜索）。
+ *
+ * 银玻璃的左上角原本是头像（点开「更多」面板），2026-09-26 与原生 App 一起改成
+ * Instagram 式：头像挪进底栏最右的页签（components/glass-tab-bar.tsx），搜索从底栏
+ * 尾端的圆钮挪到这里的右上角——常见 App 的搜索都在右上角（用户拍板）。
+ * 品牌字标早在 2026-09-24 就被头像替掉（「回发现」由底栏首个页签接管），不再回来。
  *
  * 为什么是「浮在内容之上」而不是「占一行把内容推下去」：全站有一半页面是
  * 大图氛围页与 Hero 大剧照，顶栏若占位会在画面顶端切出一条硬边。这里做成
@@ -527,34 +503,24 @@ function pathOfNavId(id: string): Route {
  */
 function MobileTopBar({
   onSearch,
-  showSearch,
   onCompose,
   actions,
   title,
   backHref,
-  onAvatar,
 }: {
   onSearch: (keyword: string, scope: SearchScope, options?: SearchSubmitOptions) => void;
-  /** 是否在顶栏放搜索键（底栏已有搜索圆钮时 false：SearchCommand 全站只能挂一份） */
-  showSearch: boolean;
-  /** 新会话撰写键的回调；不传则不渲染（成员没有 Agent 能力、银玻璃入口在「更多」） */
+  /** 新会话撰写键的回调；不传则不渲染（成员没有 Agent 能力、Netflix 手机顶栏不放） */
   onCompose?: () => void;
   /** 当前页面挂上来的页面级控件（见 lib/page-chrome.tsx 的 setTopBarActions） */
   actions?: React.ReactNode;
-  /** 当前页面挂上来的标题：有则顶替品牌字标（见 setTopBarTitle） */
+  /** 当前页面挂上来的标题：有则显示在左侧（见 setTopBarTitle） */
   title?: string;
   /** 标题页的返回落点（见 setTopBarTitle 的 backHref）；银玻璃下在标题左侧画返回键 */
   backHref?: Route;
-  /** 右上角头像圆钮（银玻璃）：打开「更多」面板；不传则不渲染 */
-  onAvatar?: () => void;
 }) {
   const router = useRouter();
   const back = useBackNavigation(backHref ?? ("/" as Route));
-  const { session } = useSession();
-  // 头像上的小圆点：有待安装的新版本 / 模型时提示（成员不查更新）
-  const pendingUpdate = usePendingUpdate(Boolean(onAvatar) && session.role !== "member");
   const { canSearch } = usePermissions();
-  // 品牌随主题分叉：Netflix 用红色 SVG 字标、银玻璃用 rotor 图片 logo。
   // 雾层色由 globals.css 的 html[data-theme="netflix"] .mobile-topbar 覆盖，组件里不用管。
   const isNetflix = useTheme().structural;
   return (
@@ -597,64 +563,16 @@ function MobileTopBar({
                 在 390px 视口里会占掉近三分之一顶栏，M 标 24px 方正得下。 */}
             <MovieclawMark className="size-6" />
           </button>
-        ) : onAvatar ? (
-          /* 银玻璃手机（2026-09-24 用户拍板）：左上角放头像圆钮替掉字标——「左头像、
-             右新建」是 X / Reddit / Slack 首页一类的成熟布局；头像点开「更多」面板
-             （账号、设置、会话）。字标原本的「回发现」职责由底栏首个页签接管，品牌
-             只在启动页与设置里出现。右上角腾出来给撰写键（见右侧簇）。 */
-          <button
-            type="button"
-            onClick={onAvatar}
-            aria-label="更多"
-            className={`${PAGE_NAV_BUTTON_CLASS} relative shrink-0`}
-          >
-            <AvatarBadge
-              nickname={session.nickname}
-              avatarUrl={session.avatar_url}
-              className="size-[26px] text-caption"
-            />
-            {pendingUpdate && (
-              <span
-                aria-hidden="true"
-                className="absolute right-0.5 top-0.5 size-[7px] rounded-full bg-[var(--info)] shadow-[0_0_0_2px_rgba(22,25,34,0.75)]"
-              />
-            )}
-          </button>
-        ) : (
-          /* 字标可点区拉到 44px 高（与图标键同标准）——图片本身保持 h-7 的视觉
-             大小，命中区靠按钮撑起，否则 28px 高的字标在触屏上很难点中。
-             银玻璃移动端的首页就是底栏首个页签「发现」（/ 在手机上 replace 到
-             /discover/movie），字标直达它，省一次重定向 */
-          <button
-            type="button"
-            onClick={() => router.push("/discover/movie" as Route)}
-            aria-label="回到发现"
-            className="flex h-11 shrink-0 items-center transition-opacity active:opacity-60"
-          >
-            <Image
-              src={actions ? "/movieclaw-logo-mark-rotor.png" : "/movieclaw-logo-rotor.png"}
-              alt="MovieClaw"
-              width={actions ? 525 : 1920}
-              height={525}
-              priority
-              className={actions ? "size-7 object-contain" : "h-7 w-auto max-w-[104px] object-contain"}
-            />
-          </button>
-        )}
-        {/* 页面级控件塞在字标与搜索之间——那段本来就空着，够放一个分段控件；
+        ) : null}
+        {/* 页面级控件塞在左侧与右侧全局按键之间——那段本来就空着，够放一个分段控件；
             min-w-0 让它在窄屏上自己收缩，而不是把搜索挤出屏幕。极窄视口
-            （<350px，控件三件套 + 字标 + 搜索的宽度预算兜不住）退化为
+            （<350px，控件三件套 + 撰写键 + 搜索的宽度预算兜不住）退化为
             横向可滑：最右的控件被裁一半能看到、能划出来，好过整颗消失。
             py + 等量负 my：overflow-x 容器的裁切口按 padding box 算，正
             padding 把上下裁切口往外扩出角标（-top-1）需要的余量，负 margin
             把布局占位原样收回——52px 顶栏的排版不变，角标不再被削顶。 */}
         <div className="ml-auto flex min-w-0 shrink items-center gap-2 overflow-x-auto scroll-none py-1.5 -my-1.5">
           {actions}
-          {showSearch && canSearch && (
-            <div className="shrink-0">
-              <SearchCommand onSearch={onSearch} triggerClassName={PAGE_NAV_BUTTON_CLASS} />
-            </div>
-          )}
           {/* 新会话撰写键：iOS 信息 / 邮件的 compose 惯例，点开进 /new，四个顶层页与
               会话页（聊完直接开下一个）都有；与 PageNav 同一副圆形玻璃键。银玻璃用
               「+」（用户拍板，比撰写图标好看），Netflix 维持原来的光笔 */}
@@ -671,6 +589,13 @@ function MobileTopBar({
                 <PlusIcon className="size-[22px]" />
               )}
             </button>
+          )}
+          {/* 搜索固定在最右（右上角）。SearchCommand 自带全局 ⌘K 监听，全站只能挂一份：
+              详情页的 PageNav 认领顶栏时本组件不渲染，搜索键改由 PageNav 挂 */}
+          {canSearch && (
+            <div className="shrink-0">
+              <SearchCommand onSearch={onSearch} triggerClassName={PAGE_NAV_BUTTON_CLASS} />
+            </div>
           )}
         </div>
       </div>

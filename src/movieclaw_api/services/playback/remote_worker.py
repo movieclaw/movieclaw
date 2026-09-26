@@ -39,10 +39,26 @@ WORKER_IDLE_TIMEOUT_S = 45.0
 JOB_ACCEPT_TIMEOUT_S = 8.0
 _WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
 _SUPPORTED_BACKENDS = frozenset({"videotoolbox"})
+#: HLS 分片类型，取值同 ffmpeg ``-hls_segment_type``（见 ffmpeg_args.segment_type）。
+_SUPPORTED_SEGMENT_TYPES = frozenset({"fmp4", "mpegts"})
 
 
 class RemoteWorkerUnavailable(RuntimeError):
     """没有可接单的远程 Worker。"""
+
+
+def describe_job_failure(message: dict[str, Any]) -> str:
+    """把 Worker 上报的任务失败压成一行：原因、ffmpeg 退出码、stderr 最后三行。"""
+    parts = [str(message.get("error") or "未说明原因").strip()]
+    exit_code = message.get("exit_code")
+    # Worker 的错误文案常常本身就是「ffmpeg 退出码：N」，别再重复一遍
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool) and "退出码" not in parts[0]:
+        parts.append(f"ffmpeg 退出码 {exit_code}")
+    stderr_tail = message.get("stderr_tail")
+    if isinstance(stderr_tail, str) and stderr_tail.strip():
+        lines = [line.strip() for line in stderr_tail.strip().splitlines() if line.strip()]
+        parts.append(f"stderr 末尾：{' | '.join(lines[-3:])[-600:]}")
+    return "；".join(parts)
 
 
 @dataclass(frozen=True)
@@ -54,6 +70,10 @@ class WorkerCapabilities:
     ffmpeg_version: str | None = None
     platform: str | None = None
     max_jobs: int = 1
+    #: 能回传的 HLS 分片类型。没声明的是旧版 Worker，只当它会 fMP4：它的上传
+    #: 代理白名单只放行 ``.m4s``，TS 分片在它本机就被拒收，而 ffmpeg 不看上传
+    #: 响应码、照样退出码 0 转完整部片——播放器等满 30 秒只拿到 404（issue #444）。
+    segment_types: tuple[str, ...] = ("fmp4",)
 
 
 @dataclass
@@ -135,12 +155,14 @@ class RemoteWorkerRegistry:
         if previous is not None:
             await self._close_quietly(previous.websocket, code=1012, reason="连接已替换")
         logger.info(
-            "远程转码 Worker 已上线：%s（平台=%s ffmpeg=%s 并发=%d 后端=%s）",
+            "远程转码 Worker 已上线：%s（版本=%s 平台=%s ffmpeg=%s 并发=%d 后端=%s 分片=%s）",
             worker_id,
+            connection.worker_version or "未知",
             capabilities.platform or "未知",
             capabilities.ffmpeg_version or "未知",
             capabilities.max_jobs,
             ",".join(capabilities.backends) or "无",
+            ",".join(capabilities.segment_types),
         )
         return connection
 
@@ -186,11 +208,13 @@ class RemoteWorkerRegistry:
 
     # -- 能力与状态 ------------------------------------------------------
 
-    def has_capable_worker(self, backend: str = "videotoolbox") -> bool:
-        """同步查询是否有能执行指定后端的空闲 Worker。"""
+    def has_capable_worker(
+        self, backend: str = "videotoolbox", segment_type: str = "fmp4"
+    ) -> bool:
+        """同步查询是否有能执行指定后端、回传指定分片类型的空闲 Worker。"""
         if not remote_worker_enabled():
             return False
-        return self._select_worker(backend) is not None
+        return self._select_worker(backend, segment_type) is not None
 
     def worker_online(self, worker_id: str | None) -> bool:
         """会话等待分片时判断它所属的 Worker 是否仍在线。"""
@@ -274,6 +298,7 @@ class RemoteWorkerRegistry:
         job_id: str,
         *,
         backend: str,
+        segment_type: str = "fmp4",
         attempt_id: str | None = None,
     ) -> WorkerConnection:
         """选一个空闲 Worker 并占住槽位，返回它的连接。
@@ -283,12 +308,20 @@ class RemoteWorkerRegistry:
         所以必须先确定是谁接单。占位和选人在同一把锁里完成，不会出现「按 A 的
         地址拼 URL，任务却发给了 B」。占位后如果拼装或发送失败，调用方必须调
         ``release_job``（``start_job`` 失败时会自己调）。
+
+        ``segment_type`` 是任务要产出的分片类型：TS 任务只能落到声明了
+        ``mpegts`` 的 Worker 上，多台新旧 Worker 同时在线时也不会派错。
         """
         with self._lock:
             if job_id in self._job_workers:
                 raise RemoteWorkerUnavailable("远程任务已存在")
-            connection = self._select_worker(backend)
+            connection = self._select_worker(backend, segment_type)
             if connection is None:
+                if segment_type != "fmp4" and self._select_worker(backend) is not None:
+                    raise RemoteWorkerUnavailable(
+                        f"在线的 Worker 版本过旧，不支持 {segment_type} 分片，"
+                        "请把 MovieClaw Transcoder 更新到与服务端相同的版本"
+                    )
                 raise RemoteWorkerUnavailable("没有在线且空闲的 Apple VideoToolbox Worker")
             self._job_workers[job_id] = connection.worker_id
             self._job_attempts[job_id] = (
@@ -379,30 +412,35 @@ class RemoteWorkerRegistry:
 
     async def handle_message(
         self, connection: WorkerConnection, message: dict[str, Any]
-    ) -> None:
-        """处理 Worker 上行消息。未知消息只记日志，不中断连接。"""
+    ) -> dict[str, Any] | None:
+        """处理 Worker 上行消息。未知消息只记日志，不中断连接。
+
+        返回值只对 ``job.artifact_failed``（Worker 放弃了某个产物的上传）有意义：
+        校验过归属与轮次后原样交回调用方，由它转给会话层记账补片——注册表不认识
+        会话。其余消息一律返回 None。"""
         with self._lock:
             connection.last_seen = time.monotonic()
         message_type = str(message.get("type", ""))
         job_id = str(message.get("job_id", ""))
         if message_type == "worker.heartbeat":
             await connection.send({"type": "worker.heartbeat.ack"})
-            return
+            return None
         if message_type == "worker.draining":
             with self._lock:
                 connection.draining = True
             logger.info("远程转码 Worker 进入排空状态：%s", connection.worker_id)
-            return
+            return None
         if message_type == "worker.ready":
             with self._lock:
                 connection.draining = False
             logger.info("远程转码 Worker 恢复接单：%s", connection.worker_id)
-            return
+            return None
         if message_type == "worker.goodbye":
             logger.info("远程转码 Worker 主动断开：%s", connection.worker_id)
-            return
+            return None
         if (
-            message_type in {"job.accepted", "job.progress", "job.failed", "job.finished"}
+            message_type
+            in {"job.accepted", "job.progress", "job.failed", "job.finished", "job.artifact_failed"}
             and job_id
         ):
             # 任务状态只能由实际被选中的 Worker 上报；共享 Worker 令牌下，
@@ -413,25 +451,43 @@ class RemoteWorkerRegistry:
                 message_attempt = message.get("attempt_id", expected_attempt)
                 is_current_attempt = message_attempt == expected_attempt
             if not is_owner or not is_current_attempt:
-                return
+                return None
+            if message_type == "job.artifact_failed":
+                # 不是任务状态迁移，不能写进状态表（会盖掉 accepted/progress）
+                return message
+            if message_type == "job.failed":
+                # Worker 报来的失败此前只进会话诊断，网页播放器之外（Infuse、
+                # VidHub）谁也看不到；这一行把原因、退出码、stderr 末尾留在 NAS 日志
+                logger.warning(
+                    "远程转码任务失败：worker=%s job=%s：%s",
+                    connection.worker_id,
+                    job_id,
+                    describe_job_failure(message),
+                )
+            elif message_type == "job.finished":
+                logger.info("远程转码任务已转完：worker=%s job=%s", connection.worker_id, job_id)
             self.publish_job_event(job_id, message)
             if message_type in {"job.failed", "job.finished"}:
                 self._release_job(job_id)
-            return
+            return None
         logger.debug(
             "忽略远程 Worker 未知消息：worker=%s type=%s",
             connection.worker_id,
             message_type,
         )
+        return None
 
     # -- 内部 ------------------------------------------------------------
 
-    def _select_worker(self, backend: str) -> WorkerConnection | None:
+    def _select_worker(
+        self, backend: str, segment_type: str = "fmp4"
+    ) -> WorkerConnection | None:
         with self._lock:
             candidates = [
                 connection
                 for connection in self._workers.values()
                 if backend in connection.capabilities.backends
+                and segment_type in connection.capabilities.segment_types
                 and len(connection.jobs) < connection.capabilities.max_jobs
                 and not connection.draining
                 and self._is_fresh(connection)
@@ -488,6 +544,12 @@ class RemoteWorkerRegistry:
             max_jobs = max(1, min(4, int(raw.get("max_jobs", 1))))
         except (TypeError, ValueError):
             max_jobs = 1
+        segment_types = raw.get("segment_types")
+        segment_types = tuple(
+            item
+            for item in (segment_types if isinstance(segment_types, list) else [])
+            if isinstance(item, str) and item in _SUPPORTED_SEGMENT_TYPES
+        )
         return WorkerCapabilities(
             backends=backends,
             encoders=encoders,
@@ -496,6 +558,8 @@ class RemoteWorkerRegistry:
             else None,
             platform=str(raw.get("platform")) if raw.get("platform") else None,
             max_jobs=max_jobs,
+            # 没声明（旧版 Worker）按只会 fMP4 处理，见字段注释
+            segment_types=segment_types or ("fmp4",),
         )
 
     @staticmethod
@@ -536,6 +600,6 @@ def effective_remote_transcode_config() -> RemoteTranscodeRuntimeConfig:
     return _effective_remote_transcode_config()
 
 
-def remote_worker_available(backend: str = "videotoolbox") -> bool:
+def remote_worker_available(backend: str = "videotoolbox", segment_type: str = "fmp4") -> bool:
     """供播放决策/执行层同步查询远程硬件是否在线且有空闲槽位。"""
-    return _registry.has_capable_worker(backend)
+    return _registry.has_capable_worker(backend, segment_type)

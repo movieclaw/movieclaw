@@ -14,8 +14,6 @@ enum SettingsStyle {
     static let sectionSpacing: CGFloat = 20
     /// 分组标题到分组之间（demo：6px）。
     static let headingSpacing: CGFloat = 6
-    /// 分组圆角（demo：9px）。
-    static let groupCornerRadius: CGFloat = 9
     /// 行的最小高度与左右内边距（demo：min-height 40，padding 8/13）。
     static let rowMinHeight: CGFloat = 40
     static let rowPaddingX: CGFloat = 13
@@ -59,8 +57,10 @@ final class GroupView: NSView {
     init(rows: [NSView]) {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = SettingsStyle.groupCornerRadius
-        layer?.borderWidth = 1
+        layer?.cornerRadius = Glass.groupCornerRadius
+        layer?.cornerCurve = .continuous
+        // macOS 26 的分组只靠底色区分，不描边；旧系统保留原来的发丝边框
+        layer?.borderWidth = Glass.isAvailable ? 0 : 1
         translatesAutoresizingMaskIntoConstraints = false
 
         stack.orientation = .vertical

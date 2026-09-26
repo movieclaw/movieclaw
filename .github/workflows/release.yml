@@ -206,7 +206,10 @@ jobs:
   # 才有人去重跑补传。
   worker-macos:
     needs: release-artifacts
-    runs-on: macos-14
+    # 必须是 Xcode 26 起的工具链：用旧 SDK 构建的 App 在 macOS 26 上不会有液态
+    # 玻璃（系统控件的新外观只对用 macOS 26 SDK 链接的 App 生效），代码里的
+    # 玻璃组件也会被 `#if compiler(>=6.2)` 整段编译掉。App 最低仍支持 macOS 12。
+    runs-on: macos-26
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
