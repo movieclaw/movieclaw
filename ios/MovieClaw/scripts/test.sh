@@ -46,8 +46,8 @@ while kill -0 $PID 2>/dev/null; do
   sleep 2
 done
 
-grep -vE 'hapi|CHHapticPattern' "$LOG" | grep -E ' error:|✘|recorded an issue|XCTAssert|Test Case .*(passed|failed)|Test run with|Executed [0-9]+ test|\*\* TEST' | cut -c1-400
-if grep -qE ' error:|✘|Test Case .* failed|\*\* TEST FAILED|Testing cancelled|with [1-9][0-9]* failure' "$LOG"; then
+grep -vE 'hapi|CHHapticPattern' "$LOG" | grep -E '\.swift:[0-9]+:[0-9]+: error:|^error:|✘|recorded an issue|XCTAssert|Test Case .*(passed|failed)|Test run with|Executed [0-9]+ test|\*\* TEST' | cut -c1-400
+if grep -qE '\.swift:[0-9]+:[0-9]+: error:|^error:|✘|Test Case .* failed|\*\* TEST FAILED|Testing cancelled|with [1-9][0-9]* failure' "$LOG"; then
   echo "测试失败，完整日志：$LOG"
   exit 1
 fi
