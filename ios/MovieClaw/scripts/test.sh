@@ -10,6 +10,8 @@
 #   scripts/test.sh -only-testing:MovieClawTests
 #   MC_LIVE=1 scripts/test.sh -only-testing:MovieClawTests/LiveDecodeTests
 # 可选环境变量：MC_SIM（模拟器名，默认 iPhone 17）、MC_DERIVED（DerivedData 目录，默认 build）
+# 播放器 UI 测试的片源：MC_TEST_MP4_ITEM / MC_TEST_MKV_ITEM / MC_TEST_EPISODE_SHOW（条目 id，
+# 指定后不再逐个打开详情现找——服务端打开详情会读片子做起播预热）
 set -u
 cd "$(dirname "$0")/.."
 SIM="${MC_SIM:-iPhone 17}"
@@ -18,7 +20,8 @@ LOG="$(mktemp -t mc-test-$(basename "$(cd ../.. && pwd)")).log"
 
 [[ -d MovieClaw.xcodeproj ]] || xcodegen generate >/dev/null
 
-TEST_RUNNER_MC_LIVE="${MC_LIVE:-0}" TEST_RUNNER_MC_TEST_SERVER="${MC_TEST_SERVER:-}" TEST_RUNNER_MC_TEST_USERNAME="${MC_TEST_USERNAME:-}" TEST_RUNNER_MC_TEST_PASSWORD="${MC_TEST_PASSWORD:-}" xcodebuild -project MovieClaw.xcodeproj -scheme MovieClaw \
+TEST_RUNNER_MC_LIVE="${MC_LIVE:-0}" TEST_RUNNER_MC_TEST_SERVER="${MC_TEST_SERVER:-}" TEST_RUNNER_MC_TEST_USERNAME="${MC_TEST_USERNAME:-}" TEST_RUNNER_MC_TEST_PASSWORD="${MC_TEST_PASSWORD:-}" \
+TEST_RUNNER_MC_TEST_MP4_ITEM="${MC_TEST_MP4_ITEM:-}" TEST_RUNNER_MC_TEST_MKV_ITEM="${MC_TEST_MKV_ITEM:-}" TEST_RUNNER_MC_TEST_EPISODE_SHOW="${MC_TEST_EPISODE_SHOW:-}" xcodebuild -project MovieClaw.xcodeproj -scheme MovieClaw \
   -destination "platform=iOS Simulator,name=$SIM" -derivedDataPath "$DERIVED" \
   -clonedSourcePackagesDirPath "${MC_SPM:-$HOME/workspace/.mc-ios-spm}" -packageAuthorizationProvider netrc "$@" test \
   >"$LOG" 2>&1 &

@@ -10,6 +10,10 @@ import XCTest
 ///
 /// 服务器与账号通过环境变量传入（xcodebuild 需加 TEST_RUNNER_ 前缀）：
 ///   MC_TEST_SERVER / MC_TEST_USERNAME / MC_TEST_PASSWORD；可选 MC_SHOT_DIR（把关键界面截图写到这个目录）
+///
+/// 片源可直接指定，免去现找：MC_TEST_MP4_ITEM / MC_TEST_MKV_ITEM（电影条目 id）、MC_TEST_EPISODE_SHOW（剧集条目 id）。
+/// 现找会逐个打开条目详情，而服务端打开详情会做起播预热（读片子）——对着真实片库跑时，
+/// 一轮测试曾打开上百个详情。所以现找结果在整个测试进程里只找一次（见 Found），能指定就指定。
 final class PlayerUITests: XCTestCase {
     private var env: [String: String] { ProcessInfo.processInfo.environment }
     private var server: String { env["MC_TEST_SERVER"] ?? "http://localhost:3000" }
@@ -330,6 +334,13 @@ final class PlayerUITests: XCTestCase {
 
     // MARK: - 后端辅助（与 App 共用同一台服务器）
 
+    /// 现找结果的进程级缓存：每个用例都是新实例，放实例上等于每条用例从头再扫一遍片库。
+    /// 值为 nil 也缓存（「没找到」同样不必再扫）。
+    @MainActor private enum Found {
+        static var movies: [String: (Int, Int)?] = [:]
+        static var episodePair: (Int, Int, Int, Int)??
+    }
+
     private lazy var session: URLSession = {
         // ephemeral 自带一份内存 Cookie 存储，与 App 的登录态互不影响
         URLSession(configuration: .ephemeral)
@@ -391,11 +402,24 @@ final class PlayerUITests: XCTestCase {
 
     /// 找一部第一季前两集都在位、且都是 1080p 以下 SDR 的剧集：返回 (条目, 本集, 下一集, 本集片长毫秒)。
     /// 避开 4K/HDR：模拟器没有硬解，4K HEVC 软解会把整台模拟器拖垮，测的就不是切集逻辑了
+    @MainActor
     private func findEpisodePair() throws -> (Int, Int, Int, Int)? {
+        if let cached = Found.episodePair { return cached }
+        let found = try scanEpisodePair()
+        Found.episodePair = .some(found)
+        return found
+    }
+
+    private func scanEpisodePair() throws -> (Int, Int, Int, Int)? {
+        let pinned = env["MC_TEST_EPISODE_SHOW"].flatMap(Int.init)
         let libraries = try call("GET", "/libraries") as? [[String: Any]] ?? []
         for library in libraries where library["kind"] as? String == "tv" {
             guard let id = library["id"] as? Int else { continue }
-            let items = try call("GET", "/libraries/\(id)/items?limit=30") as? [[String: Any]] ?? []
+            let items: [[String: Any]] = if let pinned {
+                [["media_item_id": pinned]]
+            } else {
+                try call("GET", "/libraries/\(id)/items?limit=30") as? [[String: Any]] ?? []
+            }
             for item in items {
                 guard let show = item["media_item_id"] as? Int,
                       let detail = try? call("GET", "/libraries/\(id)/items/\(show)") as? [String: Any],
@@ -415,15 +439,29 @@ final class PlayerUITests: XCTestCase {
         return nil
     }
 
-    /// 在电影库里找一部主文件是指定容器的片子（最多翻前 60 部）
+    /// 在电影库里找一部主文件是指定容器的片子（最多翻前 60 部）；MC_TEST_<容器>_ITEM 可直接指定
+    @MainActor
     private func findMovie(container: String) throws -> (Int, Int)? {
+        if let cached = Found.movies[container] { return cached }
+        let found = try scanMovie(container: container)
+        Found.movies[container] = .some(found)
+        return found
+    }
+
+    private func scanMovie(container: String) throws -> (Int, Int)? {
+        let pinned = env["MC_TEST_\(container.uppercased())_ITEM"].flatMap(Int.init)
         let libraries = try call("GET", "/libraries") as? [[String: Any]] ?? []
         for library in libraries where library["kind"] as? String == "movie" {
             guard let id = library["id"] as? Int else { continue }
-            let items = try call("GET", "/libraries/\(id)/items?limit=60") as? [[String: Any]] ?? []
-            for item in items {
+            let items: [[String: Any]] = if let pinned {
+                [["media_item_id": pinned, "file_count": 1]]
+            } else {
+                try call("GET", "/libraries/\(id)/items?limit=60") as? [[String: Any]] ?? []
+            }
+            // 列表已带文件数：多文件条目不必打开详情就能排除
+            for item in items where item["file_count"] as? Int == 1 {
                 guard let itemId = item["media_item_id"] as? Int,
-                      let detail = try call("GET", "/libraries/\(id)/items/\(itemId)") as? [String: Any],
+                      let detail = try? call("GET", "/libraries/\(id)/items/\(itemId)") as? [String: Any],
                       let files = detail["files"] as? [[String: Any]], files.count == 1,
                       files[0]["container"] as? String == container,
                       let duration = files[0]["duration_seconds"] as? Int, duration > 600 else { continue }
