@@ -28,12 +28,14 @@ struct ImmersiveHeroBackdrop: View {
 
     /// 慢速推近：切到这一张时从 1 开始，12 秒推到 1.1
     @State private var zoom: CGFloat = 1
+    /// 推近是否已经起过步（页签切回时不从头再来，见下面 onChange）
+    @State private var zoomStarted = false
 
     var body: some View {
         Color.clear
             .overlay {
                 RemoteImage(url: url)
-                    .scaleEffect(zoom)
+                    .modifier(KenBurnsScale(zoom: zoom))
             }
             // 下半部压暗托住文字。必须和剧照一起进下面的渐隐遮罩：压暗层若单独叠在遮罩外，
             // Hero 底边会比下面的氛围色暗一截，切出一道横线
@@ -54,13 +56,38 @@ struct ImmersiveHeroBackdrop: View {
             .overlay {
                 LinearGradient(colors: [.black.opacity(0.5), .clear], startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.26))
             }
-            .onChange(of: active, initial: true) { _, isActive in
+            .onChange(of: active, initial: true) { old, isActive in
+                // 页签切走再切回时，initial 这一次会随页面重新出现再调一遍（新旧值相同）。
+                // 那不是换张：推近接着走，从 1 重来会让画面猛地缩回去，还会撞上没走完的上一段（见 KenBurnsScale）
+                if zoomStarted, old == isActive { return }
+                zoomStarted = true
                 var reset = Transaction()
                 reset.disablesAnimations = true
                 withTransaction(reset) { zoom = 1 }
                 guard isActive else { return }
                 withAnimation(.linear(duration: 12)) { zoom = 1.1 }
             }
+    }
+}
+
+/// 推近的缩放倍数，逐帧兜底不低于 1。
+///
+/// iOS 26 上，上面「无动画重置为 1、再 12 秒推到 1.1」若赶上上一段推近还没走完（轮播页码被来回拨一下、
+/// 手动快速左右滑、刚启动就切走页签再切回），没走完的那截不会被取消，而是继续叠在新值上：画面实际倍数
+/// 跌到 1 以下（真机实测低到约 0.84，几秒后才回升），剧照缩进框里，顶上露出一条氛围底色
+/// （底下那截被渐隐遮罩盖住看不出）。iOS 27 模拟器上不叠加、复现不出，别据此删掉兜底。
+/// 系统的 scaleEffect 只拿到目标值、管不了中间帧，所以做成可动画修饰器——动画每一帧都带着
+/// 插值后的倍数调用 body，在这里截断。
+private struct KenBurnsScale: ViewModifier, Animatable {
+    var zoom: CGFloat
+
+    nonisolated var animatableData: CGFloat {
+        get { zoom }
+        set { zoom = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content.scaleEffect(max(1, zoom))
     }
 }
 
