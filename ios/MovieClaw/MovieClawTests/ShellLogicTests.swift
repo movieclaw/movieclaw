@@ -62,7 +62,9 @@ struct ShellLogicTests {
     /// 路由守卫：成员越权的设置分区改去个人信息，其余越权页落媒体库
     @Test func routerGuardRedirectsMembers() {
         let router = Router()
-        router.permissions = .none
+        // 权限未同步前不拦（启动深链抢在权限同步之前）
+        #expect(router.guarded(.settingsSection(.sites)) == .settingsSection(.sites))
+        router.permissions = Permissions.none
         #expect(router.guarded(.settingsSection(.sites)) == .settingsSection(.profile))
         #expect(router.guarded(.settingsSection(.appearance)) == .settingsSection(.appearance))
         #expect(router.guarded(.session(id: "x")) == .libraryHome)

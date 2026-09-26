@@ -90,15 +90,16 @@ final class Router {
         )
     }
 
-    /// 当前账号的权限（由 MainTabView 写入），路由守卫据此把越权目标改道
-    var permissions: Permissions = .none
+    /// 当前账号的权限（由 MainTabView 写入），路由守卫据此把越权目标改道。
+    /// nil = 还没写入（主界面刚挂载、启动深链抢在权限同步之前）：此时不拦，交给页面与后端兜底
+    var permissions: Permissions?
 
     /// 路由守卫（同 Web `accessiblePathFor` 与设置页的越权回退）：
     /// - 成员打开仅管理员可见的设置分区 → 改去「个人信息」（Web settings-view 的 replace 到 /settings/profile）；
     /// - 其余越权页面（AI 会话、无能力的订阅/搜索、活动、媒体库管理）→ 落到媒体库首页。
     /// 界面上本就不给这些入口，守卫兜的是通知、AI 卡片、深链等「从别处跳过来」的情况。
     func guarded(_ route: AppRoute) -> AppRoute {
-        guard !permissions.allows(route) else { return route }
+        guard let permissions, !permissions.allows(route) else { return route }
         if case .settingsSection = route { return .settingsSection(.profile) }
         return .libraryHome
     }
@@ -138,7 +139,7 @@ final class Router {
     func open(webPath: String) -> Bool {
         guard var route = AppRoute(webPath: webPath) else { return false }
         // 「/」对成员同样收敛到媒体库（Web accessiblePathFor：成员的 / → /library）
-        if !permissions.isAdmin, URLComponents(string: webPath)?.path.split(separator: "/").isEmpty ?? false {
+        if let permissions, !permissions.isAdmin, URLComponents(string: webPath)?.path.split(separator: "/").isEmpty ?? false {
             route = .libraryHome
         }
         open(route)

@@ -65,6 +65,7 @@ struct MainTabView: View {
         .task {
             // 开发期：-mcRoute 直接打开某个站内路径（与网页同路由截图对照）
             guard let path = DebugLaunch.route else { return }
+            router.permissions = permissions // 启动路由可能抢在 onChange 同步权限之前
             if path.hasPrefix("/play/"), let id = Int(path.split(separator: "/")[1]) {
                 router.play(PlayRequest(mediaItemId: id))
             } else {

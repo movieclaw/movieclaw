@@ -80,9 +80,12 @@ struct AccountSwitcherSheet: View {
                     }
                     Spacer()
                     if account.active {
-                        Label("当前", systemImage: "checkmark")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Theme.accent)
+                        HStack(spacing: 3) {
+                            Image(systemName: "checkmark").font(.caption2.weight(.bold))
+                            Text("当前")
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Theme.accent)
                     }
                 }
                 .contentShape(Rectangle())
