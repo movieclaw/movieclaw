@@ -58,6 +58,7 @@ from movieclaw_api.services.playback.limits import auto_quota_bytes
 from movieclaw_api.services.playback.remote_signing import issue_remote_grant
 from movieclaw_api.services.playback.remote_worker import (
     RemoteWorkerUnavailable,
+    WorkerConnection,
     effective_remote_transcode_config,
     get_remote_worker_registry,
 )
@@ -927,6 +928,60 @@ class TranscodeSessionManager:
         manifest.last_used_at = time.time()
         manifest.save(session.directory)
 
+    async def _remote_command(
+        self,
+        session: TranscodeSession,
+        connection: WorkerConnection,
+        job_id: str,
+        *,
+        base_override: str,
+        start_number: int | None,
+    ) -> tuple[TranscodeCommand, str, str, str]:
+        """给接单的这台 Worker 拼一轮任务：源地址、产物回传地址与 ffmpeg 命令。
+
+        首次下发与 seek 重启共用。地址都用**这台** Worker 连上来的地址拼（理由见
+        ``_spawn_remote``）。原盘的源是 ffconcat 清单：NAS 把主播放列表的各段剪辑
+        按 HTTP 地址列给它（transcode_worker 路由）；命令按这台 Worker 申报的视频
+        能力装——能硬解哪些编码、有没有 Metal 缩放与色调映射（WorkerVideoCaps）。
+        返回（命令, 源地址, 产物根地址, 产物令牌后缀）。
+        """
+        base = (base_override or connection.observed_base_url).rstrip("/")
+        if not base:
+            raise SessionStartError(
+                "无法确定远程转码地址：Worker 连接未携带可用的 Host，"
+                "请在「应用 → 远程转码」填写专用地址"
+            )
+        source_token = await issue_remote_grant(
+            session_id=session.id, file_id=session.file_id, kind="source"
+        )
+        artifact_token = await issue_remote_grant(
+            session_id=session.id,
+            file_id=session.file_id,
+            kind="artifact",
+            attempt_id=job_id,
+        )
+        disc = session.concat_list is not None
+        endpoint = f"{base}/api/v1/transcode-worker/sessions/{session.id}"
+        source_url = (
+            f"{endpoint}/{'source.ffconcat' if disc else 'source'}"
+            f"?token={quote(source_token, safe='')}"
+        )
+        artifact_base = f"{endpoint}/artifacts"
+        token_suffix = f"?token={quote(artifact_token, safe='')}"
+        command = build_hls_command(
+            session.plan,
+            source_path=source_url,
+            session_dir=session.directory,
+            start_ms=session.start_ms,
+            hw_backend=session.hw_backend,
+            start_number=start_number,
+            output_base_url=artifact_base,
+            output_url_suffix=token_suffix,
+            input_format="concat" if disc else None,
+            worker_caps=connection.capabilities.video_caps,
+        )
+        return command, source_url, artifact_base, token_suffix
+
     async def _spawn_remote(
         self, session: TranscodeSession, base_url_override: str
     ) -> None:
@@ -949,6 +1004,7 @@ class TranscodeSessionManager:
                 backend=session.hw_backend or "videotoolbox",
                 segment_type=segment_type(session.plan),
                 attempt_id=job_id,
+                disc=session.concat_list is not None,
             )
         except RemoteWorkerUnavailable as exc:
             session.error = str(exc)
@@ -956,40 +1012,14 @@ class TranscodeSessionManager:
         # 占位之后到 start_job 之前的任何失败都必须归还槽位，否则这台 Worker
         # 的并发位会被一个从未下发的任务永久占住。
         try:
-            base = (base_url_override or connection.observed_base_url).rstrip("/")
-            if not base:
-                raise SessionStartError(
-                    "无法确定远程转码地址：Worker 连接未携带可用的 Host，"
-                    "请在「应用 → 远程转码」填写专用地址"
-                )
-            source_token = await issue_remote_grant(
-                session_id=session.id, file_id=session.file_id, kind="source"
-            )
-            artifact_token = await issue_remote_grant(
-                session_id=session.id,
-                file_id=session.file_id,
-                kind="artifact",
-                attempt_id=job_id,
-            )
-            token_suffix = f"?token={quote(artifact_token, safe='')}"
-            source_url = (
-                f"{base}/api/v1/transcode-worker/sessions/{session.id}/source"
-                f"?token={quote(source_token, safe='')}"
-            )
-            artifact_base = (
-                f"{base}/api/v1/transcode-worker/sessions/{session.id}/artifacts"
-            )
-            command = build_hls_command(
-                session.plan,
-                source_path=source_url,
-                session_dir=session.directory,
-                start_ms=session.start_ms,
-                hw_backend=session.hw_backend,
+            command, source_url, artifact_base, token_suffix = await self._remote_command(
+                session,
+                connection,
+                job_id,
+                base_override=base_url_override,
                 start_number=(
                     session.head_segment if session.segment_plan is not None else None
                 ),
-                output_base_url=artifact_base,
-                output_url_suffix=token_suffix,
             )
         except BaseException:
             registry.release_job(job_id)
@@ -1751,43 +1781,20 @@ class TranscodeSessionManager:
                     backend=session.hw_backend or "videotoolbox",
                     segment_type=segment_type(session.plan),
                     attempt_id=job_id,
+                    disc=session.concat_list is not None,
                 )
                 try:
-                    base = (
-                        effective_remote_transcode_config().base_url
-                        or connection.observed_base_url
-                    ).rstrip("/")
-                    if not base:
-                        raise SessionStartError(
-                            "无法确定远程转码地址：Worker 连接未携带可用的 Host，"
-                            "请在「应用 → 远程转码」填写专用地址"
-                        )
-                    source_token = await issue_remote_grant(
-                        session_id=session.id, file_id=session.file_id, kind="source"
-                    )
-                    artifact_token = await issue_remote_grant(
-                        session_id=session.id,
-                        file_id=session.file_id,
-                        kind="artifact",
-                        attempt_id=job_id,
-                    )
-                    source_url = (
-                        f"{base}/api/v1/transcode-worker/sessions/{session.id}/source"
-                        f"?token={quote(source_token, safe='')}"
-                    )
-                    artifact_base = (
-                        f"{base}/api/v1/transcode-worker/sessions/{session.id}/artifacts"
-                    )
-                    token_suffix = f"?token={quote(artifact_token, safe='')}"
-                    command = build_hls_command(
-                        session.plan,
-                        source_path=source_url,
-                        session_dir=session.directory,
-                        start_ms=session.start_ms,
-                        hw_backend=session.hw_backend,
+                    (
+                        command,
+                        source_url,
+                        artifact_base,
+                        token_suffix,
+                    ) = await self._remote_command(
+                        session,
+                        connection,
+                        job_id,
+                        base_override=effective_remote_transcode_config().base_url,
                         start_number=index,
-                        output_base_url=artifact_base,
-                        output_url_suffix=token_suffix,
                     )
                 except BaseException:
                     # 占位到下发之间的任何失败都要归还槽位，否则这台 Worker 的

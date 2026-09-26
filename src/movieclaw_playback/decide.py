@@ -175,6 +175,10 @@ class VideoPlan:
     #: 源视频位深（来自 ffprobe）。VideoToolbox 从硬件帧下载前要据此选择
     #: 8-bit 的 NV12 或 10-bit 的 P010；未知时由命令装配层安全回退软件解码。
     source_bit_depth: int | None = None
+    #: 源视频编码（ffprobe 的编码名，如 hevc / vc1），只在 transcode 时填。远程
+    #: Mac 的 VideoToolbox 只能硬解其中一部分，命令装配层据此决定要不要硬件帧：
+    #: 解不了的编码硬要硬件帧，ffmpeg 退回软解后 hwdownload 直接失败。
+    source_codec: str | None = None
     #: HDR → SDR。**转码档的不变量，不是一个判断**：转码输出恒为 H.264 8-bit
     #: BT.709，装不下 HDR，所以只要源是 HDR 就必须映射——与「为什么要转码」
     #: 无关。曾经它由 _judge_video 顺带产出，而那串判定是提前 return 的：
@@ -733,6 +737,25 @@ def _resolve_tier(
         tier = PlaybackTier(tier + 1)
         if tier is PlaybackTier.HARDWARE_TRANSCODE and not policy.hardware_available:
             tier = PlaybackTier.SOFTWARE_TRANSCODE
+    if (
+        tier is PlaybackTier.SOFTWARE_TRANSCODE
+        and PlaybackTier.HARDWARE_TRANSCODE in failed_tiers
+        and media.hdr
+    ):
+        # 与 _judge_video 同一条底线：HDR 转码要显卡做色调映射，软件 tone-map 是
+        # 幻灯片。那道闸是按 hardware_available 判的，而硬件档可能在执行时落空
+        # （远程 Worker 刚断开、或接不了这个任务），此时 hardware_available 仍为
+        # True，闸拦不住，降下来就成了 NAS 用 CPU 硬做 4K HDR（真机：首帧 12.6 秒、
+        # 33 秒卡 3 次）。这里补上
+        return (
+            PlaybackRejected(
+                reason=f"这部片是 {media.hdr}，转码需要显卡做色调映射，但硬件转码刚才没能执行。",
+                suggestion="稍后重试；或用 Infuse、VidHub 等第三方播放器直连播放。",
+            ),
+            "",
+            "",
+            None,
+        )
     if degraded_from is not None:
         reason += "；上一档播放失败，已自动降档"
 
@@ -937,6 +960,7 @@ def _build_video_plan(
         codec="h264",
         height=min(candidates),
         source_bit_depth=media.bit_depth,
+        source_codec=media.video_codec or None,
         # 色彩两项只看**源是什么**，不看这次为什么要转码——转码输出恒为
         # H.264 8-bit BT.709，HDR 装不进去。verdict 不再参与（issue #331）。
         tone_map=bool(media.hdr),

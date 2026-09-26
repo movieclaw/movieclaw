@@ -996,7 +996,8 @@ async def start_playback_session(
 
     # 原盘（disc-playback.md §3.4）：ffmpeg 吃不了目录——单剪辑也走 concat
     # 清单（时间轴 = 播放列表时间，与台账时长、章节同口径），关键帧索引来自
-    # CLPI 的 EP_map；远程 Worker 只会经 HTTP 读单个源文件，原盘一律本地执行
+    # CLPI 的 EP_map。远程 Worker 读的是 NAS 下发的 ffconcat 清单（各段剪辑一个
+    # HTTP 地址，remote-transcode.md §5.2），只派给申报了能读原盘的 Worker
     disc = disc_source_for_file(file) if file.is_disc() else None
     if file.is_disc() and disc is None:
         raise NotFoundException("原盘主播放列表不可读，无法播放；请检查 BDMV/PLAYLIST 是否完整")
@@ -1024,7 +1025,7 @@ async def start_playback_session(
     # NAS 探测快照中选编码器。只有在执行端确认仍在线时，才把 videotoolbox
     # 作为远程命令发给 Worker。
     local_backends = await asyncio.to_thread(available_local_backends) if backends else ()
-    remote_video_available = remote_worker_available("videotoolbox")
+    remote_video_available = remote_worker_available("videotoolbox", disc=disc is not None)
     prep_ms = int((time.perf_counter() - prep_started_at) * 1000)
     # 只有真的转视频才谈得上硬件加速：直通档（-c:v copy）不经编码器，报个
     # 后端名只会让诊断面板骗人。烧录时 VAAPI/QSV 会退软件编码（overlay 是
@@ -1034,7 +1035,7 @@ async def start_playback_session(
         decision,
         available=backends,
         local_backends=local_backends,
-        remote_video_available=remote_video_available and disc is None,
+        remote_video_available=remote_video_available,
     )
     if view.tier == int(Tier.HARDWARE_TRANSCODE) and execution_backend is None:
         # 决策阶段看到的硬件能力可能在准备阶段断线，或本地后端与当前滤镜链

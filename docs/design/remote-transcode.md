@@ -264,12 +264,70 @@ App 本身的崩溃由登录项兜：App 在 `~/Library/LaunchAgents` 放一份 
 什么、用户要不要做点什么；普通的断线重连不单独出卡片。面板底部显示「24 小时内自动恢复过
 N 次」和最近一次的原因。
 
+### 5.2 原盘与各种片源格式
+
+Mac 能硬解的编码、带的 Metal 滤镜因机器而异（AV1 要 M3 起），NAS 探测不到，只能信
+Worker 在 hello 的 `capabilities` 里的申报：
+
+| 字段 | 含义 | 没申报（旧版 Worker）时 |
+|---|---|---|
+| `disc_sources` | 能读原盘的 ffconcat 清单 | 原盘任务不派给它 |
+| `hw_decoders` | VideoToolbox 能硬解的片源编码（ffmpeg 编码名），Worker 用 `VTIsHardwareDecodeSupported` 逐个实测 | 只按 `h264`、`hevc` 算 |
+| `filters` | ffmpeg 带的 Metal 滤镜（`scale_vt`、`tonemap_videotoolbox`……） | 当它一个没有 |
+
+**原盘。** NAS 本机读盘用 concat 清单（`disc-playback.md` §3.4），远程 Worker 读的是
+同一份剪辑序列与 IN/OUT，只是每段换成 HTTP 地址：源地址是
+`/transcode-worker/sessions/{id}/source.ffconcat`，清单里每段写相对地址
+`clips/{i}?token=…`（按清单自己的地址解析，反向代理子路径也对得上），令牌沿用同一个。
+每段还逐个带上 `option rw_timeout / reconnect…`——命令行上的续读参数只作用于清单这一个
+输入，管不到清单里各段剪辑自己的 HTTP 连接。原盘任务只派给申报了 `disc_sources` 的
+Worker。
+
+**命令的三种形态**（`ffmpeg_args._videotoolbox_mode`）：
+
+1. **GPU 全链路**：片源编码在 `hw_decoders` 里、`scale_vt` 与（HDR 时）
+   `tonemap_videotoolbox` 都有、链上没有只有软件做得了的步骤（烧录、BT.2020 SDR 的色彩
+   空间转换）。硬解帧不下载回内存：`scale_vt` 缩放 →（HDR）`tonemap_videotoolbox`
+   → `h264_videotoolbox`。杜比视界由 `apply_dovi` 按元数据还原（DV Profile 5 也不偏色，
+   CPU 那条链做不到）。
+2. **CPU 软解**：片源编码不在 `hw_decoders` 里（VC-1、WMV、RealVideo、VP6，这台 Mac 上
+   还有 MPEG-2）。不发 `-hwaccel`，CPU 解码 + 软件滤镜，编码仍用 VideoToolbox。
+3. **原来的装法**：其余情况（烧录、没申报滤镜的旧版 Worker）——硬解后下载回内存走
+   软件滤镜。
+
+**实测踩过的 ffmpeg 坑**（jellyfin-ffmpeg 8.1，macOS 27）：
+
+- 解不了的编码硬要硬件帧（`-hwaccel_output_format videotoolbox_vld`）：硬解初始化失败
+  后退回软解，软件帧喂给 `hwdownload` 以 -22 失败（VC-1 原盘实测）。所以要逐编码判断。
+- ffmpeg 8 的 `-colorspace bt709` 参与格式协商：无色彩标签的硬件帧会被自动插一个接不上
+  的软件 scale 去转换，整条链失败。GPU 链路在 `scale_vt` 后用 `setparams` 给帧打上
+  BT.709 标签。
+- `tonemap_videotoolbox` 只收 10-bit：8-bit HLG（广电 4K 节目）报
+  「Unsupported input format depth: 8」。HDR 缩放时一律 `format=p010le`。
+- `h264_videotoolbox` 写 A53 隐藏字幕进 SEI 时出错（MPEG-2 源常带），一律 `-a53cc 0`。
+
+实测速度（M 系列 Mac，经 NAS HTTP 取源，1080p 输出，VOD 模式整条命令）：4K HDR10 原盘
+5.5×、多剪辑 4K HDR10 原盘 5.7×、杜比视界 P5 4.3×、8-bit HLG 5.8×、VP9 4K 6.0×、
+H.264 原盘 7.8×、VC-1 原盘 5.4×、MPEG-2 原盘 3.6×、WMV 约 20×、RealVideo 6.3×。
+CPU 版色调映射（tonemapx）在同一台 Mac 上是 2.6× 且占满 4 个核，NAS 上连 1× 都不到。
+
+**降档底线**：硬件档在执行时落空（Worker 刚断开、或它接不了这个任务）时，决策输入里的
+`hardware_available` 仍为 True，`_judge_video` 那道「HDR 要显卡」的闸拦不住。网页端
+（`_resolve_tier`）与 Jellyfin 端（转码会话规格）都在降到软件档时补了同一条：HDR 直接
+拒绝并提示，不让 NAS 用 CPU 做 4K 色调映射（真机：首帧 12.6 秒、33 秒卡 3 次）。
+
 ## 6. 已知限制与扩展方向
 
 - Worker 注册表和播放会话目前是单进程内存状态；NAS 多副本需要共享任务租约和产物存储。
 - 当前使用一个共享 Worker Token；多 Worker 精细撤销可升级为每 Worker 独立凭据或证书。
-- 当前重点覆盖 H.264 VideoToolbox。HEVC、HDR tone-map、硬件解码和其他平台后端需要
-  先完成能力声明、编码参数和样片矩阵验证。
+- 输出只有 H.264（8-bit、BT.709）。HEVC 输出、HDR 直通输出和其他平台后端需要先完成
+  能力声明、编码参数和样片矩阵验证。
+- 原盘只支持 BDMV 目录；ISO（蓝光与 DVD）、DVD 目录（VIDEO_TS）在 NAS 本机也还不能播
+  （`disc-playback.md` §2），另起任务。
+- Jellyfin 协议（Infuse）按码率转码时原盘仍直接拒绝、走原画：PlaybackInfo 对原盘不做
+  码率协商，要改协商与会话规格两处。
+- 隔行片源（1080i 蓝光、DVD）不做反交错；Worker 已申报 `yadif/bwdif_videotoolbox`，
+  缺的是探测层记录场序。
 - 标准视频、内嵌字幕和 HLS 网络输出保持无媒体临时文件路径；外部字幕硬烧或需要额外
   资源文件的复杂滤镜，暂不承诺 Worker 零媒体落盘。
 - Worker 到 NAS 的 DNS、证书、MTU、Wi-Fi 稳定性会直接影响 Range 读取和 PUT 上传。

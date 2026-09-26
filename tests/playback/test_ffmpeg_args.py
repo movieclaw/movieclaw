@@ -17,6 +17,8 @@ from movieclaw_api.services.playback.ffmpeg_args import (
     MAX_GOP_FRAMES,
     NVENC_TONEMAP,
     SEGMENT_SECONDS,
+    VIDEOTOOLBOX_TONEMAP,
+    WorkerVideoCaps,
     build_hls_command,
     effective_hw_backend,
     register_native_tonemap,
@@ -1009,3 +1011,131 @@ def test_concat_input_format_puts_demuxer_flags_before_input():
     # 普通输入不带 concat 标志
     plain = argv_of(plan(PlaybackTier.REMUX))
     assert "concat" not in plain
+
+
+# ---------------------------------------------------------------------------
+# 远程 Mac：按 Worker 申报的能力分流（WorkerVideoCaps）
+# ---------------------------------------------------------------------------
+
+#: 一台 Apple 芯片 Mac 的典型申报：硬解 H.264 / HEVC，Metal 缩放与色调映射齐全
+MAC_CAPS = WorkerVideoCaps(
+    hw_decoders=frozenset({"h264", "hevc"}),
+    filters=frozenset({"scale_vt", "tonemap_videotoolbox"}),
+)
+
+
+def vt_transcode(codec: str | None, *, bit_depth: int = 8, hdr: bool = False, color=None):
+    return plan(
+        PlaybackTier.HARDWARE_TRANSCODE,
+        video=VideoPlan(
+            action="transcode",
+            codec="h264",
+            height=1080,
+            source_bit_depth=bit_depth,
+            source_codec=codec,
+            tone_map=hdr,
+            source_color=color,
+        ),
+    )
+
+
+def test_mac_keeps_4k_hdr_disc_entirely_on_the_gpu():
+    """4K HDR HEVC：硬解 → scale_vt → tonemap_videotoolbox → 编码，帧不下载回内存。"""
+    argv = argv_of(
+        vt_transcode("hevc", bit_depth=10, hdr=True),
+        hw_backend="videotoolbox",
+        worker_caps=MAC_CAPS,
+    )
+    assert pair(argv, "-hwaccel") == "videotoolbox"
+    assert pair(argv, "-hwaccel_output_format") == "videotoolbox_vld"
+    # 缩放时转 10-bit：tonemap_videotoolbox 只收 10-bit（8-bit HLG 实测报错）
+    assert pair(argv, "-vf") == f"scale_vt=w=-2:h=1080:format=p010le,{VIDEOTOOLBOX_TONEMAP}"
+    # 硬件帧已是 8-bit NV12：再要 yuv420p 会插一个接不上硬件帧的软件转换
+    assert "-pix_fmt" not in argv
+    assert pair(argv, "-c:v") == "h264_videotoolbox"
+
+
+def test_mac_converts_10bit_sdr_to_8bit_on_the_gpu():
+    argv = argv_of(
+        vt_transcode("hevc", bit_depth=10), hw_backend="videotoolbox", worker_caps=MAC_CAPS
+    )
+    assert pair(argv, "-hwaccel_output_format") == "videotoolbox_vld"
+    assert pair(argv, "-vf") == "scale_vt=w=-2:h=1080:format=nv12"
+    assert "-pix_fmt" not in argv
+
+
+def test_mac_gpu_chain_labels_frames_bt709_before_the_encoder_asks_for_it():
+    """ffmpeg 8 的 -colorspace 参与格式协商：无标签的硬件帧会被插一个接不上的软件
+    scale 去转换，整条链失败（实测）。输出 BT.709 时先用 setparams 给帧打上标签。"""
+    argv = argv_of(
+        vt_transcode("hevc", bit_depth=10, color="BT.709"),
+        hw_backend="videotoolbox",
+        worker_caps=MAC_CAPS,
+    )
+    assert pair(argv, "-vf") == (
+        "scale_vt=w=-2:h=1080:format=nv12,"
+        "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
+    )
+    assert pair(argv, "-colorspace") == "bt709"
+
+
+def test_videotoolbox_never_writes_a53_captions():
+    """MPEG-2 源常带 A53 隐藏字幕，h264_videotoolbox 写进 SEI 时整条失败（实测）。"""
+    for caps in (MAC_CAPS, None):
+        argv = argv_of(
+            vt_transcode("mpeg2video"), hw_backend="videotoolbox", worker_caps=caps
+        )
+        assert pair(argv, "-a53cc") == "0"
+
+
+@pytest.mark.parametrize("codec", ["vc1", "wmv3", "rv40", "vp6f", None])
+def test_mac_software_decodes_what_videotoolbox_cannot(codec):
+    """解不了的编码不能要硬件帧：软解出来的帧喂 hwdownload 会以 -22 失败（实测 VC-1）。"""
+    argv = argv_of(vt_transcode(codec), hw_backend="videotoolbox", worker_caps=MAC_CAPS)
+    assert "-hwaccel" not in argv
+    assert "-hwaccel_output_format" not in argv
+    assert pair(argv, "-vf") == "scale=-2:1080"
+    assert pair(argv, "-pix_fmt") == "yuv420p"
+    assert pair(argv, "-c:v") == "h264_videotoolbox"  # 编码仍在 VideoToolbox 上
+
+
+def test_mac_software_decode_of_hdr_uses_cpu_tonemap():
+    """比如 M1 解不了的 AV1 HDR：软解 + CPU 色调映射，编码仍用硬件。"""
+    argv = argv_of(
+        vt_transcode("av1", bit_depth=10, hdr=True), hw_backend="videotoolbox", worker_caps=MAC_CAPS
+    )
+    assert "-hwaccel" not in argv
+    assert pair(argv, "-vf").startswith("tonemapx=")
+
+
+def test_old_worker_without_metal_filters_keeps_the_download_bridge():
+    """没申报滤镜的旧版 Worker：能硬解的照旧硬解 + 下载回内存走软件滤镜。"""
+    caps = WorkerVideoCaps(hw_decoders=frozenset({"h264", "hevc"}))
+    argv = argv_of(vt_transcode("h264"), hw_backend="videotoolbox", worker_caps=caps)
+    assert pair(argv, "-hwaccel_output_format") == "videotoolbox_vld"
+    assert pair(argv, "-vf") == "hwdownload,format=nv12,scale=-2:1080,format=yuv420p"
+
+
+def test_bt2020_sdr_stays_on_the_software_color_path():
+    """BT.2020 的 SDR 要 colorspace 转换，只有软件做得了，不能走 GPU 链路。"""
+    argv = argv_of(
+        vt_transcode("hevc", bit_depth=10, color="BT.2020"),
+        hw_backend="videotoolbox",
+        worker_caps=MAC_CAPS,
+    )
+    assert "scale_vt" not in (pair(argv, "-vf") or "")
+    assert (pair(argv, "-vf") or "").startswith("colorspace=")
+
+
+def test_remote_disc_reads_the_concat_list_over_http():
+    """原盘远程任务：-f concat -safe 0 读 NAS 下发的清单，清单地址也走断线续读。"""
+    argv = argv_of(
+        vt_transcode("hevc", bit_depth=10, hdr=True),
+        hw_backend="videotoolbox",
+        worker_caps=MAC_CAPS,
+        input_format="concat",
+        output_base_url="http://nas:3000/api/v1/transcode-worker/sessions/s1/artifacts",
+    )
+    i = argv.index("-i")
+    assert argv[i - 4 : i] == ["-f", "concat", "-safe", "0"]
+    assert "-reconnect" in argv[:i]

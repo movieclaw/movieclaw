@@ -11,6 +11,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import quote
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
@@ -33,6 +34,11 @@ from movieclaw_api.schemas.transcode_worker import (
     RemoteTranscodeConfigView,
 )
 from movieclaw_api.services.playback import remote_config as remote_transcode_config
+from movieclaw_api.services.playback.disc_source import disc_source_for_file
+from movieclaw_api.services.playback.ffmpeg_args import (
+    REMOTE_IO_TIMEOUT_US,
+    REMOTE_RECONNECT_OPTIONS,
+)
 from movieclaw_api.services.playback.remote_signing import verify_remote_grant
 from movieclaw_api.services.playback.remote_worker import (
     REMOTE_WORKER_PROTOCOL_VERSION,
@@ -344,6 +350,38 @@ async def transcode_worker_status() -> ApiResponse[dict]:
     )
 
 
+async def _remote_source_file(
+    session_id: str, token: str | None, session: AsyncSession
+) -> LibraryFile:
+    """三个取源接口共用的校验：令牌有效、会话是远程会话、令牌签给的就是这个文件。"""
+    grant = await _verify_grant(token, session_id=session_id, kind="source")
+    playback_session = get_session_manager().get(session_id)
+    if (
+        playback_session is None
+        or not playback_session.remote
+        or playback_session.file_id != grant.file_id
+    ):
+        raise NotFoundException("远程转码会话不存在")
+    file = await session.get(LibraryFile, grant.file_id)
+    if file is None or is_strm(file.file_path):
+        raise NotFoundException("远程转码源文件不存在")
+    return file
+
+
+def _missing_source(session_id: str, file: LibraryFile, path: Path) -> NotFoundException:
+    """源不在磁盘上：Worker 那边只会看到 ffmpeg 报 404、任务失败，真正的原因在
+    NAS 这一侧（文件被移走/删除，或媒体目录的挂载静默失效），必须在这里说出来。"""
+    _warn_throttled(
+        ("source-missing", str(file.id)),
+        "远程转码源文件不在磁盘上：session=%s file_id=%s path=%s"
+        "（文件已被移动或删除，或媒体目录挂载失效）",
+        session_id,
+        file.id,
+        path,
+    )
+    return NotFoundException("远程转码源文件已不在磁盘上")
+
+
 @router.get(
     "/sessions/{session_id}/source",
     summary="远程转码源文件",
@@ -356,34 +394,76 @@ async def transcode_source(
     session: AsyncSession = Depends(get_session),
 ):
     """给 Worker 提供支持 Range 的源文件读取；不允许读取 strm 占位文件。"""
-    grant = await _verify_grant(token, session_id=session_id, kind="source")
-    playback_session = get_session_manager().get(session_id)
-    if (
-        playback_session is None
-        or not playback_session.remote
-        or playback_session.file_id != grant.file_id
-    ):
-        raise NotFoundException("远程转码会话不存在")
-    file = await session.get(LibraryFile, grant.file_id)
-    if file is None or is_strm(file.file_path):
-        raise NotFoundException("远程转码源文件不存在")
+    file = await _remote_source_file(session_id, token, session)
+    if file.is_disc():
+        # 原盘是目录，没有单一源文件；新版 Worker 读 source.ffconcat，走不到这里
+        raise NotFoundException("原盘没有单一源文件，请改读 source.ffconcat 清单")
     path = Path(file.file_path)
     if not path.is_file():
-        # Worker 那边只会看到 ffmpeg 报 404、任务失败；真正的原因在 NAS 这一侧
-        # （文件被移走/删除，或媒体目录的挂载静默失效），必须在这里说出来
-        _warn_throttled(
-            ("source-missing", str(file.id)),
-            "远程转码源文件不在磁盘上：session=%s file_id=%s path=%s"
-            "（文件已被移动或删除，或媒体目录挂载失效）",
-            session_id,
-            file.id,
-            file.file_path,
-        )
-        raise NotFoundException("远程转码源文件已不在磁盘上")
+        raise _missing_source(session_id, file, path)
     return DisconnectAwareFileResponse(
         path,
         media_type=container_mime_type(file.container),
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/source.ffconcat",
+    summary="远程转码原盘清单",
+    operation_id="transcode.source.ffconcat",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def transcode_disc_source(
+    session_id: Annotated[str, PathParam()],
+    token: Annotated[str | None, Query()] = None,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """原盘的 ffconcat 清单（docs/design/remote-transcode.md §5.2）。
+
+    和 NAS 本机读盘用的是同一份剪辑序列与 IN/OUT（``DiscSource.concat_list``），
+    只是每段换成本接口旁边的 ``clips/{i}`` 相对地址：ffmpeg 按清单自己的地址
+    解析，反向代理挂在子路径下也对得上；令牌沿用这一个（它签的是整个会话的源）。
+    每段逐个带上断线续读参数——命令行上的 ``-reconnect`` 只管清单这一个输入。
+    """
+    file = await _remote_source_file(session_id, token, session)
+    disc = disc_source_for_file(file) if file.is_disc() else None
+    if disc is None:
+        raise NotFoundException("这个远程转码会话的源不是可读的原盘")
+    token_query = quote(token or "", safe="")
+    body = disc.concat_list(
+        entry=lambda index, _clip: f"clips/{index}?token={token_query}",
+        options=(("rw_timeout", str(REMOTE_IO_TIMEOUT_US)), *REMOTE_RECONNECT_OPTIONS),
+    )
+    return Response(
+        content=body,
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/clips/{index}",
+    summary="远程转码原盘剪辑",
+    operation_id="transcode.source.clip",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def transcode_disc_clip(
+    session_id: Annotated[str, PathParam()],
+    index: Annotated[int, PathParam(ge=0)],
+    token: Annotated[str | None, Query()] = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """原盘清单里第 ``index`` 段剪辑（m2ts）的 Range 读取。"""
+    file = await _remote_source_file(session_id, token, session)
+    disc = disc_source_for_file(file) if file.is_disc() else None
+    if disc is None or index >= len(disc.clips):
+        raise NotFoundException("原盘剪辑不存在")
+    path = disc.clips[index].path
+    if not path.is_file():
+        raise _missing_source(session_id, file, path)
+    return DisconnectAwareFileResponse(
+        path, media_type="video/MP2T", headers={"Cache-Control": "no-store"}
     )
 
 

@@ -24,6 +24,7 @@ from typing import Any
 
 from starlette.websockets import WebSocket
 
+from movieclaw_api.services.playback.ffmpeg_args import WorkerVideoCaps
 from movieclaw_api.services.playback.remote_config import (
     RemoteTranscodeRuntimeConfig,
     remote_transcode_issues,
@@ -41,6 +42,9 @@ _WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
 _SUPPORTED_BACKENDS = frozenset({"videotoolbox"})
 #: HLS 分片类型，取值同 ffmpeg ``-hls_segment_type``（见 ffmpeg_args.segment_type）。
 _SUPPORTED_SEGMENT_TYPES = frozenset({"fmp4", "mpegts"})
+#: 没申报 ``hw_decoders`` 的旧版 Worker 只按这两种算能硬解：所有支持的 Apple 芯片
+#: Mac 都能硬解它们，其余编码一律走软解（见 ffmpeg_args.WorkerVideoCaps）
+_DEFAULT_HW_DECODERS = ("h264", "hevc")
 
 
 class RemoteWorkerUnavailable(RuntimeError):
@@ -77,6 +81,21 @@ class WorkerCapabilities:
     #: 能接收 ``job.playback``（观众播放位置）。旧版 Worker 不认识这条消息，每收到
     #: 一条就记一行「忽略未知控制消息」，3 秒一条会把它的日志刷满——所以只发给声明了的。
     playback_progress: bool = False
+    #: 能读原盘：源是 NAS 下发的 ffconcat 清单（每段 m2ts 一个签名地址），靠 concat
+    #: 的 ``option`` 指令给每段带上断线续读参数。旧版 Worker 的 ffmpeg 未必认这些，
+    #: 原盘任务只派给声明了的。
+    disc_sources: bool = False
+    #: VideoToolbox 能硬解的片源编码（ffmpeg 编码名，Worker 用系统接口实测）。
+    hw_decoders: tuple[str, ...] = _DEFAULT_HW_DECODERS
+    #: Worker 的 ffmpeg 带的 Metal 滤镜（scale_vt、tonemap_videotoolbox……）。
+    filters: tuple[str, ...] = ()
+
+    @property
+    def video_caps(self) -> WorkerVideoCaps:
+        """命令装配要的那部分（见 ``ffmpeg_args.WorkerVideoCaps``）。"""
+        return WorkerVideoCaps(
+            hw_decoders=frozenset(self.hw_decoders), filters=frozenset(self.filters)
+        )
 
 
 @dataclass
@@ -212,12 +231,12 @@ class RemoteWorkerRegistry:
     # -- 能力与状态 ------------------------------------------------------
 
     def has_capable_worker(
-        self, backend: str = "videotoolbox", segment_type: str = "fmp4"
+        self, backend: str = "videotoolbox", segment_type: str = "fmp4", *, disc: bool = False
     ) -> bool:
-        """同步查询是否有能执行指定后端、回传指定分片类型的空闲 Worker。"""
+        """同步查询是否有能执行指定后端、回传指定分片类型（原盘还要能读原盘）的空闲 Worker。"""
         if not remote_worker_enabled():
             return False
-        return self._select_worker(backend, segment_type) is not None
+        return self._select_worker(backend, segment_type, disc=disc) is not None
 
     def worker_online(self, worker_id: str | None) -> bool:
         """会话等待分片时判断它所属的 Worker 是否仍在线。"""
@@ -239,6 +258,9 @@ class RemoteWorkerRegistry:
                     "ffmpeg_version": connection.capabilities.ffmpeg_version,
                     "backends": list(connection.capabilities.backends),
                     "max_jobs": connection.capabilities.max_jobs,
+                    "disc_sources": connection.capabilities.disc_sources,
+                    "hw_decoders": list(connection.capabilities.hw_decoders),
+                    "filters": list(connection.capabilities.filters),
                     "active_jobs": len(connection.jobs),
                     "jobs": [
                         {
@@ -303,6 +325,7 @@ class RemoteWorkerRegistry:
         backend: str,
         segment_type: str = "fmp4",
         attempt_id: str | None = None,
+        disc: bool = False,
     ) -> WorkerConnection:
         """选一个空闲 Worker 并占住槽位，返回它的连接。
 
@@ -313,13 +336,19 @@ class RemoteWorkerRegistry:
         ``release_job``（``start_job`` 失败时会自己调）。
 
         ``segment_type`` 是任务要产出的分片类型：TS 任务只能落到声明了
-        ``mpegts`` 的 Worker 上，多台新旧 Worker 同时在线时也不会派错。
+        ``mpegts`` 的 Worker 上，多台新旧 Worker 同时在线时也不会派错。原盘任务
+        （``disc``）同理只落到声明了 ``disc_sources`` 的 Worker 上。
         """
         with self._lock:
             if job_id in self._job_workers:
                 raise RemoteWorkerUnavailable("远程任务已存在")
-            connection = self._select_worker(backend, segment_type)
+            connection = self._select_worker(backend, segment_type, disc=disc)
             if connection is None:
+                if disc and self._select_worker(backend, segment_type) is not None:
+                    raise RemoteWorkerUnavailable(
+                        "在线的 Worker 版本过旧，不支持原盘，"
+                        "请把 MovieClaw 转码器更新到与服务端相同的版本"
+                    )
                 if segment_type != "fmp4" and self._select_worker(backend) is not None:
                     raise RemoteWorkerUnavailable(
                         f"在线的 Worker 版本过旧，不支持 {segment_type} 分片，"
@@ -499,7 +528,7 @@ class RemoteWorkerRegistry:
     # -- 内部 ------------------------------------------------------------
 
     def _select_worker(
-        self, backend: str, segment_type: str = "fmp4"
+        self, backend: str, segment_type: str = "fmp4", *, disc: bool = False
     ) -> WorkerConnection | None:
         with self._lock:
             candidates = [
@@ -507,6 +536,7 @@ class RemoteWorkerRegistry:
                 for connection in self._workers.values()
                 if backend in connection.capabilities.backends
                 and segment_type in connection.capabilities.segment_types
+                and (not disc or connection.capabilities.disc_sources)
                 and len(connection.jobs) < connection.capabilities.max_jobs
                 and not connection.draining
                 and self._is_fresh(connection)
@@ -569,6 +599,12 @@ class RemoteWorkerRegistry:
             for item in (segment_types if isinstance(segment_types, list) else [])
             if isinstance(item, str) and item in _SUPPORTED_SEGMENT_TYPES
         )
+        def names(key: str) -> tuple[str, ...] | None:
+            value = raw.get(key)
+            if not isinstance(value, list):
+                return None
+            return tuple(item for item in value if isinstance(item, str) and item)
+
         return WorkerCapabilities(
             backends=backends,
             encoders=encoders,
@@ -580,6 +616,9 @@ class RemoteWorkerRegistry:
             playback_progress=raw.get("playback_progress") is True,
             # 没声明（旧版 Worker）按只会 fMP4 处理，见字段注释
             segment_types=segment_types or ("fmp4",),
+            disc_sources=raw.get("disc_sources") is True,
+            hw_decoders=names("hw_decoders") or _DEFAULT_HW_DECODERS,
+            filters=names("filters") or (),
         )
 
     @staticmethod
@@ -620,6 +659,8 @@ def effective_remote_transcode_config() -> RemoteTranscodeRuntimeConfig:
     return _effective_remote_transcode_config()
 
 
-def remote_worker_available(backend: str = "videotoolbox", segment_type: str = "fmp4") -> bool:
-    """供播放决策/执行层同步查询远程硬件是否在线且有空闲槽位。"""
-    return _registry.has_capable_worker(backend, segment_type)
+def remote_worker_available(
+    backend: str = "videotoolbox", segment_type: str = "fmp4", *, disc: bool = False
+) -> bool:
+    """供播放决策/执行层同步查询远程硬件是否在线且有空闲槽位（``disc``：还要能读原盘）。"""
+    return _registry.has_capable_worker(backend, segment_type, disc=disc)

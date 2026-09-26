@@ -17,6 +17,7 @@ import itertools
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
 from fastapi import HTTPException
@@ -533,7 +534,7 @@ def test_remote_only_backend_is_never_sent_to_local_ffmpeg(client, tmp_path, mon
     monkeypatch.setattr(hwprobe, "available_backends", lambda: ("videotoolbox",))
     monkeypatch.setattr(routes_playback, "available_backends", lambda: ("videotoolbox",))
     monkeypatch.setattr(routes_playback, "available_local_backends", lambda: ())
-    monkeypatch.setattr(routes_playback, "remote_worker_available", lambda _: False)
+    monkeypatch.setattr(routes_playback, "remote_worker_available", lambda *_, **__: False)
 
     file_id = seed(client, tmp_path, container="mkv", codec="hevc")
     response = client.post(
@@ -554,7 +555,7 @@ def test_quality_switch_releases_remote_worker_before_final_decision(
 
     availability = {"value": False}
 
-    def remote_available(_backend: str) -> bool:
+    def remote_available(_backend: str, **_kwargs: object) -> bool:
         return availability["value"]
 
     monkeypatch.setattr(
@@ -927,6 +928,54 @@ def test_remote_source_supports_range_without_mounting_nas(client, tmp_path):
     assert response.status_code == 206
     assert response.content == b"FAKE-MEDIA-BYTES"
     assert response.headers["accept-ranges"] == "bytes"
+
+
+def test_remote_disc_source_is_an_ffconcat_of_clip_urls(client, tmp_path):
+    """原盘给 Worker 的源是 ffconcat 清单：各段是相对地址（按清单自己的地址解析，
+    反向代理子路径也对得上），沿用同一个令牌，每段自带断线续读参数。"""
+    file_id = client.portal.call(partial(_seed_disc, tmp_path))
+    grants = _install_remote_session(client, tmp_path, file_id)
+    base = f"/api/v1/transcode-worker/sessions/{grants['session_id']}"
+    response = client.get(f"{base}/source.ffconcat?token={grants['source']}")
+    assert response.status_code == 200
+    token = quote(grants["source"], safe="")
+    assert response.text.splitlines() == [
+        "ffconcat version 1.0",
+        f"file 'clips/0?token={token}'",
+        "option rw_timeout 30000000",
+        "option reconnect 1",
+        "option reconnect_on_network_error 1",
+        "option reconnect_delay_max 15",
+        "inpoint 0.000000",
+        "outpoint 300.000000",
+        "duration 300.000000",
+        f"file 'clips/1?token={token}'",
+        "option rw_timeout 30000000",
+        "option reconnect 1",
+        "option reconnect_on_network_error 1",
+        "option reconnect_delay_max 15",
+        "inpoint 0.000000",
+        "outpoint 300.000000",
+        "duration 300.000000",
+    ]
+
+
+def test_remote_disc_clip_supports_range_and_rejects_bad_requests(client, tmp_path):
+    file_id = client.portal.call(partial(_seed_disc, tmp_path))
+    grants = _install_remote_session(client, tmp_path, file_id)
+    base = f"/api/v1/transcode-worker/sessions/{grants['session_id']}"
+    response = client.get(
+        f"{base}/clips/1?token={grants['source']}", headers={"Range": "bytes=0-3"}
+    )
+    assert response.status_code == 206
+    assert response.content == b"M2TS"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert client.get(f"{base}/clips/2?token={grants['source']}").status_code == 404  # 越界
+    # 错令牌、拿产物令牌冒充源令牌：与取源接口同一个验签入口，401
+    assert client.get(f"{base}/clips/0?token=tampered").status_code == 401
+    assert client.get(f"{base}/clips/0?token={grants['artifact']}").status_code == 401
+    # 原盘是目录，没有单一源文件：旧的取源地址直接说明，不当成「文件不在磁盘上」
+    assert client.get(f"{base}/source?token={grants['source']}").status_code == 404
 
 
 def test_remote_artifact_upload_is_atomic_and_attempt_scoped(client, tmp_path):
