@@ -14,8 +14,7 @@ import {
   switchAccount,
   type AccountView,
 } from "@/lib/api/auth";
-import { clearBackdropCache } from "@/lib/backdrop-cache";
-import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
+import { reloadAfterAccountChange } from "@/lib/account-reload";
 import { accessiblePathFor } from "@/lib/permissions";
 import { HttpError } from "@/lib/http";
 
@@ -27,8 +26,8 @@ import { HttpError } from "@/lib/http";
  * 用户菜单本身只保留一个「切换账号」入口，不在菜单里堆列表。
  *
  * 凭证全在 HttpOnly Cookie 里，这里只拿列表。切换 / 退出后一律整页跳转，
- * 让工作台各 Store、AuthGate 的会话缓存、背景图与界面偏好缓存随页面清零，
- * 绝不串到上一个账号的数据。
+ * 让工作台各 Store、AuthGate 的会话缓存随页面清零，绝不串到上一个账号的数据；
+ * 背景图与界面偏好的首帧缓存换成新账号的再跳（lib/account-reload.ts），不闪默认图。
  */
 export function AccountSwitcherDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const confirm = useConfirm();
@@ -53,13 +52,6 @@ export function AccountSwitcherDialog({ open, onClose }: { open: boolean; onClos
     };
   }, [open]);
 
-  /** 整页跳转到目标页，先清掉按账号缓存的前端状态。 */
-  const reloadTo = (href: string) => {
-    clearBackdropCache();
-    clearUiPrefsCache();
-    window.location.href = href;
-  };
-
   /** 切换到另一个账号：后端换激活 Cookie，随后整页进该身份能进的页面。 */
   const handleSwitch = async (account: AccountView) => {
     if (busy || account.active) return;
@@ -67,7 +59,7 @@ export function AccountSwitcherDialog({ open, onClose }: { open: boolean; onClos
     setError(null);
     try {
       const next = await switchAccount(account.username);
-      reloadTo(accessiblePathFor(next, "/"));
+      await reloadAfterAccountChange(accessiblePathFor(next, "/"), true);
     } catch (e) {
       // 多半是该账号登录态已过期 / 被停用（后端已把它移出列表）：刷新列表并提示
       setBusy(false);
@@ -95,7 +87,7 @@ export function AccountSwitcherDialog({ open, onClose }: { open: boolean; onClos
       const next = await removeAccount(account.username);
       if (account.active) {
         // 移除的是当前账号：后端已切到下一个（或全部退出），整页刷新
-        reloadTo(next ? accessiblePathFor(next, "/") : "/login");
+        await reloadAfterAccountChange(next ? accessiblePathFor(next, "/") : "/login", next != null);
         return;
       }
       setAccounts((list) => (list ? list.filter((a) => a.username !== account.username) : list));
@@ -123,14 +115,14 @@ export function AccountSwitcherDialog({ open, onClose }: { open: boolean; onClos
     } catch {
       // 请求失败也照常去登录页；会话在后端仍会自然过期
     }
-    reloadTo("/login");
+    await reloadAfterAccountChange("/login", false);
   };
 
   const canAdd = (accounts?.length ?? 0) < MAX_SAVED_ACCOUNTS;
 
   return (
-    // raised：手机上本弹窗从「更多」底部面板（z-60）里点开，普通档 z-50 会被面板
-    // 盖住（2026-09-24 用户反馈）；抬到 z-60 并靠 Modal 后挂到 body 的 DOM 顺序压在面板与其遮罩（z-55）之上
+    // raised：2026-09-24 为从手机「更多」底部面板（z-60）里打开而抬到 z-60。面板已于
+    // 2026-09-26 随头像挪进底栏退役（现在从 /my 页打开），抬高无副作用，保留
     <Modal open={open} onClose={onClose} label="切换账号" raised>
       <div className="p-6 max-md:p-5">
         <div className="flex items-start justify-between gap-4">
@@ -177,7 +169,7 @@ export function AccountSwitcherDialog({ open, onClose }: { open: boolean; onClos
             <button
               type="button"
               disabled={busy}
-              onClick={() => reloadTo("/login?add=1")}
+              onClick={() => void reloadAfterAccountChange("/login?add=1", false)}
               className="btn-glass flex items-center gap-2 px-3.5 py-2 text-ui font-medium disabled:opacity-50"
             >
               <PlusIcon className="size-4" />

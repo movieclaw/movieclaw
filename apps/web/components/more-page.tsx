@@ -18,17 +18,16 @@ import {
   UserIcon,
 } from "@/components/icons";
 import { NoticeCenter } from "@/components/notice-center";
+import { reloadAfterAccountChange } from "@/lib/account-reload";
 import { logout } from "@/lib/api/auth";
 import { useAgentConversations } from "@/lib/agent-conversations";
-import { clearBackdropCache } from "@/lib/backdrop-cache";
 import { accessiblePathFor, roleLabel, usePermissions } from "@/lib/permissions";
 import { useSession } from "@/lib/session";
 import type { TaskActivityBadge } from "@/lib/task-activity";
-import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
 
 /**
  * 「更多」页（路由 /my，主题 pages.my 坑位的基础实现）——银玻璃移动端液态玻璃
- * 底栏的末位页签（docs/design/web-themes-mobile/04-iOS-液态玻璃底栏.md §3.1）。
+ * 底栏最右的头像页签（docs/design/web-themes-mobile/04-iOS-液态玻璃底栏.md §3.1）。
  *
  * 抽屉侧栏在移动端退役后，它承载的低频入口与账号操作都收在这里，版式对齐
  * iOS「更多 / 设置」的分组列表（inset grouped）：
@@ -71,9 +70,7 @@ export function MorePage() {
     } catch {
       // 即使请求失败（网络断开），也照常跳登录页；会话在后端仍会自然过期
     }
-    clearBackdropCache();
-    clearUiPrefsCache();
-    window.location.href = next ? accessiblePathFor(next, "/") : "/login";
+    await reloadAfterAccountChange(next ? accessiblePathFor(next, "/") : "/login", next != null);
   };
 
   // 会话行「⋯」菜单的四个动作：与侧栏会话行同一套语义（sidebar.tsx）

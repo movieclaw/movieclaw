@@ -354,6 +354,7 @@ class MediaLibraryService:
             status=profile.status,
             poster_path=profile.poster_path,
             backdrop_path=profile.backdrop_path,
+            logo_path=profile.logo_path,
             metadata_refreshed_at=utcnow(),
             # NULL=立即到期：刷新任务首个 tick 会处理并按 status 分档重排
             next_refresh_at=None,

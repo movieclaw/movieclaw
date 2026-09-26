@@ -58,16 +58,19 @@ class MediaBrief(BaseModel):
     original_title: str
     year: int | None
     poster_url: str | None = Field(description="完整海报 URL（按配置的图床基址拼好）")
+    backdrop_url: str | None = Field(
+        default=None, description="宽幅剧照 URL（w1280，沉浸场景可换 original 档）"
+    )
+    logo_url: str | None = Field(
+        default=None, description="片名 Logo URL（透明底 PNG）；没有时前端显示文字片名"
+    )
     status: str | None
 
     @classmethod
     def from_model(cls, item: MediaItem) -> MediaBrief:
         from movieclaw_api.core.config import get_settings
 
-        poster_url = None
-        if item.poster_path:
-            base = get_settings().tmdb_image_base_url.rstrip("/")
-            poster_url = f"{base}/w500{item.poster_path}"
+        base = get_settings().tmdb_image_base_url.rstrip("/")
         return cls(
             media_item_id=item.id,  # type: ignore[arg-type]  # 落库后必有主键
             kind=MediaKind(item.kind),
@@ -76,7 +79,9 @@ class MediaBrief(BaseModel):
             title=item.title,
             original_title=item.original_title,
             year=item.year,
-            poster_url=poster_url,
+            poster_url=f"{base}/w500{item.poster_path}" if item.poster_path else None,
+            backdrop_url=f"{base}/w1280{item.backdrop_path}" if item.backdrop_path else None,
+            logo_url=f"{base}/w500{item.logo_path}" if item.logo_path else None,
             status=item.status,
         )
 
@@ -520,6 +525,40 @@ class TodayArrivalView(BaseModel):
             estimated_release_to_import_minutes=release_to_import_minutes,
             estimated_download_to_import_minutes=download_to_import_minutes,
         )
+
+
+class RecentArrivalUnitView(BaseModel):
+    """「刚刚入库」一批里的一个季集单元（电影是哨兵 0/0）。"""
+
+    season_number: int
+    episode_number: int
+
+
+class RecentArrivalView(BaseModel):
+    """订阅首页「刚刚入库」的一张卡：一部作品最近入库、当前账号还没看完的那一批。
+
+    同一部作品只出一张卡；整批看完即不再返回（规则见
+    ``services/subscription/recent_arrivals.py``）。播放入口是这一批里第一个
+    没看完的单元，客户端直接按 ``media.media_item_id`` + 季集起播。
+    """
+
+    subscription_id: int
+    media: MediaBrief
+    season_number: int = Field(description="播放入口：这一批里第一个没看完的单元；电影=0")
+    episode_number: int = Field(description="播放入口的集号；电影=0")
+    episode_name: str | None = Field(description="播放入口那一集的集名；电影或缺档案为空")
+    still_url: str | None = Field(
+        description="播放入口那一集的剧照；电影或缺剧照为空（客户端改用 media.backdrop_url）"
+    )
+    units: list[RecentArrivalUnitView] = Field(
+        description="这一批里还没看完、文件在位的全部单元（季集正序，第一个即播放入口）"
+    )
+    progress_percent: int | None = Field(description="播放入口看了一半时的进度（1~99）；没看过为空")
+    imported_at: datetime = Field(description="这一批最近一次整理入库的时间")
+
+    @field_serializer("imported_at")
+    def _serialize_utc(self, value: datetime) -> str | None:
+        return _iso_utc(value)
 
 
 def _elapsed_seconds(start: datetime | None, end: datetime | None) -> int | None:

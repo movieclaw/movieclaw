@@ -9,6 +9,7 @@ from movieclaw_media.library import (
     fetch_media_profile,
     list_image_candidates,
     pick_backdrop,
+    pick_logo,
     pick_poster,
     resolve_douban_to_tmdb,
 )
@@ -478,6 +479,56 @@ async def test_fetch_profile_falls_back_to_default_images() -> None:
     profile = await fetch_media_profile(client, MediaKind.MOVIE, 693134)
     assert profile.poster_path == "/poster.jpg"
     assert profile.backdrop_path == "/backdrop.jpg"
+    # 档案根本没带图片集：Logo 是「未知」而不是「没有」，落库时保留旧值
+    assert profile.logo_path is None
+
+
+def test_pick_logo_follows_title_language_then_english() -> None:
+    """Logo 就是片名字标：先要与片名同语言的，其次英文；档内按加权票数。"""
+    data = {
+        "images": {
+            "logos": [
+                _img("/en.png", lang="en", width=800, avg=9.0, count=500),
+                _img("/zh-low.png", lang="zh", width=800, avg=5.0, count=2),
+                _img("/zh.png", lang="zh", width=600, avg=8.0, count=40),
+            ]
+        }
+    }
+    assert pick_logo(data, primary_language="zh-CN", original_language="en") == "/zh.png"
+    data["images"]["logos"] = [data["images"]["logos"][0]]
+    assert pick_logo(data, primary_language="zh-CN", original_language="en") == "/en.png"
+
+
+def test_pick_logo_skips_svg_and_unreadable_languages() -> None:
+    """只收 PNG（客户端与缩略图代理不认 SVG）；只剩用户读不懂的语言时宁可不给，
+    让前端回落文字片名——而不是像背景图那样退回全量最优。"""
+    data = {
+        "images": {
+            "logos": [
+                _img("/zh.svg", lang="zh", width=800, avg=9.0, count=500),
+                _img("/ja.png", lang="ja", width=800, avg=9.0, count=500),
+            ]
+        }
+    }
+    assert pick_logo(data, primary_language="zh-CN", original_language="en") == ""
+    # 原声语言本身就是那门语言时，它的 Logo 可以用（片名原文就是它）
+    assert pick_logo(data, primary_language="zh-CN", original_language="ja") == "/ja.png"
+    # 没有图片集是「未知」（None），有图片集但没有 Logo 是「没有」（空串）
+    assert pick_logo({}, primary_language="zh-CN", original_language=None) is None
+    assert pick_logo({"images": {}}, primary_language="zh-CN", original_language=None) == ""
+
+
+async def test_fetch_profile_picks_logo_from_the_same_request() -> None:
+    """Logo 与海报、背景同在一次详情请求的 images 里，不额外打 TMDB。"""
+    detail = {
+        **_MOVIE_DETAIL,
+        "images": {"logos": [_img("/logo-zh.png", lang="zh", width=800, avg=7.0, count=20)]},
+    }
+    captured: list[httpx.Request] = []
+    client = _client({"/3/movie/693134": detail}, captured)
+    profile = await fetch_media_profile(client, MediaKind.MOVIE, 693134)
+    assert profile.logo_path == "/logo-zh.png"
+    assert [request.url.path for request in captured] == ["/3/movie/693134"]
 
 
 # ---------------------------------------------------------------------------

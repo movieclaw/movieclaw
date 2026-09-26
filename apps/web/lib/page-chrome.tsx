@@ -43,17 +43,10 @@ export interface PageChromeValue {
   onSearch: PageSearchHandler;
   /**
    * 发起新会话：跳 /new 整页（银玻璃手机上是一张与会话页同构的空会话页，
-   * 见 components/new-task.tsx；原底部撰写面板 2026-09-24 退役）。外壳负责
-   * 先收起「更多」面板。原「唤起 / 收起移动端抽屉」两个入口随抽屉侧栏退役
-   * 一并移除（docs/design/web-themes-mobile/04）。
+   * 见 components/new-task.tsx；原底部撰写面板 2026-09-24 退役）。原「唤起 /
+   * 收起移动端抽屉」两个入口随抽屉侧栏退役一并移除（docs/design/web-themes-mobile/04）。
    */
   openCompose: () => void;
-  /**
-   * 搜索入口是否已在底栏（银玻璃液态玻璃底栏的尾端搜索圆钮）。为 true 时
-   * PageNav / 设置返回条不再补自己的搜索键——SearchCommand 自带全局 ⌘K 监听，
-   * 全站同一时刻只能挂一份。
-   */
-  searchInTabBar: boolean;
   /**
    * 把页面级控件挂进移动端全局顶栏那一行，返回撤销函数。
    *

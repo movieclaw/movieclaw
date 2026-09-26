@@ -862,6 +862,26 @@ async def test_today_arrivals_keeps_focus_day_per_media_kind(db) -> None:
     assert by_title == {"测试电影": 0, "本周更新剧集": 3}
 
 
+async def test_today_arrivals_whole_week_keeps_every_day_in_date_order(db) -> None:
+    """App 的「日程」日期条要整周：whole_week 跳过焦点日收敛，按日期排好原样返回；
+    默认模式照旧只讲最近的一天（网页首页的口径不受影响）。"""
+    async with db.session() as session:
+        service = _service(session)
+        await service.create(MediaKind.TV, 202, selected_seasons=[1])
+        await service.create(MediaKind.TV, 203, selected_seasons=[1])
+        # 十天后的那集在一周窗口之外，整周模式同样不收
+        await service.create(MediaKind.TV, 200, selected_seasons=[2])
+
+        focus = await service.today_arrivals()
+        week = await service.today_arrivals(whole_week=True)
+
+    assert [row.media.title for row in focus] == ["今日更新剧集"]
+    assert [(row.media.title, row.days_ahead) for row in week] == [
+        ("今日更新剧集", 0),
+        ("本周更新剧集", 3),
+    ]
+
+
 async def test_today_arrivals_ignores_overdue_episodes(db) -> None:
     """早该播出却没抓到的旧集属于详情页的缺口清单，不该当成未来安排预告。"""
     async with db.session() as session:

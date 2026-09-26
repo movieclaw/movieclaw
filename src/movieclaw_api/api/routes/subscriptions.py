@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +27,8 @@ from movieclaw_api.schemas.subscription import (
     MediaBrief,
     PipelineHealthView,
     PrepareView,
+    RecentArrivalUnitView,
+    RecentArrivalView,
     ResolveCandidateView,
     RetainedTorrentView,
     SearchNowView,
@@ -47,10 +51,15 @@ from movieclaw_api.schemas.subscription import (
     UpgradeRunView,
 )
 from movieclaw_api.services.auth import Principal
+from movieclaw_api.services.library.access import visible_library_ids
 from movieclaw_api.services.library.recycle import DEFAULT_RETENTION
 from movieclaw_api.services.media_discover import get_tmdb_client
 from movieclaw_api.services.media_library import MediaLibraryService
-from movieclaw_api.services.subscription import SubscriptionService, forecast_refresh_pending
+from movieclaw_api.services.subscription import (
+    SubscriptionService,
+    forecast_refresh_pending,
+    recent_arrivals,
+)
 from movieclaw_api.services.title_discovery import (
     get_title_discovery_service,
     parse_title_ref,
@@ -407,16 +416,24 @@ async def list_subscriptions(
     operation_id="subscriptions.list-today-arrivals",
 )
 async def list_today_arrivals(
+    window: Literal["focus", "week"] = Query(
+        default="focus",
+        description=(
+            "focus=只回最近有安排的那一天（网页首页的「今日可能入库」）；"
+            "week=整周按日期原样返回（App 订阅首页的「日程」日期条）"
+        ),
+    ),
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[list[TodayArrivalView]]:
     """首页专用聚合：成员沿用“自己发起 + 自己关注”的订阅可见边界。
 
-    今天没有安排时自动回退到一周内最近的那一天（``days_ahead`` > 0），
+    默认（focus）今天没有安排时自动回退到一周内最近的那一天（``days_ahead`` > 0），
     因此返回空数组只意味着一周内确实无事可预告。
     """
     candidates = await _service(session).today_arrivals(
-        member_id=None if principal.is_admin else principal.member_id
+        member_id=None if principal.is_admin else principal.member_id,
+        whole_week=window == "week",
     )
     return ok(
         [
@@ -431,6 +448,56 @@ async def list_today_arrivals(
                 days_ahead=candidate.days_ahead,
             )
             for candidate in candidates
+        ]
+    )
+
+
+@router.get(
+    "/recent-arrivals",
+    response_model=ApiResponse[list[RecentArrivalView]],
+    summary="列出最近入库、当前账号还没看完的订阅内容",
+    operation_id="subscriptions.list-recent-arrivals",
+    # 与「接下来继续」同类：App 订阅首页的展示聚合，命令行不单独出命令
+    openapi_extra={"x-cli-hidden": True},
+)
+async def list_recent_arrivals(
+    days: int = Query(default=7, ge=1, le=30, description="回看最近多少天的入库"),
+    limit: int = Query(default=12, ge=1, le=50, description="最多返回几张卡（一部作品一张）"),
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[list[RecentArrivalView]]:
+    """订阅首页「刚刚入库」：订阅可见边界同 today-arrivals，文件可见性同「接下来继续」。
+
+    每张卡指向这一批里第一个没看完、文件在位的单元；整批看完的作品不返回。
+    """
+    visible = await _service(session).list_with_progress(
+        member_id=None if principal.is_admin else principal.member_id
+    )
+    arrivals = await recent_arrivals(
+        session,
+        subscriptions=[(sub, item) for sub, item, _counts in visible],
+        member_id=principal.member_id if principal.member_id is not None else 0,
+        visible_library_ids=await visible_library_ids(session, principal),
+        days=days,
+        limit=limit,
+    )
+    return ok(
+        [
+            RecentArrivalView(
+                subscription_id=arrival.subscription.id,  # type: ignore[arg-type]
+                media=MediaBrief.from_model(arrival.media),
+                season_number=arrival.display[0],
+                episode_number=arrival.display[1],
+                episode_name=arrival.episode_name,
+                still_url=arrival.still_url,
+                units=[
+                    RecentArrivalUnitView(season_number=season, episode_number=episode)
+                    for season, episode in arrival.units
+                ],
+                progress_percent=arrival.progress_percent,
+                imported_at=arrival.imported_at,
+            )
+            for arrival in arrivals
         ]
     )
 
