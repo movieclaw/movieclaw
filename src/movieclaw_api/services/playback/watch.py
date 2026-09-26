@@ -40,6 +40,12 @@ from movieclaw_playback.streaming import stop_device_streams
 #: 同一位置，下游据此区分「这次播放来自哪儿」。
 WEB_CLIENT_NAME = "MovieClaw Web"
 
+#: 原生 iOS App 的客户端名。App 与网页共用同一套登录会话与上报接口，只能靠
+#: User-Agent 区分：App 的每个请求都带 ``MovieClaw-iOS/<版本> (iPhone; iOS 26.0)``。
+IOS_CLIENT_NAME = "MovieClaw iOS"
+_IOS_USER_AGENT = re.compile(r"MovieClaw-iOS/(?P<version>[0-9A-Za-z._+-]+)")
+_IOS_SYSTEM = re.compile(r"\b(?:iOS|iPadOS) (?P<os>[0-9.]+)")
+
 #: 网页端设备标识的命名空间前缀：与 Jellyfin 设备 id 同在一张注册表里，
 #: 加前缀避免两类标识意外撞车。
 _WEB_DEVICE_PREFIX = "web-"
@@ -108,7 +114,22 @@ def web_device_id(raw: str | None, *, member_id: int) -> str:
 
 
 def web_client_info(*, device_id: str, user_agent: str | None) -> ClientInfo:
-    """网页播放器的客户端信息；``device_id`` 须已经过 :func:`web_device_id`。"""
+    """网页播放器 / 原生 App 的客户端信息；``device_id`` 须已经过 :func:`web_device_id`。
+
+    原生 iOS App 按 User-Agent 认出来，记成「MovieClaw iOS · iPhone」并带上 App 版本，
+    活动页与 webhook 不再把它当成「MovieClaw Web · 浏览器」。
+    """
+    ua = user_agent or ""
+    app = _IOS_USER_AGENT.search(ua)
+    if app is not None:
+        device = next((name for needle, name in _PLATFORMS if needle in ua), "iPhone")
+        system = _IOS_SYSTEM.search(ua)
+        return ClientInfo(
+            name=IOS_CLIENT_NAME,
+            device_name=f"{device} · iOS {system['os']}" if system else device,
+            device_id=device_id,
+            version=app["version"],
+        )
     return ClientInfo(
         name=WEB_CLIENT_NAME,
         device_name=describe_user_agent(user_agent),
