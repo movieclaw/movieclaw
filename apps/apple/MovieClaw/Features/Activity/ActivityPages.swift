@@ -89,6 +89,8 @@ private struct ActivityBoostPage: View {
     @Environment(\.api) private var api
     @Environment(Feedback.self) private var feedback
     @State private var pool: API.BoostPoolView?
+    /// 服务端支持清理（旧版服务端没有 /sites/boost-pool 时隐藏清理入口）
+    @State private var supportsCleanup = false
     @State private var confirming = false
     @State private var cleaning = false
 
@@ -134,6 +136,7 @@ private struct ActivityBoostPage: View {
                 } header: {
                     Text("按上行速度排序").textCase(nil)
                 }
+                if supportsCleanup {
                 Section {
                     Button(role: .destructive) {
                         Task { await prepareCleanup() }
@@ -149,6 +152,7 @@ private struct ActivityBoostPage: View {
                     .accessibilityIdentifier("boost-cleanup")
                 } footer: {
                     Text("从下载器删除刷流种子及其数据文件，无法恢复。还没做满站点要求做种时长的，默认等到期后再自动删除，避免被记 H&R。")
+                }
                 }
             }
         }
@@ -231,7 +235,9 @@ private struct ActivityBoostPage: View {
     }
 
     private func loadPool() async {
-        if let latest = try? await api.siteBoostPoolShow() { pool = latest }
+        guard let loaded = await ActivityBoostPoolLoader.load(api) else { return }
+        pool = loaded.pool
+        supportsCleanup = loaded.supportsCleanup
     }
 
     /// 先取最新概况再弹确认（刚关掉刷流 / 保留期刚过，旧数据会讲错后果）

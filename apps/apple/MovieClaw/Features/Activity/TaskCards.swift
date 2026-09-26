@@ -631,7 +631,7 @@ struct ActivityBoostSites {
             } else {
                 .off
             }
-            let name = info?.siteName ?? tasks.first?.siteName ?? (siteId.isEmpty ? "未知站点" : siteId)
+            let name = tasks.first?.siteName ?? info?.siteName ?? (siteId.isEmpty ? "未知站点" : siteId)
             return Site(id: siteId, name: name, mode: mode, tasks: tasks, pool: info)
         }
         .sorted { $0.tasks.count > $1.tasks.count }
@@ -644,6 +644,26 @@ struct ActivityBoostSites {
 
     /// 已请求清理、等着自动删除的种子数
     var scheduledCount: Int { taskStates.values.filter(\.cleanupScheduled).count }
+}
+
+/// 读刷流在池概况。旧版服务端没有 `GET /sites/boost-pool`（App 可能比服务端新）时退回站点列表，
+/// 只拿各站开关 / 暂停状态——没有保留期与清理信息，`supportsCleanup=false`，清理入口不出现。
+enum ActivityBoostPoolLoader {
+    static func load(_ api: APIClient) async -> (pool: API.BoostPoolView, supportsCleanup: Bool)? {
+        if let pool = try? await api.siteBoostPoolShow() { return (pool, true) }
+        guard let sites = try? await api.siteList() else { return nil }
+        let fallback = API.BoostPoolView(
+            sites: sites.map {
+                API.BoostPoolSiteView(
+                    siteId: $0.siteId, siteName: $0.siteId, boostEnabled: $0.boostEnabled, boostPaused: $0.boostPaused,
+                    taskCount: 0, sizeBytes: 0, deletableCount: 0, deletableBytes: 0,
+                    protectedCount: 0, protectedBytes: 0, protectedUntil: nil, scheduledCount: 0
+                )
+            },
+            tasks: []
+        )
+        return (fallback, false)
+    }
 }
 
 /// 刷流清理的文案（活动页刷流做种、设置页关闭刷流两处共用）

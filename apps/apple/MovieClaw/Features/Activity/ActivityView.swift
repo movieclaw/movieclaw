@@ -196,7 +196,7 @@ struct ActivityView: View {
             await loadExtras(scope: media.scope)
         }
         .task(id: activity.boostTasks.isEmpty) {
-            if !activity.boostTasks.isEmpty { boostPool = (try? await api.siteBoostPoolShow()) ?? boostPool }
+            if !activity.boostTasks.isEmpty, let loaded = await ActivityBoostPoolLoader.load(api) { boostPool = loaded.pool }
         }
         .onChange(of: router.rootParameter, initial: true) { _, parameter in
             // 站内链接 /activity?view=…：点名二级页的（plays / stats / history / active）接着压栈打开，
@@ -309,6 +309,6 @@ struct ActivityView: View {
         async let stats = api.playbackStatsWatch(days: 7, tzOffset: offset, memberId: nil, scope: scope)
         if let page = try? await plays { recentPlays = page.entries }
         if let result = try? await stats { weekly = result }
-        if !badges.tasks.activity.boostTasks.isEmpty { boostPool = (try? await api.siteBoostPoolShow()) ?? boostPool }
+        if !badges.tasks.activity.boostTasks.isEmpty, let loaded = await ActivityBoostPoolLoader.load(api) { boostPool = loaded.pool }
     }
 }
