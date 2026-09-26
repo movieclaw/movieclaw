@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 /// AI 会话页（`/sessions/{id}`，对应 Web `components/agent-conversation-view.tsx`）。
 ///
@@ -263,15 +262,12 @@ struct AgentConversationView: View {
 
     // MARK: 会话菜单
 
-    /// 当前会话的操作：从此处创建新会话（聊天记录页最常用，放第一位）/ 重命名 / 复制会话 ID / 删除
+    /// 当前会话的操作：从此处创建新会话（聊天记录页最常用，放第一位）/ 重命名 / 删除
+    /// （「更多」页最近会话的行尾菜单与此同图标、同顺序）
     private var sessionMenu: some View {
         Menu {
             Button("从此处创建新会话", systemImage: "arrow.triangle.branch") { Task { await fork() } }
             Button("重命名", systemImage: "pencil") { Task { await rename() } }
-            Button("复制会话 ID", systemImage: "doc.on.doc") {
-                UIPasteboard.general.string = sessionId
-                feedback.success("会话 ID 已复制")
-            }
             Divider()
             Button("删除会话", systemImage: "trash", role: .destructive) { Task { await remove() } }
         } label: {

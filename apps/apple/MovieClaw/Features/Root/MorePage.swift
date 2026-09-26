@@ -9,7 +9,7 @@ import SwiftUI
 /// - 账号：切换账号 / 退出登录；
 /// - 最近会话（管理员）：首行「新会话」（顶栏的「+」已去掉，这里是发起新会话的入口），下面是 AI 会话，
 ///   每页 20 条、滑到末尾自动加载下一页（用户决定不要「显示全部 / 收起」，与 Web 的差异）；
-///   行尾常驻「⋯」菜单：在新会话中继续 / 复制会话 ID / 重命名 / 删除会话。
+///   操作走 iOS 列表惯例：左滑删除 / 重命名、右滑在新会话中继续、长按出完整菜单（与会话页右上角同图标、同顺序）。
 ///
 /// 原先是点左上角头像弹出的 sheet（右上「完成」关闭），2026-09-26 头像挪进标签栏后改为标签根页；
 /// 站内链接 `/my` 也切到这个标签（Router.tabRoot）。
@@ -131,43 +131,37 @@ struct MorePage: View {
         .polling(every: 30, immediately: true) { await loadNotices() }
     }
 
-    @ViewBuilder
+    /// 会话行按 iOS 列表惯例处理操作（同邮件 / 信息）：行上不放「⋯」，左滑出「删除 / 重命名」，
+    /// 右滑出「在新会话中继续」，长按出完整菜单（与会话页右上角同图标、同顺序）。
+    /// 删除不允许一滑到底直接触发——删除要二次确认，全滑手势容易误触。
     private func sessionRow(_ item: API.SessionSummary) -> some View {
-        HStack(spacing: 8) {
-            MoreRouteRow(routes: [.session(id: item.id)], showsChevron: false) {
-                HStack(spacing: 10) {
-                    if item.running {
-                        MoreRunningDot()
-                    }
-                    Text(title(of: item)).lineLimit(1)
+        MoreRouteRow(routes: [.session(id: item.id)]) {
+            HStack(spacing: 10) {
+                if item.running {
+                    MoreRunningDot()
                 }
+                Text(title(of: item)).lineLimit(1)
             }
-            // 一行里有两个可点控件：必须各自 borderless，否则 List 会把整行点击同时派给两者
-            .buttonStyle(.borderless)
-            // 行尾常驻「⋯」（Web ConversationMenu），不再只能靠长按发现
-            Menu {
-                sessionActions(item)
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(Theme.textMuted)
-                    .frame(width: 32, height: 32)
-                    .contentShape(Rectangle().inset(by: -6))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("会话操作")
+        }
+        .accessibilityIdentifier("more-session-row")
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("删除", systemImage: "trash", role: .destructive) { Task { await remove(item) } }
+                .tint(.red)
+            Button("重命名", systemImage: "pencil") { Task { await rename(item) } }
+                .tint(.gray)
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            Button("在新会话中继续", systemImage: "arrow.triangle.branch") { Task { await fork(item) } }
+                .tint(.blue)
         }
         .contextMenu { sessionActions(item) }
     }
 
     @ViewBuilder
     private func sessionActions(_ item: API.SessionSummary) -> some View {
-        Button("在新会话中继续", systemImage: "bubble.left") { Task { await fork(item) } }
-        Button("复制会话 ID", systemImage: "doc.on.doc") {
-            UIPasteboard.general.string = item.id
-            feedback.success("会话 ID 已复制")
-        }
+        Button("在新会话中继续", systemImage: "arrow.triangle.branch") { Task { await fork(item) } }
         Button("重命名", systemImage: "pencil") { Task { await rename(item) } }
+        Divider()
         Button("删除会话", systemImage: "trash", role: .destructive) { Task { await remove(item) } }
     }
 
