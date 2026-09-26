@@ -61,7 +61,7 @@ final class ShellParityUITests: XCTestCase {
 
     // MARK: 外壳
 
-    /// 「更多」页（标签栏最右的头像页签）：会话行常驻 ⋯（菜单四项）、展开 / 收起、切换账号弹层文案
+    /// 「更多」页（标签栏最右的头像页签）：「新会话」入口、会话行常驻 ⋯（菜单四项）、切换账号弹层文案
     @MainActor
     func testMoreTabAndAccountSwitcher() throws {
         let app = try launch(route: "/library")
@@ -72,13 +72,7 @@ final class ShellParityUITests: XCTestCase {
         let menu = app.buttons.matching(identifier: "会话操作").firstMatch
         XCTAssertTrue(menu.waitForExistence(timeout: 15), "会话行应常驻 ⋯")
         snapshot("更多-页签")
-        let toggle = app.buttons["more-sessions-toggle"]
-        if toggle.waitForExistence(timeout: 3) {
-            tapSafely(app, toggle, "显示全部")
-            XCTAssertTrue(toggle.label.contains("收起"), "展开后应能「收起」")
-            snapshot("更多-展开")
-            tapSafely(app, toggle, "收起")
-        }
+        XCTAssertTrue(app.buttons["more-new-session"].exists, "最近会话首行应有「新会话」入口")
         tapSafely(app, menu, "会话 ⋯")
         for title in ["在新会话中继续", "复制会话 ID", "重命名", "删除会话"] {
             XCTAssertTrue(app.buttons[title].waitForExistence(timeout: 5), "⋯ 菜单应有「\(title)」")

@@ -7,7 +7,8 @@ import SwiftUI
 /// - 常用：个人信息 / 待处理（管理员且有事项时，30 秒轮询）/ 设置 / 应用更新（管理员且有待更新时，
 ///   文案「新版本 vX」或「新识别模型 X」）；
 /// - 账号：切换账号 / 退出登录；
-/// - 最近会话（管理员）：AI 会话（取最近 20 条），默认露出 5 条，其余就地展开、可再收起；
+/// - 最近会话（管理员）：首行「新会话」（顶栏的「+」已去掉，这里是发起新会话的入口），下面是 AI 会话，
+///   每页 20 条、滑到末尾自动加载下一页（用户决定不要「显示全部 / 收起」，与 Web 的差异）；
 ///   行尾常驻「⋯」菜单：在新会话中继续 / 复制会话 ID / 重命名 / 删除会话。
 ///
 /// 原先是点左上角头像弹出的 sheet（右上「完成」关闭），2026-09-26 头像挪进标签栏后改为标签根页；
@@ -22,10 +23,10 @@ struct MorePage: View {
 
     @State private var sessions: [API.SessionSummary] = []
     @State private var notices: [API.NoticeView] = []
-    @State private var showAllSessions = false
-    /// 默认露出的会话条数（Web RECENT_SESSIONS_LIMIT）
-    private static let recentLimit = 5
-    /// 会话列表取回条数（Web agent-conversations 的 PAGE_SIZE）
+    /// 还有更早的会话没取回（上一页取满了一整页）
+    @State private var hasMoreSessions = false
+    @State private var loadingMoreSessions = false
+    /// 会话列表每页条数（Web agent-conversations 的 PAGE_SIZE）
     private static let pageSize = 20
 
     var body: some View {
@@ -100,30 +101,24 @@ struct MorePage: View {
 
             if permissions.isAdmin {
                 Section("最近会话") {
+                    MoreRouteRow(routes: [.newSession], tint: Theme.accentStrong) {
+                        Label("新会话", systemImage: "square.and.pencil").fontWeight(.medium)
+                    }
+                    .accessibilityIdentifier("more-new-session")
                     if sessions.isEmpty {
                         Text("还没有会话，点上方的「新会话」开始。")
                             .font(.caption)
                             .foregroundStyle(Theme.textFaint)
                     }
-                    ForEach(visibleSessions, id: \.id) { item in
+                    ForEach(sessions, id: \.id) { item in
                         sessionRow(item)
-                    }
-                    if sessions.count > Self.recentLimit {
-                        // 展开/收起行：文字居中弱化 + 上下箭头（Web 同款，区别于「点进去」的右箭头）
-                        Button {
-                            withAnimation { showAllSessions.toggle() }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Spacer()
-                                Text(showAllSessions ? "收起" : "显示全部 \(sessions.count) 个会话")
-                                Image(systemName: "chevron.down")
-                                    .font(.footnote.weight(.semibold))
-                                    .rotationEffect(.degrees(showAllSessions ? 180 : 0))
-                                Spacer()
+                            // 滑到最后一条时接着取下一页，不再要「显示全部」
+                            .onAppear {
+                                if item.id == sessions.last?.id { Task { await loadMoreSessions() } }
                             }
-                        }
-                        .foregroundStyle(Theme.textMuted)
-                        .accessibilityIdentifier("more-sessions-toggle")
+                    }
+                    if loadingMoreSessions {
+                        HStack { Spacer(); ProgressView(); Spacer() }
                     }
                 }
             }
@@ -134,10 +129,6 @@ struct MorePage: View {
         .task { await loadSessions() }
         // 待处理事项与 Web NoticeCenter 同频 30 秒轮询（首轮立即拉）
         .polling(every: 30, immediately: true) { await loadNotices() }
-    }
-
-    private var visibleSessions: [API.SessionSummary] {
-        showAllSessions ? sessions : Array(sessions.prefix(Self.recentLimit))
     }
 
     @ViewBuilder
@@ -186,9 +177,22 @@ struct MorePage: View {
         return "未命名会话"
     }
 
+    /// 取第一页（进页、从会话里回来时刷新）；失败保留上次结果
     private func loadSessions() async {
-        guard permissions.isAdmin else { return }
-        sessions = (try? await api.sessionList(limit: Self.pageSize)) ?? sessions
+        guard permissions.isAdmin, let first = try? await api.sessionList(limit: Self.pageSize) else { return }
+        sessions = first
+        hasMoreSessions = first.count == Self.pageSize
+    }
+
+    /// 接着取下一页；按 id 去重（翻页期间有新会话插到最前，偏移会错开一条）
+    private func loadMoreSessions() async {
+        guard hasMoreSessions, !loadingMoreSessions else { return }
+        loadingMoreSessions = true
+        defer { loadingMoreSessions = false }
+        guard let page = try? await api.sessionList(limit: Self.pageSize, offset: sessions.count) else { return }
+        let known = Set(sessions.map(\.id))
+        sessions += page.filter { !known.contains($0.id) }
+        hasMoreSessions = page.count == Self.pageSize
     }
 
     private func loadNotices() async {
