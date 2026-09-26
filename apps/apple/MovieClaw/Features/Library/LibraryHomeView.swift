@@ -97,20 +97,22 @@ struct LibraryHomeView: View {
         .navigationTitle("媒体库")
         .toolbarTitleDisplayMode(.inlineLarge)
         .toolbar {
+            // 页面级动作都是低频的配置入口，收进一个 ⋯ 菜单：顶栏与发现、订阅页一致，
+            // 只有「一个页面按钮 + 最右的搜索圆钮」。原先平铺的 list.bullet / 齿轮图标
+            // 在 iOS 里分别像「切列表视图」「App 设置」，含义对不上（2026-09-26 用户要求整理）
             ToolbarItem(placement: .topBarTrailing) {
-                NavigationLink(value: AppRoute.libraryCustomize) {
-                    Image(systemName: "list.bullet")
-                }
-                .accessibilityLabel("自定义首页")
-                .accessibilityIdentifier("library-customize")
-            }
-            if permissions.canManageLibraries {
-                ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink(value: AppRoute.libraryManage()) {
-                        Image(systemName: "gearshape")
+                Menu {
+                    Button("自定义首页", systemImage: "slider.horizontal.3") { router.push(.libraryCustomize) }
+                        .accessibilityIdentifier("library-customize")
+                    Button("全部合集", systemImage: "rectangle.stack") { router.push(.allCollections) }
+                    if permissions.canManageLibraries {
+                        Button("管理媒体库", systemImage: "externaldrive") { router.push(.libraryManage()) }
                     }
-                    .accessibilityLabel("管理媒体库")
+                } label: {
+                    Image(systemName: "ellipsis")
                 }
+                .accessibilityLabel("更多操作")
+                .accessibilityIdentifier("library-more")
             }
         }
         .refreshable { await reload() }
@@ -147,27 +149,17 @@ struct LibraryHomeView: View {
 
     // MARK: 页头
 
-    @ViewBuilder
+    /// 统计行。「全部合集」的固定入口在右上角 ⋯ 菜单里（「我的媒体库」行标题右侧另有一个顺手入口），
+    /// 那一行被隐藏时不必再往页头挪
     private var header: some View {
-        let visibleRows = rows.filter { !$0.hidden }
-        let librariesRowVisible = visibleRows.contains { $0.kind == .libraries } && !visibleLibraries.isEmpty
-        // 「全部合集」默认挂在「我的媒体库」行标题右侧；那一行不在时抬到页头，保证始终有路进得去
-        let collectionsEntryInHeader = !collections.isEmpty && !librariesRowVisible
-        HStack(alignment: .top) {
-            Text(failed && libraries == nil ? "暂时无法获取媒体库统计，正在自动重试" : libraryStatsSummary(libraries == nil ? nil : visibleLibraries))
-                .font(.subheadline)
-                .foregroundStyle(Theme.textMuted)
-                .lineLimit(2)
-                .accessibilityIdentifier("library-stats")
-            Spacer(minLength: 8)
-            if collectionsEntryInHeader {
-                NavigationLink(value: AppRoute.allCollections) {
-                    Text("全部合集 ›").font(.subheadline).foregroundStyle(Theme.textFaint)
-                }
-            }
-        }
-        .padding(.horizontal, Theme.pagePadding)
-        .padding(.top, 4)
+        Text(failed && libraries == nil ? "暂时无法获取媒体库统计，正在自动重试" : libraryStatsSummary(libraries == nil ? nil : visibleLibraries))
+            .font(.subheadline)
+            .foregroundStyle(Theme.textMuted)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("library-stats")
+            .padding(.horizontal, Theme.pagePadding)
+            .padding(.top, 4)
     }
 
     @ViewBuilder

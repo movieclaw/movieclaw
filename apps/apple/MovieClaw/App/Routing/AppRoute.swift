@@ -39,8 +39,9 @@ enum AppRoute: Hashable {
 
     // MARK: 搜索
     /// 搜索首页（输入框 + 模式 + 最近搜索，对应 Web 的搜索命令面板，没有网页地址）：
-    /// 各标签根页右上角的放大镜压栈打开，结果页接着压在同一个栈里
-    case searchHome
+    /// 各标签根页右上角的放大镜压栈打开，结果页接着压在同一个栈里。
+    /// mode = 进页时预选的模式（媒体库页签进来预选「媒体库」），nil = 沿用上次记住的模式
+    case searchHome(mode: SearchVertical? = nil)
     /// /search?q=&tab=&scope=&snapshot=&for_sub=
     case search(SearchQuery)
 
