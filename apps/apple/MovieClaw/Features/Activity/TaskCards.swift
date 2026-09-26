@@ -692,8 +692,12 @@ enum ActivityBoostCleanupText {
     }
 }
 
-/// 刷流单行：站点 + 名称（可点开种子页）占一行，数字列（↑速度 / 累计上传 / 体积）另起一行逐行对齐；
-/// 下载中的少数种子再补一行进度与下行速度
+/// 刷流单行（刷流做种页的列表行）。
+///
+/// 版式按「先认得出是哪个种子，再看数字」：种子名独占整行、最多两行（原来站点徽标占掉左侧一截，
+/// 名称只剩一行被截断）；站点、体积、累计上传收成一行小字；正在出力的上传速度靠右、绿色，
+/// 静默种子不显示速度（大多数是 0，挂一排「—」没有信息量）。下载中的少数种子再补一条进度条。
+/// 整行可点，打开站点种子详情页。
 struct BoostTaskRow: View {
     let task: API.DownloadTaskView
     /// 清理备注（「已请求清理 · 9月29日 14:00 后自动删除」）；nil = 不显示
@@ -701,46 +705,49 @@ struct BoostTaskRow: View {
     @Environment(\.openURL) private var openURL
 
     var body: some View {
+        if let url = task.pageUrl.flatMap(URL.init(string:)) {
+            Button { openURL(url) } label: { content }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         let downloading = task.state == "downloading"
         let percent = task.progress.map { Int(($0 * 100).rounded(.down)) }
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                if let site = task.siteName {
-                    Text(site).font(.caption.weight(.medium)).foregroundStyle(Theme.textMuted).lineLimit(1)
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(Color.white.opacity(0.06), in: .capsule)
-                        .frame(maxWidth: 80, alignment: .leading)
-                }
-                Button {
-                    if let page = task.pageUrl, let url = URL(string: page) { openURL(url) }
-                } label: {
-                    Text(TaskCenter.nonEmpty(task.name) ?? task.infoHash)
-                        .font(.subheadline).foregroundStyle(Theme.text.opacity(0.8)).lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .disabled(task.pageUrl == nil)
-            }
-            Grid(horizontalSpacing: 8) {
-                GridRow {
-                    SpeedStat(direction: .up, bytesPerSecond: task.upspeedBytes, placeholder: "—")
-                        .gridColumnAlignment(.trailing).frame(maxWidth: .infinity, alignment: .trailing)
-                    Text(task.uploadedBytes.flatMap { $0 > 0 ? "累计 ↑\(ActivityFormat.bytes(Double($0)))" : nil } ?? "—")
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                    Text(task.sizeBytes.map { ActivityFormat.bytes(Double($0)) } ?? "—")
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+        let upSpeed = task.upspeedBytes ?? 0
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(TaskCenter.nonEmpty(task.name) ?? task.infoHash)
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if upSpeed > 0 {
+                    Text("↑ \(ActivityFormat.rate(Double(upSpeed)))")
+                        .font(.footnote.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.success)
+                        .fixedSize()
                 }
             }
-            .font(.caption)
+            Text(WatchFormat.metaLine([
+                task.siteName,
+                task.sizeBytes.map { ActivityFormat.bytes(Double($0)) },
+                (task.uploadedBytes ?? 0) > 0 ? "已上传 \(ActivityFormat.bytes(Double(task.uploadedBytes ?? 0)))" : nil,
+            ]))
+            .font(.footnote)
             .monospacedDigit()
+            .foregroundStyle(Theme.textMuted)
             .lineLimit(1)
-            .foregroundStyle(Theme.textFaint)
-            if (downloading && percent != nil) || (task.dlspeedBytes ?? 0) > 0 {
+            if downloading, let percent {
                 HStack(spacing: 8) {
-                    Spacer()
-                    if downloading, let percent { Text("\(percent)%").monospacedDigit() }
-                    SpeedStat(direction: .down, bytesPerSecond: task.dlspeedBytes)
+                    ProgressView(value: Double(percent), total: 100).tint(Theme.info)
+                    Text("\(percent)%").monospacedDigit()
+                    if let down = task.dlspeedBytes, down > 0 {
+                        Text("↓ \(ActivityFormat.rate(Double(down)))").monospacedDigit()
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(Theme.textFaint)
@@ -751,6 +758,7 @@ struct BoostTaskRow: View {
                     .foregroundStyle(Theme.warning)
             }
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 4)
+        .contentShape(.rect)
     }
 }
