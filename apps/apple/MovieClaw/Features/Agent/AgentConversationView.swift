@@ -44,7 +44,7 @@ struct AgentConversationView: View {
             .background(Theme.background.ignoresSafeArea())
             .navigationTitle(conversation.loaded ? conversation.title : "AI 会话")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarVisibility(.hidden, for: .tabBar)
+            .hidesTabBar()
             .toolbar { AgentTopBarActions() }
             .environment(\.openURL, OpenURLAction { url in
                 // 站内链接（相对路径或指向当前服务器）走原生路由；外链交给系统浏览器（同 Web 新窗口打开）
