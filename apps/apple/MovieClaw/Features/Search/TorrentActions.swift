@@ -264,68 +264,9 @@ struct TorrentActionsSheet: View {
     }
 }
 
-/// 筛选弹层（对应 Web FilterSheet）：站点 / 年份 / 季 / 集 / 片源 / 流媒体平台 / 编码 / HDR / 音频 / 字幕 / 压制组，
-/// 组内多选为「或」、组间为「且」，每个选项带「选中后会看到的条数」，底部实时显示命中数。
-struct TorrentFilterSheet: View {
-    @Bindable var model: TorrentSearchModel
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    Text("可多选，分类之间组合生效").font(.caption).foregroundStyle(Theme.textFaint)
-                    ForEach(TorrentFilterDim.sheetDims, id: \.self) { dim in
-                        let values = dimValues(dim)
-                        if !values.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(dim.title).font(.caption.weight(.medium)).foregroundStyle(Theme.textFaint)
-                                DiscoverFlowLayout(spacing: 6, lineSpacing: 6) {
-                                    ForEach(values, id: \.value) { facet in
-                                        DiscoverChip(
-                                            label: TorrentSearchLogic.facetLabel(dim, facet.value, siteName: model.siteName),
-                                            count: facet.count,
-                                            active: model.filters.values(dim).contains(facet.value)
-                                        ) {
-                                            model.filters.toggle(dim, facet.value)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(Theme.pagePadding)
-            }
-            .background(Theme.background)
-            .navigationTitle("筛选结果")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("清除全部") { model.filters = TorrentFilters() }
-                        .accessibilityIdentifier("torrent-filter-clear")
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("查看 \(model.filtered.count) 条结果") { dismiss() }
-                        .discoverProminentButton()
-                        .accessibilityIdentifier("torrent-filter-done")
-                }
-            }
-        }
-        .presentationDetents([.large])
-        .discoverContainer("torrent-filter-sheet")
-    }
-
-    /// 站点维度只列成功返回的站点（顺序同站点状态），其余维度用聚合结果
-    private func dimValues(_ dim: TorrentFilterDim) -> [TorrentFacetValue] {
-        guard dim == .site else { return model.facets.values(dim) }
-        let counts = Dictionary(model.facets.values(.site).map { ($0.value, $0.count) }, uniquingKeysWith: { a, _ in a })
-        return model.okSites.map { TorrentFacetValue(value: $0.siteId, count: counts[$0.siteId] ?? 0) }
-    }
-}
-
 /// 逐站搜索详情：状态、命中条数、耗时（十几秒后失败多半是超时，秒失败多半是认证/解析）；
-/// 失败站可「重试该站」或「去站点设置」；底部给整次搜索总耗时。
+/// 失败站可「重试该站」或「去站点设置」；段脚给整次搜索总耗时。
+/// 用 App 统一的玻璃弹层骨架（`SubsSheetScaffold`，同订阅弹层）：高度贴合内容、悬浮液态玻璃材质、左上 ✕ 关闭。
 struct SiteStatusSheet: View {
     let model: TorrentSearchModel
     let canRetry: Bool
@@ -334,62 +275,63 @@ struct SiteStatusSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            List {
+        SubsSheetScaffold(title: "站点搜索详情", closeTitle: "完成") {
+            Section {
                 ForEach(model.sites) { site in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(site.state == .searching ? Theme.accent : site.state == .error ? Theme.danger : Theme.success)
-                                .frame(width: 7, height: 7)
-                            Text(site.siteName).foregroundStyle(Theme.text)
-                            Spacer()
-                            switch site.state {
-                            case .searching:
-                                Text("搜索中…").foregroundStyle(Theme.textFaint)
-                            case .ok:
-                                Text("\(site.count) 条" + (site.elapsedMs.map { " · \(TorrentSearchLogic.elapsedText($0))" } ?? ""))
-                                    .foregroundStyle(Theme.textMuted)
-                            case .error:
-                                Text("失败" + (site.elapsedMs.map { " · \(TorrentSearchLogic.elapsedText($0))" } ?? ""))
-                                    .foregroundStyle(Theme.danger)
-                            }
-                        }
-                        .font(.subheadline)
-                        .monospacedDigit()
-                        if site.state == .error {
-                            if let error = site.error {
-                                Text(error).font(.caption).foregroundStyle(Color(red: 1, green: 0.6, blue: 0.6).opacity(0.85))
-                            }
-                            HStack(spacing: 16) {
-                                if canRetry {
-                                    Button("重试该站") { model.retrySite(site.siteId, api: api) }
-                                }
-                                Button("去站点设置 ›") {
-                                    dismiss()
-                                    router.push(.settingsSection(.sites))
-                                }
-                            }
-                            .font(.caption.weight(.semibold))
-                            .buttonStyle(.borderless)
-                        }
-                    }
+                    row(site)
                 }
+            } footer: {
                 if let total = model.totalElapsedMs {
                     Text("总耗时 \(TorrentSearchLogic.elapsedText(total))（以最慢的站点为准）")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textFaint)
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(Theme.background)
-            .navigationTitle("站点搜索详情")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+        }
+        .discoverContainer("site-status-sheet")
+    }
+
+    /// 一个站点：状态小圆点 + 站名，右边条数与耗时（搜索中转圈）；失败时下面写原因和两个补救动作
+    private func row(_ site: TorrentSearchModel.SiteProgress) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(site.state == .searching ? Theme.accent : site.state == .error ? Theme.danger : Theme.success)
+                    .frame(width: 7, height: 7)
+                Text(site.siteName).foregroundStyle(Theme.text)
+                Spacer()
+                switch site.state {
+                case .searching:
+                    ProgressView().controlSize(.small).accessibilityLabel("搜索中")
+                case .ok:
+                    Text("\(site.count) 条" + (site.elapsedMs.map { " · \(TorrentSearchLogic.elapsedText($0))" } ?? ""))
+                        .foregroundStyle(Theme.textMuted)
+                case .error:
+                    Text("失败" + (site.elapsedMs.map { " · \(TorrentSearchLogic.elapsedText($0))" } ?? ""))
+                        .foregroundStyle(Theme.danger)
+                }
+            }
+            .monospacedDigit()
+            if site.state == .error {
+                if let error = site.error {
+                    Text(error)
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.danger.opacity(0.85))
+                        .padding(.leading, 17)
+                }
+                HStack(spacing: 8) {
+                    if canRetry {
+                        Button("重试该站", systemImage: "arrow.clockwise") { model.retrySite(site.siteId, api: api) }
+                    }
+                    Button("去站点设置", systemImage: "gearshape") {
+                        dismiss()
+                        router.push(.settingsSection(.sites))
+                    }
+                }
+                .font(.subheadline)
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .padding(.leading, 17)
             }
         }
-        .presentationDetents([.medium, .large])
-        .discoverContainer("torrent-sites-sheet")
+        .padding(.vertical, 2)
     }
 }

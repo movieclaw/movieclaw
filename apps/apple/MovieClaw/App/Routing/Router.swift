@@ -117,6 +117,8 @@ final class Router {
     var activePlayback: PlaybackController?
     /// 全局弹层
     var sheet: AppSheet?
+    /// 结果页点顶部搜索词胶囊回到搜索首页时要回填的内容；搜索首页出现时取走（见 `SearchHomeView`）
+    var searchDraft: SearchDraft?
 
     /// 当前标签的导航栈（绑定给 NavigationStack）
     func path(for tab: MainTab) -> Binding<[AppRoute]> {
@@ -198,6 +200,19 @@ final class Router {
 
     func pop() {
         _ = paths[selectedTab]?.popLast()
+    }
+
+    /// 从结果页回到搜索首页改词重搜：结果页正压在搜索首页上面就退回去，否则（订阅页手动选种、
+    /// 深链等别处直达的结果页）在上面新开一个搜索首页。回填内容经 `searchDraft` 交给搜索首页
+    func editSearch(_ draft: SearchDraft) {
+        searchDraft = draft
+        var path = paths[selectedTab] ?? []
+        if path.count >= 2, case .searchHome = path[path.count - 2] {
+            path.removeLast()
+        } else {
+            path.append(.searchHome(mode: draft.mode))
+        }
+        paths[selectedTab] = path
     }
 
     func popToRoot() {

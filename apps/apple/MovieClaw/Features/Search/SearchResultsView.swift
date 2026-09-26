@@ -2,8 +2,12 @@ import SwiftUI
 
 /// 搜索结果页（对应 Web `app/(app)/search/page.tsx`）：`/search?q=&tab=&scope=&snapshot=&for_sub=`。
 ///
-/// 顶部垂直选项卡「影视 | 站点资源 | 媒体库」（按权限裁剪），站点资源下还有范围 chips（全部 + 可见分类/预设，
-/// 切换即按新范围重新搜索）。各垂直**惰性挂载 + 切换保活**：站点资源的跨站搜索是秒级重操作，
+/// 顶栏按 iOS 26 液态玻璃的做法（同「照片」看大图时顶部居中的玻璃胶囊）：
+/// - 居中是写着搜索词的玻璃胶囊，点它回到搜索首页、关键词已填好并弹出键盘，改完再搜（`Router.editSearch`）；
+/// - 站点资源垂直时右上角是范围按钮（同发现页的筛选按钮：默认「全部」，选了就写分类名），
+///   点开是系统玻璃菜单，列全部 / 内置分类 / 自定义分类，切换即按新范围重新搜索；
+///   旁边是视图切换键（分组 / 列表 / 图览，见 `TorrentViewModeMenu`）；
+/// - 下面一行是垂直选项卡「影视 | 站点资源 | 媒体库」（按权限裁剪）。各垂直**惰性挂载 + 切换保活**：站点资源的跨站搜索是秒级重操作，
 /// 只有真正切到它才发起；切走后流式搜索照常进行、结果保留，切回来不重搜。
 ///
 /// 关键词为空 = 浏览模式：只逛站点资源的分类列表页（影视/媒体库没有「浏览」语义）。
@@ -15,6 +19,7 @@ struct SearchResultsView: View {
 
     @Environment(\.api) private var api
     @Environment(\.permissions) private var permissions
+    @Environment(Router.self) private var router
 
     @State private var vertical: SearchVertical = .torrent
     @State private var scope = SearchScope.all
@@ -81,8 +86,26 @@ struct SearchResultsView: View {
             }
         }
         .appBackground()
-        .navigationTitle(browsing ? "浏览\(scope.label ?? "站点资源")" : "搜索“\(keyword)”")
+        .navigationTitle(browsing ? "最新资源" : "搜索“\(keyword)”")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // 居中位没有系统玻璃底（打开 sharedBackgroundVisibility 也不画，真机/模拟器实测），
+            // 胶囊自己画玻璃；关掉共享背景，免得哪天系统开始画时叠两层
+            ToolbarItem(placement: .principal) { keywordCapsule }
+                .sharedBackgroundVisibility(.hidden)
+            if showsScopeMenu {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu { scopeMenu } label: {
+                        Text(scope.label ?? "全部").lineLimit(1)
+                    }
+                    .accessibilityLabel("搜索范围：\(scope.label ?? "全部分类")")
+                    .accessibilityIdentifier("search-scope-menu")
+                }
+            }
+            if showsScopeMenu, let torrentModel {
+                ToolbarItem(placement: .topBarTrailing) { TorrentViewModeMenu(model: torrentModel) }
+            }
+        }
         .tracksSubscriptionIndex()
         .task { await initialize() }
     }
@@ -121,23 +144,68 @@ struct SearchResultsView: View {
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("search-vertical")
             }
-            if vertical == .torrent {
-                // 分类是真实搜索范围而非结果筛选：点击后按该范围重新请求站点
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        DiscoverChip(label: "全部", active: scope == .all) { switchScope(.all) }
-                        ForEach(tabs, id: \.key) { tab in
-                            DiscoverChip(label: tab.label, active: scope == tab.scope) { switchScope(tab.scope) }
-                        }
-                    }
-                }
-                .scrollClipDisabled()
-                .accessibilityIdentifier("search-scope")
-            }
         }
         .padding(.horizontal, Theme.pagePadding)
         .padding(.top, 8)
         .padding(.bottom, 6)
+    }
+
+    /// 顶部居中的搜索词胶囊：点它回搜索首页改词重搜。浏览模式没有关键词，写「最新资源」
+    private var keywordCapsule: some View {
+        Button {
+            router.editSearch(SearchDraft(keyword: keyword, mode: vertical, scope: vertical == .torrent ? scope : nil))
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Theme.textMuted)
+                Text(browsing ? "最新资源" : keyword)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 16)
+            // 与两侧工具栏玻璃键同高（实测 44pt）
+            .frame(height: 44)
+            .frame(maxWidth: 240)
+            .glassEffect(.regular.interactive(), in: .capsule)
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(browsing ? "最新资源，点按重新搜索" : "搜索词：\(keyword)，点按修改")
+        .accessibilityIdentifier("search-keyword-capsule")
+    }
+
+    /// 站点资源垂直才有范围可切（无权限的空态页不出）
+    private var showsScopeMenu: Bool {
+        vertical == .torrent && visibleVerticals.contains(.torrent)
+    }
+
+    /// 范围菜单：全部分类 / 内置分类 / 自定义分类，当前范围打勾。分类是真实搜索范围而非结果筛选，
+    /// 选中即按该范围重新请求站点。从历史回放进来的范围可能不在当前可见分类里（已隐藏的分类、
+    /// 改过名的预设），单列一项「当前」，否则菜单里没有打勾项、看不出正在搜什么
+    @ViewBuilder
+    private var scopeMenu: some View {
+        let presets = tabs.filter(\.isPreset)
+        Picker("搜索范围", selection: Binding(get: { scope }, set: { switchScope($0) })) {
+            Label("全部分类", systemImage: TorrentCategories.allSymbol).tag(SearchScope.all)
+            if scope != .all, !tabs.contains(where: { $0.scope == scope }) {
+                Label(scope.label ?? "当前范围", systemImage: "clock.arrow.circlepath").tag(scope)
+            }
+            Section {
+                ForEach(tabs.filter { !$0.isPreset }, id: \.key) { tab in
+                    Label(tab.label, systemImage: tab.symbol).tag(tab.scope)
+                }
+            }
+            if !presets.isEmpty {
+                Section("自定义分类") {
+                    ForEach(presets, id: \.key) { tab in
+                        Label(tab.label, systemImage: tab.symbol).tag(tab.scope)
+                    }
+                }
+            }
+        }
+        .pickerStyle(.inline)
     }
 
     /// 切换垂直：只切显示，范围与已出的结果保留；快照态例外——丢掉快照、各垂直重新挂载
@@ -187,10 +255,9 @@ struct MediaSearchResultsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("“\(keyword)”").font(.title2.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
-                    Spacer()
-                    if let snapshotAt {
+                // 关键词不在这里重复（顶栏的搜索词胶囊已经写着），只在快照回放时给快照时间与「重新搜索」
+                if let snapshotAt {
+                    HStack(spacing: 8) {
                         Label("\(SubsFormat.relative(snapshotAt))的快照", systemImage: "clock")
                             .font(.caption).foregroundStyle(Theme.textMuted)
                         Button("重新搜索", action: onResearch)
@@ -303,7 +370,6 @@ struct LibrarySearchResultsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                Text("“\(keyword)”").font(.title2.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
                 if groups == nil, error == nil {
                     LazyVGrid(columns: DiscoverGrid.wideColumns, spacing: 28) {
                         ForEach(0 ..< 6, id: \.self) { _ in

@@ -200,14 +200,14 @@ final class DiscoverUITests: XCTestCase {
         let searchButton = app.navigationBars.buttons["open-search"]
         XCTAssertTrue(searchButton.waitForExistence(timeout: 20), "标签根页右上角应有搜索")
         searchButton.tap()
-        XCTAssertTrue(app.otherElements["search-home"].waitForExistence(timeout: 10) || app.scrollViews["search-home"].waitForExistence(timeout: 10))
-        let mode = app.segmentedControls["search-mode"]
-        XCTAssertTrue(mode.waitForExistence(timeout: 10))
-        mode.buttons["影视"].tap()
-        snapshot("搜索面板")
+        XCTAssertTrue(app.collectionViews["search-home"].waitForExistence(timeout: 10))
+        // 进页即聚焦输入框，模式是系统搜索范围栏（激活搜索时才出现）
         let field = app.searchFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 10))
-        field.tap()
+        let mode = app.segmentedControls.buttons["影视"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 10), "搜索栏激活时应出现模式范围栏")
+        mode.tap()
+        snapshot("搜索面板")
         field.typeText("流浪地球\n")
         XCTAssertTrue(app.scrollViews["media-results"].waitForExistence(timeout: 20))
         XCTAssertTrue(app.buttons["poster-card"].waitForExistence(timeout: 40), "影视搜索应有结果")
@@ -239,23 +239,25 @@ final class DiscoverUITests: XCTestCase {
         app.buttons["体积"].tap()
         XCTAssertTrue(app.buttons["排序：体积降序"].waitForExistence(timeout: 5))
 
-        // 视图：列表 → 图览 → 分组
-        app.buttons["torrent-view-list"].tap()
+        // 视图（顶栏右上角菜单）：列表 → 图览 → 分组
+        let viewMenu = app.navigationBars.buttons["torrent-view-menu"]
+        viewMenu.tap()
+        app.buttons["列表"].firstMatch.tap()
         snapshot("站点资源-列表")
-        app.buttons["torrent-view-poster"].tap()
+        viewMenu.tap()
+        app.buttons["图览"].firstMatch.tap()
         XCTAssertTrue(app.buttons["torrent-poster"].firstMatch.waitForExistence(timeout: 10) || app.buttons["torrent-row"].firstMatch.exists)
         snapshot("站点资源-图览")
-        app.buttons["torrent-view-group"].tap()
+        viewMenu.tap()
+        app.buttons["分组"].firstMatch.tap()
 
-        // 筛选弹层：选一个站点，回显条件后清除
-        app.buttons["torrent-filter"].tap()
-        let sheet = app.otherElements["torrent-filter-sheet"]
-        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
-        sheet.scrollViews.firstMatch.buttons.firstMatch.tap()
-        snapshot("筛选弹层")
-        app.buttons["torrent-filter-done"].tap()
-        XCTAssertTrue(app.otherElements["torrent-applied"].waitForExistence(timeout: 5) || app.staticTexts["生效条件"].waitForExistence(timeout: 5))
-        app.buttons["清除全部"].firstMatch.tap()
+        // 条件胶囊：站点菜单里勾一个站点，胶囊写出站点名后清除
+        app.buttons["torrent-filter-site"].tap()
+        // 菜单里的取值行读作「站点名, N 条」
+        app.buttons.matching(NSPredicate(format: "label ENDSWITH ' 条'")).firstMatch.tap()
+        snapshot("站点条件")
+        XCTAssertTrue(app.buttons["torrent-filter-clear"].waitForExistence(timeout: 5), "有条件时应出现「清除」胶囊")
+        app.buttons["torrent-filter-clear"].tap()
 
         // 站点状态
         app.buttons["torrent-sites"].tap()

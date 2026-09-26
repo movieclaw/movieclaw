@@ -47,6 +47,22 @@ nonisolated enum TorrentCategories {
     static func label(_ value: String) -> String {
         all.first { $0.value == value }?.label ?? value
     }
+
+    /// 分类图标（SF Symbols）；「全部分类」用 `allSymbol`
+    static func symbol(_ value: String) -> String {
+        switch value {
+        case "movie": "film"
+        case "tv": "tv"
+        case "documentary": "binoculars"
+        case "anime": "sparkles"
+        case "music": "music.note"
+        case "game": "gamecontroller"
+        case "av": "eye.slash"
+        default: "shippingbox"
+        }
+    }
+
+    static let allSymbol = "square.grid.2x2"
 }
 
 /// 一次搜索的范围：分类组合 × 站点组合；label 仅用于展示与历史（nil = 「全部」）
@@ -119,6 +135,13 @@ nonisolated struct SearchScope: Hashable, Sendable {
     }
 }
 
+/// 结果页回到搜索首页改词重搜时带回去的内容：关键词、所在垂直、站点资源的范围（其余垂直为 nil）
+struct SearchDraft: Equatable {
+    var keyword: String
+    var mode: SearchVertical
+    var scope: SearchScope?
+}
+
 /// 搜索标签：内置分类或自定义「分类 × 站点」预设（后端 `GET /search/presets`）
 enum SearchTab: Hashable {
     case category(id: String, visible: Bool)
@@ -174,6 +197,27 @@ enum SearchTab: Hashable {
         } else {
             return nil
         }
+    }
+
+    /// 列表 / 菜单里的图标：内置分类各有一个，自定义预设统一用「叠放」表示组合范围
+    var symbol: String {
+        switch self {
+        case let .category(id, _): TorrentCategories.symbol(id)
+        case .preset: "square.stack.3d.up"
+        }
+    }
+
+    /// 预设的范围摘要（同设置页预设行）：分类组合 · 站点组合（· 图览 · 无痕）；内置分类没有摘要
+    var summary: String? {
+        guard case let .preset(_, _, _, categories, siteIds, posterMode, skipHistory) = self else { return nil }
+        let cats = categories.isEmpty ? "不限分类" : categories.map(TorrentCategories.label).joined(separator: "、")
+        let sites = siteIds.isEmpty ? "全部站点" : "\(siteIds.count) 个站点"
+        return "\(cats) · \(sites)\(posterMode ? " · 图览" : "")\(skipHistory ? " · 无痕" : "")"
+    }
+
+    var isPreset: Bool {
+        if case .preset = self { return true }
+        return false
     }
 
     /// 默认标签（与后端 default_search_tabs 一致）：常用四类可见

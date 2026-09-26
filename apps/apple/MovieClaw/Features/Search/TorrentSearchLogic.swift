@@ -65,7 +65,7 @@ nonisolated enum TorrentResultView: String, CaseIterable, Hashable, Sendable {
 nonisolated enum TorrentFilterDim: String, CaseIterable, Hashable, Sendable {
     case resolution, site, year, season, episode, source, platform, codec, hdr, audio, subtitle, group
 
-    /// 收在「筛选」弹层里的维度（回显行与角标只统计这些；分辨率在工具栏上自明）
+    /// 分辨率以外的筛选维度（与 Web 筛选弹层同口径，`sheetCount` 只统计这些）
     static let sheetDims: [TorrentFilterDim] = [.site, .year, .season, .episode, .source, .platform, .codec, .hdr, .audio, .subtitle, .group]
 
     var title: String {

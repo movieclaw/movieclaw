@@ -307,8 +307,8 @@ enum TabIcon {
 /// 返回一路退回来）。常见 App 的搜索都在右上角（2026-09-26 用户拍板）；原来左上角的头像
 /// 挪进了标签栏最右的页签。网页右上角的「+」新建 AI 会话在手机 App 里按用户决定去掉了。
 ///
-/// 从媒体库页签点进去预选「媒体库」模式（在哪个页签搜就先搜那里的内容，同 iOS 音乐的资料库）；
-/// 其他页签沿用搜索页记住的模式。
+/// 在哪个页签搜就先搜那里的内容（同 iOS 音乐的资料库）：发现 / 订阅预选「影视」、媒体库预选「媒体库」、
+/// 活动预选「资源」；「我的」不预选，停在搜索页上次停留的模式（2026-09-27 用户拍板）。
 ///
 /// 页面自己的按钮用 `.toolbar` 追加（发现页的筛选、媒体库的 ⋯ 菜单）。
 /// 外层注入的 `.topBarTrailing` 会排到页面按钮前面，所以放 `.primaryAction`（固定在最右），
@@ -324,7 +324,7 @@ struct AppTopBar: ViewModifier {
                 ToolbarSpacer(.fixed, placement: .primaryAction)
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        router.push(.searchHome(mode: tab == .library ? .library : nil))
+                        router.push(.searchHome(mode: preferredSearchMode))
                     } label: {
                         Image(systemName: "magnifyingglass")
                     }
@@ -332,6 +332,18 @@ struct AppTopBar: ViewModifier {
                     .accessibilityIdentifier("open-search")
                 }
             }
+        }
+    }
+}
+
+extension AppTopBar {
+    /// 各页签进搜索时预选的模式；nil = 沿用搜索页上次停留的模式
+    private var preferredSearchMode: SearchVertical? {
+        switch tab {
+        case .discover, .subscriptions: .media
+        case .library: .library
+        case .activity: .torrent
+        case .more: nil
         }
     }
 }
