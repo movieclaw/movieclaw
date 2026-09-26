@@ -325,9 +325,11 @@ async def _stop_transcode_session(body: dict[str, Any], identity: RequestIdentit
     if raw:
         session_id = take_play_session(str(raw))
         if session_id is not None:
-            await manager.stop(session_id)
+            await manager.stop(session_id, reason="播放器上报停播（Playing/Stopped）")
         return
-    await manager.stop_for_device(identity.device.device_id)
+    await manager.stop_for_device(
+        identity.device.device_id, reason="播放器上报停播（Playing/Stopped，按设备）"
+    )
 
 
 # ---------------------------------------------------------------------------

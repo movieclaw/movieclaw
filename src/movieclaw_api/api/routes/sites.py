@@ -5,6 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.schemas.site import (
+    BoostCleanupRequest,
+    BoostCleanupResult,
+    BoostPoolView,
     CatalogItem,
     ConfiguredSite,
     SiteBoostPauseUpdate,
@@ -97,6 +100,50 @@ async def list_sync_stats(
         for site_id in counts.keys() | cursors.keys()
     }
     return ok(stats)
+
+
+@router.get(
+    "/boost-pool",
+    response_model=ApiResponse[BoostPoolView],
+    summary="刷流在池种子概况（按站点，含能否立即清理）",
+    operation_id="site.boost-pool.show",
+)
+async def get_boost_pool(
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[BoostPoolView]:
+    """还在下载器里的刷流种子：按站点汇总刷流开关 / 暂停、体积，以及现在就能删的与
+    还在保留期内的（提前删可能被记 H&R）各有多少；逐种子给出保留期到期时刻与是否已
+    请求清理。关闭刷流不会删种，这里是看清残留、决定清理的依据。
+    注意：本路由必须注册在 ``/{site_id}`` 之前。"""
+    from movieclaw_api.services.ratio_boost import boost_pool_overview
+
+    return ok(await boost_pool_overview(session))
+
+
+@router.post(
+    "/boost-pool/cleanup",
+    response_model=ApiResponse[BoostCleanupResult],
+    summary="清理残留的刷流种子（连数据删除）",
+    operation_id="site.boost-pool.cleanup",
+    openapi_extra={"x-cli-dangerous": "destructive"},
+)
+async def cleanup_boost_pool(
+    payload: BoostCleanupRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[BoostCleanupResult]:
+    """从下载器删除刷流种子及其数据文件（无法恢复）。默认先关闭目标站点的刷流；
+    已过保留期或没下完的立即删，还在保留期内的标记后由引擎到期自动删除——
+    ``force=true`` 才立即全删（可能被站点记 H&R）。只动刷流引擎自己抢下的种子，
+    用户自己加的、已被订阅 / 手动下载接管的永远不碰。"""
+    result = await SiteConfigService(session).cleanup_boost_pool(
+        site_ids=payload.site_ids, disable_boost=payload.disable_boost, force=payload.force
+    )
+    parts = [f"已删除 {result.deleted_count} 个刷流种子"] if result.deleted_count else []
+    if result.scheduled_count:
+        parts.append(f"{result.scheduled_count} 个还在保留期内，到期后自动删除")
+    if result.failed_count:
+        parts.append(f"{result.failed_count} 个因下载器暂时不可达没删成，稍后自动重试")
+    return ok(result, message="；".join(parts) or "没有需要清理的刷流种子")
 
 
 @router.get(

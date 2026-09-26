@@ -89,16 +89,12 @@ final class DiscoverUITests: XCTestCase {
         let app = try launch()
         let filter = app.buttons["discover-filter"]
         XCTAssertTrue(filter.waitForExistence(timeout: 30))
-        filter.tap()
-        let genre = app.buttons["动作"]
-        XCTAssertTrue(genre.waitForExistence(timeout: 20))
-        genre.tap()
-        app.buttons["filter-apply"].tap()
+        pickGenre(app, filter, "动作")
         XCTAssertTrue(app.staticTexts["筛选结果"].waitForExistence(timeout: 20))
         pickFromTitleMenu(app, "剧集")
         XCTAssertTrue(app.otherElements["discover-hero"].waitForExistence(timeout: 30), "切到剧集应回到发现首页")
         XCTAssertFalse(app.staticTexts["筛选结果"].exists, "筛选应已清空")
-        XCTAssertTrue(app.buttons["筛选影片"].exists, "筛选键不应再带角标")
+        XCTAssertTrue(app.buttons["筛选：全部"].exists, "筛选键应回到「全部」")
         snapshot("切类型后")
     }
 
@@ -115,34 +111,48 @@ final class DiscoverUITests: XCTestCase {
         subscribed.tap()
         XCTAssertTrue(app.staticTexts["subscribe-existing"].waitForExistence(timeout: 20) || app.otherElements["subscribe-existing"].exists, "应进入订阅弹层管理态")
         snapshot("订阅管理态")
-        // 只点「好的」关闭，绝不点「取消订阅」
-        let ok = app.buttons["subscribe-ok"]
-        XCTAssertTrue(ok.isHittable)
-        ok.tap()
-        XCTAssertFalse(app.buttons["subscribe-ok"].waitForExistence(timeout: 3))
+        // 只点左上 ✕ 关闭，绝不点「取消订阅」
+        let close = app.buttons["sheet-close"]
+        XCTAssertTrue(close.isHittable)
+        close.tap()
+        XCTAssertFalse(app.buttons["subscribe-unsubscribe"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.otherElements["subscription-detail"].exists, "不应跳到订阅详情")
     }
 
+    /// 组合筛选没有弹窗：右上角菜单里点「类型」二级菜单选一项即生效，结果页头部的条件胶囊可就地加条件
     @MainActor
     func testDiscoverCombinedFilter() throws {
         let app = try launch()
         let filter = app.buttons["discover-filter"]
         XCTAssertTrue(filter.waitForExistence(timeout: 30))
-        filter.tap()
-        let apply = app.buttons["filter-apply"]
-        XCTAssertTrue(apply.waitForExistence(timeout: 10))
-        // 选一个类型（等类型清单加载）
-        let genre = app.buttons["剧情"]
-        XCTAssertTrue(genre.waitForExistence(timeout: 20))
-        genre.tap()
-        snapshot("组合发现")
-        apply.tap()
+        XCTAssertEqual(filter.label, "筛选：全部")
+        pickGenre(app, filter, "剧情")
         XCTAssertTrue(app.staticTexts["筛选结果"].waitForExistence(timeout: 20), "应进入筛选结果网格")
         XCTAssertTrue(app.buttons["poster-card"].waitForExistence(timeout: 30), "筛选结果应有海报")
-        XCTAssertTrue(app.buttons["筛选，已启用 1 项"].exists)
+        XCTAssertTrue(app.buttons["筛选：剧情"].exists, "筛选键应写出选中的类型")
+        // 结果页胶囊：就地加一个评分条件
+        let rating = app.buttons.matching(NSPredicate(format: "label == %@", "最低评分")).firstMatch
+        XCTAssertTrue(rating.waitForExistence(timeout: 10), "结果页头部应有「最低评分」胶囊")
+        rating.tap()
+        let seven = app.buttons["7 分以上"].firstMatch
+        XCTAssertTrue(seven.waitForExistence(timeout: 5))
+        seven.tap()
+        XCTAssertTrue(app.buttons["最低评分：7 分以上"].waitForExistence(timeout: 10), "胶囊应写出当前值")
         snapshot("筛选结果")
         app.buttons["filtered-clear"].tap()
-        XCTAssertTrue(app.otherElements["discover-hero"].waitForExistence(timeout: 30), "清除筛选回到发现页")
+        XCTAssertTrue(app.otherElements["discover-hero"].waitForExistence(timeout: 30), "清空条件回到发现页")
+    }
+
+    /// 右上角筛选菜单 →「类型」二级菜单 → 选一项（等类型清单加载）
+    @MainActor
+    private func pickGenre(_ app: XCUIApplication, _ filter: XCUIElement, _ name: String) {
+        filter.tap()
+        let genres = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "类型")).firstMatch
+        XCTAssertTrue(genres.waitForExistence(timeout: 10), "筛选菜单里没有「类型」")
+        genres.tap()
+        let genre = app.buttons[name].firstMatch
+        XCTAssertTrue(genre.waitForExistence(timeout: 20), "类型菜单里没有「\(name)」")
+        genre.tap()
     }
 
     // MARK: 详情与影人

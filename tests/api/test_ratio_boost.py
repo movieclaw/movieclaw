@@ -30,6 +30,7 @@ from movieclaw_api.services.ratio_boost import (
     hand_over_if_claimed,
     is_idle,
     pick_evictions,
+    protected_until,
     stop_loss_reason,
     turnover_seconds,
 )
@@ -1058,3 +1059,252 @@ async def test_stat_windows_exclude_old_buckets(db) -> None:
     view = stats["demo"]
     assert view.uploaded_bytes_24h == 0
     assert view.uploaded_bytes_7d == 2 * _GIB
+
+
+# ---------------------------------------------------------------------------
+# 用户清理残留刷流种子（§2.9）：保留期内不提前删、force 才全删、失败记下重试
+# ---------------------------------------------------------------------------
+
+
+class _DeletingDownloader:
+    """delete_torrent 的记录桩；fail_hashes 里的种子删除时抛错（模拟下载器拒绝）。"""
+
+    def __init__(self, fail_hashes: set[str] | None = None):
+        self.fail_hashes = fail_hashes or set()
+        self.deleted: list[tuple[str, bool]] = []
+
+    async def delete_torrent(self, info_hash: str, delete_files: bool = False) -> None:
+        if info_hash in self.fail_hashes:
+            raise RuntimeError("下载器拒绝删除")
+        self.deleted.append((info_hash, delete_files))
+
+
+class _FakePool:
+    """_DownloaderPool 替身：所有下载器都返回同一个桩；unreachable=True 模拟不可达。"""
+
+    def __init__(self, downloader: _DeletingDownloader, unreachable: bool = False):
+        self.downloader = downloader
+        self.unreachable = unreachable
+
+    async def adapter(self, downloader_id: int):
+        return None if self.unreachable else self.downloader
+
+    async def close(self) -> None:
+        pass
+
+
+async def _seed_pool(db, *tasks: RatioBoostTask, boost_enabled: bool = False) -> int:
+    """建一台下载器与 demo 站点配置（保留期 3 天），写入任务；返回下载器 id。"""
+    from movieclaw_db.models import DownloaderClient
+    from movieclaw_db.models.site_credential import AuthType, SiteCredential
+
+    async with db.session() as session:
+        downloader = DownloaderClient(name="qb", client_type="qbittorrent", url="http://x")
+        session.add(downloader)
+        session.add(
+            SiteCredential(
+                site_id="demo",
+                auth_type=AuthType.COOKIE,
+                boost_enabled=boost_enabled,
+                boost_hold_days=3,
+            )
+        )
+        await session.commit()
+        await session.refresh(downloader)
+        for task in tasks:
+            task.downloader_id = downloader.id
+            session.add(task)
+        await session.commit()
+        return downloader.id
+
+
+def _hash(n: int) -> str:
+    return f"{n:040x}"
+
+
+class TestProtectedUntil:
+    def test_unfinished_task_is_never_protected(self) -> None:
+        task = _task(completed=False, created_at=_NOW - timedelta(hours=1))
+        assert protected_until(task, _NOW, hold=timedelta(days=3), hr_hold=None) is None
+
+    def test_within_hold_returns_expiry(self) -> None:
+        task = _task(created_at=_NOW - timedelta(hours=24))
+        until = protected_until(task, _NOW, hold=timedelta(days=3), hr_hold=None)
+        assert until == _NOW + timedelta(hours=48)
+
+    def test_past_hold_is_not_protected(self) -> None:
+        task = _task(created_at=_NOW - timedelta(days=4))
+        assert protected_until(task, _NOW, hold=timedelta(days=3), hr_hold=None) is None
+
+    def test_hit_and_run_uses_longer_real_requirement(self) -> None:
+        """H&R 种按真实考核时长（取大），哪怕站点保留天数设成了 0。"""
+        task = _task(hit_and_run=True, created_at=_NOW - timedelta(days=4))
+        until = protected_until(task, _NOW, hold=timedelta(0), hr_hold=timedelta(days=7))
+        assert until == _NOW + timedelta(days=3)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_deletes_due_and_schedules_protected(db) -> None:
+    """已过保留期 / 没下完的立即连数据删；保留期内的只标记；别的站点不碰。"""
+    from movieclaw_api.services.ratio_boost import cleanup_boost_pool
+
+    due = _task(info_hash=_hash(1), torrent_id="1", created_at=_NOW - timedelta(days=5))
+    fresh = _task(info_hash=_hash(2), torrent_id="2", created_at=_NOW - timedelta(hours=10))
+    unfinished = _task(
+        info_hash=_hash(3), torrent_id="3", completed=False, created_at=_NOW - timedelta(hours=2)
+    )
+    other = _task(info_hash=_hash(4), torrent_id="4", site_id="other")
+    await _seed_pool(db, due, fresh, unfinished, other)
+    downloader = _DeletingDownloader()
+    async with db.session() as session:
+        outcome = await cleanup_boost_pool(
+            session, site_ids=["demo"], now=_NOW, pool=_FakePool(downloader)
+        )
+        rows = {t.info_hash: t for t in (await session.execute(select(RatioBoostTask))).scalars()}
+
+    assert sorted(downloader.deleted) == [(_hash(1), True), (_hash(3), True)]
+    assert outcome.deleted_count == 2
+    assert outcome.deleted_bytes == 20 * _GIB
+    assert outcome.scheduled_count == 1
+    assert outcome.scheduled_until == _NOW - timedelta(hours=10) + timedelta(days=3)
+    assert rows[_hash(1)].state == BoostTaskState.EVICTED
+    assert rows[_hash(2)].state == BoostTaskState.ACTIVE
+    assert rows[_hash(2)].cleanup_after == _NOW - timedelta(hours=10) + timedelta(days=3)
+    assert rows[_hash(4)].state == BoostTaskState.ACTIVE
+    assert rows[_hash(4)].cleanup_after is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_force_deletes_protected_too(db) -> None:
+    from movieclaw_api.services.ratio_boost import cleanup_boost_pool
+
+    fresh = _task(info_hash=_hash(5), created_at=_NOW - timedelta(hours=10))
+    await _seed_pool(db, fresh)
+    downloader = _DeletingDownloader()
+    async with db.session() as session:
+        outcome = await cleanup_boost_pool(
+            session, site_ids=["demo"], force=True, now=_NOW, pool=_FakePool(downloader)
+        )
+    assert downloader.deleted == [(_hash(5), True)]
+    assert outcome.deleted_count == 1
+    assert outcome.scheduled_count == 0
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_is_marked_for_retry(db) -> None:
+    """下载器不可达：不能记成已删（预算账会虚假平衡），记下清理请求等下一轮巡检。"""
+    from movieclaw_api.services.ratio_boost import cleanup_boost_pool
+
+    due = _task(info_hash=_hash(6), created_at=_NOW - timedelta(days=5))
+    await _seed_pool(db, due)
+    async with db.session() as session:
+        outcome = await cleanup_boost_pool(
+            session,
+            site_ids=["demo"],
+            now=_NOW,
+            pool=_FakePool(_DeletingDownloader(), unreachable=True),
+        )
+        row = (await session.execute(select(RatioBoostTask))).scalars().one()
+    assert outcome.failed_count == 1
+    assert outcome.deleted_count == 0
+    assert row.state == BoostTaskState.ACTIVE
+    assert row.cleanup_after == _NOW
+
+
+@pytest.mark.asyncio
+async def test_tick_deletes_scheduled_once_hold_expires(db) -> None:
+    """巡检兑现清理请求：到点的删、没到点的继续等，不论站点刷流开没开；
+    站点配置已删时按请求时算好的到期时刻删（不能因保留天数丢失而误判）。"""
+    from movieclaw_api.services.ratio_boost import _process_cleanup_requests
+
+    expired = _task(
+        info_hash=_hash(7),
+        torrent_id="7",
+        created_at=_NOW - timedelta(days=4),
+        cleanup_after=_NOW,
+    )
+    waiting = _task(
+        info_hash=_hash(8),
+        torrent_id="8",
+        created_at=_NOW - timedelta(days=1),
+        cleanup_after=_NOW + timedelta(days=2),
+    )
+    untouched = _task(info_hash=_hash(9), torrent_id="9", created_at=_NOW - timedelta(days=4))
+    # 站点配置已删（没有 SiteCredential）：默认 3 天保留期会判它仍受保护，但请求时算好的
+    # 到期时刻已过——以落库的时刻为准
+    orphan = _task(
+        info_hash=_hash(15),
+        torrent_id="15",
+        site_id="gone",
+        created_at=_NOW - timedelta(days=1),
+        cleanup_after=_NOW - timedelta(minutes=1),
+    )
+    await _seed_pool(db, expired, waiting, untouched, orphan)
+    downloader = _DeletingDownloader()
+    async with db.session() as session:
+        tasks = list((await session.execute(select(RatioBoostTask))).scalars())
+        await _process_cleanup_requests(session, _FakePool(downloader), tasks, _NOW)
+        rows = {t.info_hash: t for t in (await session.execute(select(RatioBoostTask))).scalars()}
+    assert sorted(downloader.deleted) == [(_hash(7), True), (_hash(15), True)]
+    assert rows[_hash(7)].state == BoostTaskState.EVICTED
+    assert rows[_hash(8)].state == BoostTaskState.ACTIVE
+    assert rows[_hash(9)].state == BoostTaskState.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_pool_overview_counts_by_site(db) -> None:
+    from movieclaw_api.services.ratio_boost import boost_pool_overview
+
+    due = _task(info_hash=_hash(10), torrent_id="10", created_at=_NOW - timedelta(days=5))
+    fresh = _task(
+        info_hash=_hash(11),
+        torrent_id="11",
+        created_at=_NOW - timedelta(hours=10),
+        cleanup_after=_NOW + timedelta(hours=62),
+    )
+    await _seed_pool(db, due, fresh, boost_enabled=True)
+    async with db.session() as session:
+        view = await boost_pool_overview(session, now=_NOW)
+    [site] = view.sites
+    assert (site.site_id, site.boost_enabled, site.task_count) == ("demo", True, 2)
+    assert (site.deletable_count, site.protected_count, site.scheduled_count) == (1, 1, 1)
+    assert site.protected_until == _NOW - timedelta(hours=10) + timedelta(days=3)
+    scheduled = {t.info_hash: t for t in view.tasks}
+    assert scheduled[_hash(11)].cleanup_scheduled
+    assert scheduled[_hash(10)].protected_until is None
+
+
+@pytest.mark.asyncio
+async def test_service_cleanup_turns_boost_off_first(db) -> None:
+    """默认先关刷流：不关的话引擎几分钟内就会重新拉新种，清了等于白清。"""
+    from movieclaw_api.services.site_config import SiteConfigService
+    from movieclaw_db.models.base import utcnow
+    from movieclaw_db.models.site_credential import SiteCredential
+
+    # 服务层用真实时钟：入池 1 小时，保留期内只标记，不会去连下载器
+    fresh = _task(info_hash=_hash(12), created_at=utcnow() - timedelta(hours=1))
+    await _seed_pool(db, fresh, boost_enabled=True)
+    async with db.session() as session:
+        result = await SiteConfigService(session).cleanup_boost_pool(
+            site_ids=None, disable_boost=True, force=False
+        )
+        cred = (await session.execute(select(SiteCredential))).scalars().one()
+    assert result.disabled_sites == ["demo"]
+    assert result.scheduled_count == 1
+    assert not cred.boost_enabled
+
+
+@pytest.mark.asyncio
+async def test_site_delete_keeps_tasks_scheduled_for_cleanup(db) -> None:
+    """删站点配置只放生未请求清理的任务；已请求清理的留在台账等到期删除。"""
+    from movieclaw_api.services.ratio_boost import release_site_tasks
+
+    keep = _task(info_hash=_hash(13), torrent_id="13")
+    scheduled = _task(info_hash=_hash(14), torrent_id="14", cleanup_after=_NOW)
+    await _seed_pool(db, keep, scheduled)
+    async with db.session() as session:
+        released = await release_site_tasks(session, "demo")
+        rows = {t.info_hash: t for t in (await session.execute(select(RatioBoostTask))).scalars()}
+    assert released == 1
+    assert rows[_hash(13)].state == BoostTaskState.MISSING
+    assert rows[_hash(14)].state == BoostTaskState.ACTIVE

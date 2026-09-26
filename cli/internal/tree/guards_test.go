@@ -368,6 +368,7 @@ func TestDangerousAndLongTaskAnnotations(t *testing.T) {
 	}
 	for id, want := range map[string]string{
 		"library.items.delete":                     "destructive",
+		"site.boost-pool.cleanup":                  "destructive",
 		"subscriptions.cleanup-seasons":            "confirm",
 		"subscriptions.delete":                     "confirm",
 		"subscriptions.unsubscribe":                "confirm",

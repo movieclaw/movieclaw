@@ -10,10 +10,14 @@ import SwiftUI
 /// 已订阅的条目进入管理态：取消订阅（成员 = 取消关注；管理员叠一层带预览的彻底删除）。
 ///
 /// 默认值：剧集勾选全部已播正季（豆瓣季条目采信服务端 suggested_seasons）；在播剧开自动续订；
-/// 规则组与入库库取后端按适用范围 / 收藏范围路由的结论，并以徽标说明「为什么选了它」。
+/// 规则组与入库库取后端按适用范围 / 收藏范围路由的结论，路由选中的不是默认项时才说明「为什么选了它」。
 ///
 /// 洗版变体（`request.upgrade`）：季按库存预填、只列带洗版目标的规则组、自动续订默认关；
 /// 建好订阅后立刻跑一轮洗版并在弹层内展示体检报告。
+///
+/// 交互形态按 iOS 26 表单弹层：绝大多数时候只是确认一下默认值，所以弹层高度跟内容走（半高悬浮，
+/// 系统给液态玻璃材质，不自设背景以免盖掉），正文是原生分组列表，左上 ✕ 关闭、右上 ✓ 确认；
+/// 「新建规则组」这种低频操作收进规则组菜单末尾。只有洗版体检报告内容多，直接全高。
 struct SubscribeSheet: View {
     let request: SubscribeRequest
 
@@ -33,13 +37,16 @@ struct SubscribeSheet: View {
     @State private var libraryId: Int?
     @State private var busy = false
     @State private var dispatchPreview: API.DispatchPreviewView?
-    /// 收藏范围路由的预选结论（用户改选其它库即显式指定，徽标消失）
+    /// 收藏范围路由的预选结论（用户改选其它库即显式指定，说明消失）
     @State private var routed: (libraryId: Int, reason: String?)?
     /// 规则组适用范围的预选结论
     @State private var ruleRouted: (ruleSetId: Int, reason: String)?
     @State private var upgradeReport: API.UpgradeRunView?
     @State private var creatingRuleSet = false
     @State private var cancelling = false
+    /// 表单内容的实际高度（含导航栏与底部安全区），弹层据此贴合内容；量到之前先用半高
+    @State private var fitHeight: CGFloat?
+    @State private var detent: PresentationDetent = .medium
 
     private var upgradeMode: Bool { request.upgrade }
     private var canManage: Bool { permissions.canManageSubscriptions }
@@ -64,6 +71,12 @@ struct SubscribeSheet: View {
         return !selectedSeasons.isEmpty || followFuture
     }
 
+    private var showsSubmit: Bool { prepared?.status == "ready" && prepared?.existingSubscriptionId == nil }
+    private var showsRules: Bool { upgradeMode || (canManage && !ruleSets.isEmpty) }
+    private var showsLibrary: Bool { canManage && !libraries.isEmpty }
+    private var pickedRule: API.RuleSetView? { selectableRules.first { $0.id == ruleSetId } }
+    private var fitDetent: PresentationDetent { fitHeight.map { .height($0) } ?? .medium }
+
     var body: some View {
         Group {
             if let upgradeReport {
@@ -73,22 +86,30 @@ struct SubscribeSheet: View {
                     SubsPrimaryButton(title: "完成", identifier: "upgrade-report-done") { dismiss() }
                 }
             } else {
-                SubsSheetScaffold(
-                    title: upgradeMode ? "订阅并洗版" : "订阅追踪",
-                    subtitle: headerSubtitle
-                ) {
-                    content
-                } footer: {
-                    if prepared?.status == "ready", prepared?.existingSubscriptionId == nil {
-                        SubsPrimaryButton(
-                            title: busy ? (upgradeMode ? "正在订阅并体检…" : "正在订阅…") : (upgradeMode ? "订阅并开始洗版" : "确认订阅"),
-                            busy: busy,
-                            enabled: canSubmit,
-                            identifier: "subscribe-submit"
-                        ) { Task { await submit() } }
-                    }
+                NavigationStack {
+                    Form { content }
+                        .scrollContentBackground(.hidden)
+                        .scrollBounceBehavior(.basedOnSize)
+                        // 表单默认的首尾留白偏大，弹层贴合内容后显得空
+                        .contentMargins(.top, 4, for: .scrollContent)
+                        .contentMargins(.bottom, 8, for: .scrollContent)
+                        // 内容长高、弹层跟着长高时守住顶部：不然剧集长表单会停在底部，条目卡被滚出视野
+                        .defaultScrollAnchor(.top, for: .sizeChanges)
+                        // 量出整张表单要多高（内容 + 导航栏 + 底部安全区），弹层就开多高
+                        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                            geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom
+                        } action: { _, height in
+                            fit(height)
+                        }
+                        .navigationTitle(upgradeMode ? "订阅并洗版" : "订阅")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { toolbar }
                 }
             }
+        }
+        .presentationDetents([fitDetent, .large], selection: $detent)
+        .onChange(of: upgradeReport != nil) { _, showing in
+            if showing { detent = .large }
         }
         .interactiveDismissDisabled(busy)
         .accessibilityIdentifier("subscribe-sheet")
@@ -112,35 +133,83 @@ struct SubscribeSheet: View {
         }
     }
 
-    private var headerSubtitle: String {
-        let year = (prepared?.media?.year).map { " (\($0))" } ?? ""
-        let line = "\(displayTitle)\(year)"
-        return upgradeMode ? "\(line)\n洗版通过订阅持续追踪更好的版本：确认后建立订阅并立即体检库里已有的每一集。" : line
+    /// 内容高度变了就跟着改弹层高度；用户已手动拉到全高时不去抢。
+    /// 加载中停在半高（免得先缩成一条再涨回去两段动画）；高度封顶在弹层能开的最大值——
+    /// 要的比屏幕还高时系统虽会截断，但每次重设都会把列表往底部带（实测剧集长表单停在最底下）
+    private func fit(_ height: CGFloat) {
+        guard prepared != nil || error != nil else { return }
+        let height = min(height.rounded(.up), Self.maxSheetHeight)
+        guard height > 0, height != fitHeight else { return }
+        let following = detent != .large
+        fitHeight = height
+        if following { detent = .height(height) }
+    }
+
+    /// 弹层能开的最大高度 = 窗口高度 − 顶部安全区（iPhone Air 实测 912 − 68 = 844）
+    private static var maxSheetHeight: CGFloat {
+        let window = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
+        guard let window else { return .greatestFiniteMagnitude }
+        return window.bounds.height - window.safeAreaInsets.top
+    }
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("取消", systemImage: "xmark", role: .close) { dismiss() }
+                .accessibilityIdentifier("sheet-close")
+        }
+        if showsSubmit {
+            ToolbarItem(placement: .confirmationAction) {
+                if busy {
+                    ProgressView().accessibilityLabel(upgradeMode ? "正在订阅并体检" : "正在订阅")
+                } else {
+                    Button(upgradeMode ? "订阅并开始洗版" : "确认订阅", systemImage: "checkmark", role: .confirm) {
+                        Task { await submit() }
+                    }
+                    .discoverProminentButton()
+                    .disabled(!canSubmit)
+                    .accessibilityIdentifier("subscribe-submit")
+                }
+            }
+        }
     }
 
     // MARK: 正文
 
     @ViewBuilder
     private var content: some View {
-        if prepared == nil, error == nil {
-            HStack(spacing: 10) {
-                ProgressView()
-                Text("正在获取条目信息…").font(.subheadline).foregroundStyle(Theme.textMuted)
+        Section {
+            header
+        } footer: {
+            if upgradeMode {
+                Text("洗版通过订阅持续追踪更好的版本：确认后建立订阅并立即体检库里已有的每一集。")
             }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 30)
         }
+        .listRowBackground(Color.clear)
+        .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
+
         if let error {
-            SubsNotice(text: error, tone: .error).accessibilityIdentifier("subscribe-error")
+            Section {
+                Text(error).font(.subheadline).foregroundStyle(SubsTone.error.color)
+                    .accessibilityIdentifier("subscribe-error")
+            }
         }
         if let prepared {
             switch prepared.status {
             case "not_found":
-                Text("TMDB 未收录该条目，暂时无法订阅。订阅依赖 TMDB 的别名与季集数据来匹配站点资源，可尝试在 TMDB 搜索入口确认条目后再订阅。")
-                    .font(.subheadline).foregroundStyle(Theme.textMuted)
-                    .accessibilityIdentifier("subscribe-not-found")
+                Section {
+                    Text("TMDB 未收录该条目，暂时无法订阅。订阅依赖 TMDB 的别名与季集数据来匹配站点资源，可尝试在 TMDB 搜索入口确认条目后再订阅。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("subscribe-not-found")
+                }
             case "ambiguous":
-                candidateWall(prepared.candidates)
+                Section {
+                    candidateWall(prepared.candidates)
+                } header: {
+                    Text("找到多个可能的条目，请确认你订阅的是哪一部")
+                }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             default:
                 if let existing = prepared.existingSubscriptionId {
                     manageState(existing)
@@ -151,167 +220,247 @@ struct SubscribeSheet: View {
         }
     }
 
-    private func candidateWall(_ candidates: [API.ResolveCandidateView]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("找到多个可能的条目，请确认你订阅的是哪一部：").font(.subheadline).foregroundStyle(Theme.textMuted)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: 3), spacing: 14) {
-                ForEach(candidates, id: \.tmdbId) { candidate in
-                    Button {
-                        Task { await runPrepare(candidate.titleRef) }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Color.clear.aspectRatio(2.0 / 3.0, contentMode: .fit)
-                                .overlay { RemoteImage(url: api.image(candidate.posterUrl, .posterCard)) }
-                                .clipShape(.rect(cornerRadius: 10))
-                                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.white.opacity(0.1)))
-                            Text(candidate.title).font(.subheadline).foregroundStyle(Theme.text.opacity(0.9)).lineLimit(1)
-                            Text(candidate.year.map(String.init) ?? "年份未知").font(.caption).foregroundStyle(Theme.textFaint)
-                        }
-                        .contentShape(.rect)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("subscribe-candidate")
+    /// 条目卡：海报 + 片名 + 年份与类型，一眼确认订的是哪一部；加载中在这里转圈
+    private var header: some View {
+        HStack(spacing: 14) {
+            Color.clear
+                .frame(width: 56, height: 84)
+                .overlay { RemoteImage(url: api.image(prepared?.media?.posterUrl, .posterCard)) }
+                .background(Color.white.opacity(0.06))
+                .clipShape(.rect(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.1)))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(displayTitle).font(.title3.weight(.semibold)).foregroundStyle(Theme.text).lineLimit(2)
+                if let meta = headerMeta {
+                    Text(meta).font(.subheadline).foregroundStyle(.secondary)
                 }
+                if prepared == nil, error == nil {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("正在获取条目信息…")
+                    }
+                    .font(.footnote).foregroundStyle(.secondary)
+                } else if prepared?.movieOwned == true, prepared?.existingSubscriptionId == nil {
+                    Label(upgradeMode ? "媒体库已有，将体检现有版本并按需洗版" : "媒体库已有，订阅后不会重复下载", systemImage: "checkmark")
+                        .font(.footnote).foregroundStyle(SubsColor.ok)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// 「2026 · 电影」；类型未收敛（豆瓣裸 ID）时只写年份
+    private var headerMeta: String? {
+        let kindText = (prepared?.media?.kind ?? requestKind).map { $0 == "movie" ? "电影" : "剧集" }
+        let parts = [prepared?.media?.year.map(String.init), kindText].compactMap(\.self)
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func candidateWall(_ candidates: [API.ResolveCandidateView]) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: 3), spacing: 14) {
+            ForEach(candidates, id: \.tmdbId) { candidate in
+                Button {
+                    Task { await runPrepare(candidate.titleRef) }
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Color.clear.aspectRatio(2.0 / 3.0, contentMode: .fit)
+                            .overlay { RemoteImage(url: api.image(candidate.posterUrl, .posterCard)) }
+                            .clipShape(.rect(cornerRadius: 10))
+                            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.white.opacity(0.1)))
+                        Text(candidate.title).font(.subheadline).foregroundStyle(Theme.text.opacity(0.9)).lineLimit(1)
+                        Text(candidate.year.map(String.init) ?? "年份未知").font(.caption).foregroundStyle(Theme.textFaint)
+                    }
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("subscribe-candidate")
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("subscribe-ambiguous")
     }
 
-    /// 已订阅：管理态
+    /// 已订阅：管理态。关闭走左上 ✕；动作是原生列表行，破坏性的「取消订阅」单独一组垫底
+    @ViewBuilder
     private func manageState(_ existing: Int) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
+        Section {
             Label("该\(kind == "movie" ? "电影" : "剧集")已在订阅中，movieclaw 正在持续追踪资源。", systemImage: "checkmark.circle.fill")
                 .font(.subheadline)
                 .foregroundStyle(Theme.text.opacity(0.85))
                 .symbolRenderingMode(.multicolor)
                 .accessibilityIdentifier("subscribe-existing")
-            // 同 Web 管理态：一行右对齐，好的 →（洗版入口时）去洗一轮版 → 取消订阅
-            HStack(spacing: 10) {
-                Spacer(minLength: 0)
-                Button("好的") { dismiss() }
-                    .buttonStyle(.glass)
-                    .accessibilityIdentifier("subscribe-ok")
-                if upgradeMode {
-                    // 洗版入口进到已有订阅：并入既有订阅，去详情触发一轮
-                    Button("去洗一轮版") {
-                        dismiss()
-                        router.push(.subscription(id: existing, upgradeRun: true))
-                    }
-                    .discoverProminentButton()
-                    .accessibilityIdentifier("subscribe-go-upgrade")
+        }
+        Section {
+            if upgradeMode {
+                // 洗版入口进到已有订阅：并入既有订阅，去详情触发一轮
+                Button("去洗一轮版", systemImage: "sparkles") {
+                    dismiss()
+                    router.push(.subscription(id: existing, upgradeRun: true))
                 }
-                Button("取消订阅", role: .destructive) {
-                    Task { await unsubscribe(existing) }
-                }
-                .buttonStyle(.glass)
-                .tint(SubsColor.danger)
-                .disabled(busy)
-                .accessibilityIdentifier("subscribe-unsubscribe")
+                .accessibilityIdentifier("subscribe-go-upgrade")
             }
-            .font(.subheadline.weight(.medium))
+            Button("查看订阅详情", systemImage: "list.bullet.rectangle") {
+                dismiss()
+                router.push(.subscription(id: existing))
+            }
+            .accessibilityIdentifier("subscribe-open-detail")
+        }
+        Section {
+            Button("取消订阅", systemImage: "bell.slash", role: .destructive) {
+                Task { await unsubscribe(existing) }
+            }
+            .disabled(busy)
+            .accessibilityIdentifier("subscribe-unsubscribe")
         }
     }
 
     /// 订阅表单（ready 且未订阅）
+    @ViewBuilder
     private func form(_ prepared: API.PrepareView) -> some View {
-        VStack(alignment: .leading, spacing: 22) {
-            if prepared.movieOwned {
-                SubsNotice(
-                    text: upgradeMode ? "媒体库里已有这部电影，将体检现有版本并按需洗版" : "媒体库里已有这部电影，订阅后不会重复下载",
-                    tone: .ok, systemImage: "checkmark"
-                )
-            }
-            if prepared.media?.kind == "tv" {
-                VStack(alignment: .leading, spacing: 8) {
-                    SubsSectionHeader(title: "选择要收录的季", hint: "勾选即要整季（含未播集）")
-                    ForEach(prepared.seasons, id: \.seasonNumber) { season in
-                        SeasonPickRow(season: season, checked: selectedSeasons.contains(season.seasonNumber)) {
-                            if selectedSeasons.contains(season.seasonNumber) {
-                                selectedSeasons.remove(season.seasonNumber)
-                            } else {
-                                selectedSeasons.insert(season.seasonNumber)
-                            }
-                        }
-                    }
-                    SubsToggleRow(title: "自动续订", hint: "之后播出的新集、新一季自动加入追踪", isOn: $followFuture, identifier: "subscribe-follow-future")
-                        .padding(.top, 6)
+        if prepared.media?.kind == "tv" {
+            Section {
+                ForEach(prepared.seasons, id: \.seasonNumber) { season in
+                    seasonRow(season)
                 }
+            } header: {
+                Text("选择要收录的季")
+            } footer: {
+                Text("勾选即要整季（含未播集）")
             }
-
-            if upgradeMode || (canManage && !ruleSets.isEmpty) {
-                ruleSection
+            Section {
+                Toggle("自动续订", isOn: $followFuture)
+                    .accessibilityIdentifier("subscribe-follow-future")
+            } footer: {
+                Text("之后播出的新集、新一季自动加入追踪")
             }
+        }
 
-            if canManage, !libraries.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    SubsSectionHeader(title: "入库到")
+        if showsRules || showsLibrary {
+            Section {
+                if showsRules { ruleRow }
+                if showsLibrary {
                     Picker("入库到", selection: $libraryId) {
                         ForEach(libraries, id: \.id) { library in
                             Text(library.name + (library.isDefault ? "（默认）" : "")).tag(Int?.some(library.id))
                         }
                     }
                     .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 12))
                     .accessibilityIdentifier("subscribe-library")
-                    if let routed, let reason = routed.reason, libraryId == routed.libraryId {
-                        Text("自动选库：\(reason)").font(.caption).foregroundStyle(Theme.accent.opacity(0.9))
-                            .accessibilityIdentifier("subscribe-routed-library")
-                    }
-                    if let dispatchPreview { DispatchPreviewNote(preview: dispatchPreview) }
                 }
+            } footer: {
+                routingFooter
             }
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("subscribe-form")
     }
 
-    private var ruleSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                SubsSectionHeader(title: upgradeMode ? "洗版规则" : "资源规则", hint: upgradeMode ? "只列出配置了洗版目标的组" : nil)
-                Spacer()
-                if canManage {
-                    Button("+ 新建规则组") { creatingRuleSet = true }
-                        .font(.subheadline.weight(.medium))
-                        .accessibilityIdentifier("subscribe-new-ruleset")
-                }
-            }
-            if upgradeMode, selectableRules.isEmpty {
-                SubsNotice(
-                    text: canManage
-                        ? "还没有配置洗版目标的规则组——点右上角「+ 新建规则组」，在编辑器里选择「洗到哪一档」即可。"
-                        : "还没有配置洗版目标的规则组，请联系管理员在「设置 → 订阅规则 → 规则组」中配置「洗到哪一档」。",
-                    tone: .neutral
-                )
+    /// 原生多选行：右侧对勾表示选中，第二行是播出进度与库存
+    private func seasonRow(_ season: API.SeasonOverview) -> some View {
+        let checked = selectedSeasons.contains(season.seasonNumber)
+        return Button {
+            if checked {
+                selectedSeasons.remove(season.seasonNumber)
             } else {
-                Picker("规则组", selection: $ruleSetId) {
+                selectedSeasons.insert(season.seasonNumber)
+            }
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(SubsFormat.seasonName(season.seasonNumber)).foregroundStyle(Theme.text)
+                    HStack(spacing: 6) {
+                        Text(SeasonPickRow.progress(season)).foregroundStyle(.secondary)
+                        if let owned = SeasonPickRow.owned(season) {
+                            Text(owned).foregroundStyle(SubsColor.ok.opacity(0.9))
+                        }
+                    }
+                    .font(.footnote).monospacedDigit()
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "checkmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Theme.accentStrong)
+                    .opacity(checked ? 1 : 0)
+            }
+            .contentShape(.rect)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(checked ? .isSelected : [])
+        .accessibilityIdentifier("season-\(season.seasonNumber)")
+    }
+
+    /// 规则组行：原生菜单行，菜单里单选规则组，末尾是低频的「新建规则组…」
+    @ViewBuilder
+    private var ruleRow: some View {
+        let title = upgradeMode ? "洗版规则" : "资源规则"
+        if upgradeMode, selectableRules.isEmpty {
+            Text(canManage
+                ? "还没有配置洗版目标的规则组——新建一个，在编辑器里选择「洗到哪一档」即可。"
+                : "还没有配置洗版目标的规则组，请联系管理员在「设置 → 订阅规则 → 规则组」中配置「洗到哪一档」。")
+                .font(.subheadline).foregroundStyle(.secondary)
+            if canManage {
+                Button("新建规则组…", systemImage: "plus") { creatingRuleSet = true }
+                    .accessibilityIdentifier("subscribe-new-ruleset")
+            }
+        } else {
+            Menu {
+                Picker(title, selection: $ruleSetId) {
                     ForEach(selectableRules, id: \.id) { rule in
                         Text(rule.name + (rule.isDefault ? "（默认）" : "") + (upgradeMode ? " · 洗到 \(rule.upgradeTarget ?? "")" : ""))
                             .tag(Int?.some(rule.id))
                     }
                 }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(Color.white.opacity(0.04), in: .rect(cornerRadius: 12))
-                .accessibilityIdentifier("subscribe-ruleset")
+                if canManage {
+                    Divider()
+                    Button("新建规则组…", systemImage: "plus") { creatingRuleSet = true }
+                        .accessibilityIdentifier("subscribe-new-ruleset")
+                }
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(title).foregroundStyle(Theme.text)
+                        Spacer(minLength: 8)
+                        Text(pickedRule?.name ?? "未选择").lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down").font(.footnote.weight(.medium))
+                    }
+                    .foregroundStyle(.secondary)
+                    // 品质摘要放在行内：行底比脚注背后的毛玻璃实，字才看得清
+                    if let picked = pickedRule {
+                        let chips = RuleSetText.summary(picked.typedSpec)
+                        // 全不限是个危险默认：把风险讲在订阅之前
+                        Text(chips.isEmpty
+                            ? "该规则组不限任何条件——可能抓到低画质或无人做种的资源，建议在「设置 → 订阅规则 → 规则组」里加上分辨率与做种数限制"
+                            : chips.joined(separator: " · "))
+                            .font(.footnote)
+                            .foregroundStyle(chips.isEmpty ? SubsColor.warn : Theme.textMuted)
+                            .multilineTextAlignment(.leading)
+                            .accessibilityIdentifier("subscribe-ruleset-summary")
+                    }
+                }
+                .contentShape(.rect)
             }
-            if let ruleRouted, ruleSetId == ruleRouted.ruleSetId {
-                Text("自动选组：\(ruleRouted.reason)").font(.caption).foregroundStyle(Theme.accent.opacity(0.9))
+            .accessibilityIdentifier("subscribe-ruleset")
+        }
+    }
+
+    /// 规则 / 入库分组的脚注：路由选中非默认项的理由、投递路径。
+    /// 脚注背后是毛玻璃，系统次要色太淡，统一提到 textMuted
+    @ViewBuilder
+    private var routingFooter: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // 路由选中的恰好是默认组时理由就是废话，只在选了非默认组时解释；
+            // 组名已写在行里，后端理由原文（「按适用范围选用「电影」：电影」）再念一遍组名反而啰嗦
+            if showsRules, let ruleRouted, ruleSetId == ruleRouted.ruleSetId, pickedRule?.isDefault == false {
+                Label("按适用范围自动选择", systemImage: "sparkles")
             }
-            if let picked = selectableRules.first(where: { $0.id == ruleSetId }) {
-                // 全不限是个危险默认：把风险讲在订阅之前
-                SubsSpecChips(
-                    chips: RuleSetText.summary(picked.typedSpec),
-                    emptyText: "该规则组不限任何条件——可能抓到低画质或无人做种的资源，建议在「设置 → 订阅规则 → 规则组」里加上分辨率与做种数限制",
-                    emptyTone: SubsColor.warn.opacity(0.9)
-                )
-                .accessibilityIdentifier("subscribe-ruleset-summary")
+            if showsLibrary {
+                if let routed, let reason = routed.reason, libraryId == routed.libraryId,
+                   libraries.first(where: { $0.id == routed.libraryId })?.isDefault == false {
+                    Label(reason, systemImage: "sparkles")
+                        .accessibilityIdentifier("subscribe-routed-library")
+                }
+                if let dispatchPreview { DispatchPreviewNote(preview: dispatchPreview, emphasized: true) }
             }
         }
+        .foregroundStyle(Theme.textMuted)
     }
 
     // MARK: 数据

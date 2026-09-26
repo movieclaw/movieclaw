@@ -759,7 +759,14 @@ async def test_remote_session_dispatches_job_without_local_process(manager, monk
         def create_job_waiter(self, job_id: str) -> None:
             self.waiting = job_id
 
-        def reserve(self, job_id: str, *, backend: str, attempt_id: str | None = None):
+        def reserve(
+            self,
+            job_id: str,
+            *,
+            backend: str,
+            segment_type: str = "fmp4",
+            attempt_id: str | None = None,
+        ):
             self.reserved = (job_id, backend)
             return SimpleNamespace(
                 worker_id="mac-mini-a", observed_base_url="http://192.168.1.10:8000"
@@ -846,7 +853,14 @@ async def test_remote_session_uses_worker_connect_address_without_any_config(
         def __init__(self) -> None:
             self.dispatched: dict | None = None
 
-        def reserve(self, job_id: str, *, backend: str, attempt_id: str | None = None):
+        def reserve(
+            self,
+            job_id: str,
+            *,
+            backend: str,
+            segment_type: str = "fmp4",
+            attempt_id: str | None = None,
+        ):
             return SimpleNamespace(
                 worker_id="mac-mini-a", observed_base_url="http://192.168.1.10:8000/"
             )
@@ -921,7 +935,14 @@ async def test_remote_start_failure_does_not_fallback_to_local_software(manager,
         def create_job_waiter(self, job_id: str) -> None:
             self.job_id = job_id
 
-        def reserve(self, job_id: str, *, backend: str, attempt_id: str | None = None):
+        def reserve(
+            self,
+            job_id: str,
+            *,
+            backend: str,
+            segment_type: str = "fmp4",
+            attempt_id: str | None = None,
+        ):
             raise session_mod.RemoteWorkerUnavailable("Worker 刚刚断线")
 
         def release_job(self, job_id: str) -> None:
@@ -1013,7 +1034,14 @@ async def test_remote_restart_failure_cleans_up_new_job(manager, tmp_path, monke
         def create_job_waiter(self, job_id: str) -> None:
             self.created = job_id
 
-        def reserve(self, job_id: str, *, backend: str, attempt_id: str | None = None):
+        def reserve(
+            self,
+            job_id: str,
+            *,
+            backend: str,
+            segment_type: str = "fmp4",
+            attempt_id: str | None = None,
+        ):
             return SimpleNamespace(
                 worker_id="mac-mini-a", observed_base_url="http://192.168.1.10:8000"
             )
@@ -1094,7 +1122,14 @@ async def test_remote_seek_restart_uses_the_worker_that_took_the_job(
         def create_job_waiter(self, job_id: str) -> None:
             self.created = job_id
 
-        def reserve(self, job_id: str, *, backend: str, attempt_id: str | None = None):
+        def reserve(
+            self,
+            job_id: str,
+            *,
+            backend: str,
+            segment_type: str = "fmp4",
+            attempt_id: str | None = None,
+        ):
             self.reserved.append((job_id, backend))
             return SimpleNamespace(
                 worker_id="mac-mini-b", observed_base_url="http://192.168.1.10:3000"
@@ -1767,5 +1802,153 @@ async def test_stop_during_vod_restart_leaves_no_process(manager, monkeypatch):
         for pid in pids:
             assert await wait_until(lambda p=pid: not pid_alive(p)), f"进程 {pid} 泄漏"
         assert manager.get(session.id) is None
+    finally:
+        await manager.shutdown()
+
+
+# --- 写者退出、远程任务结束与产物丢失（稳定性回归） --------------------------
+
+
+EXITS_WITHOUT_SEGMENTS = """
+import sys, pathlib
+pathlib.Path(sys.argv[1]).write_text("#EXTM3U\\n#EXT-X-VERSION:7\\n")
+"""
+
+
+@pytest.mark.asyncio
+async def test_writer_that_never_produces_segment_is_not_restarted_forever(
+    manager, monkeypatch
+):
+    """回归：源比台账时长短（片尾孤儿分片、边下边播的半截文件）时，从目标段起转的
+    ffmpeg 什么都不产出就退出。旧逻辑每 50 毫秒轮询一次就重拉一个进程——实测 3 秒
+    拉起 29 次，按 30 秒等待约 300 次。现在同一段最多重试一次，之后本会话内直接
+    404，也不再让播放器干等。"""
+    spawns: list[int | None] = []
+
+    def fake_build(
+        plan, *, source_path, session_dir, start_ms=0, hw_backend=None, start_number=None
+    ):
+        spawns.append(start_number)
+        playlist = Path(session_dir) / "live.m3u8"
+        return TranscodeCommand(
+            argv=[*_script(EXITS_WITHOUT_SEGMENTS), str(playlist)],
+            playlist_path=playlist,
+            init_path=Path(session_dir) / "init.mp4",
+        )
+
+    monkeypatch.setattr(session_mod, "build_hls_command", fake_build)
+    # 等待上限放宽到 10 秒：要证明的是「判定产不出来就提前返回」，CI 慢机器上拉起
+    # 几个 python 假进程也远用不了一半
+    monkeypatch.setattr(TranscodeSessionManager, "_SEGMENT_WAIT_S", 10.0)
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0, segment_plan=_boundaries(800)
+    )
+    try:
+        started = time.monotonic()
+        assert await manager.ensure_segment(session, 5) is None
+        # 起播 1 次 + 直奔第 5 段 1 次 + 空跑后重试 1 次
+        assert len(spawns) <= 3, spawns
+        assert 5 in session.unreachable_segments
+        assert time.monotonic() - started < 5.0  # 判定产不出来就返回，不等满超时
+        # 再次请求同一段：立即 404，不再拉进程
+        again = time.monotonic()
+        assert await manager.ensure_segment(session, 5) is None
+        assert time.monotonic() - again < 1.0
+        assert len(spawns) <= 3
+    finally:
+        await manager.shutdown()
+
+
+class _FinishedJobRegistry:
+    """远程 job 都已正常结束（job.finished）、Worker 在线的注册表替身。"""
+
+    def job_state(self, _job_id: str) -> dict[str, str]:
+        return {"type": "job.finished"}
+
+    def worker_online(self, _worker_id: str | None) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_remote_finished_job_restarts_for_missing_segment(manager, tmp_path, monkeypatch):
+    """远程 job 正常结束（转到片尾，或取源连接断开被提前收尾）后，缺的分片要像
+    本地进程退出一样重新起转，而不是把整个会话判死——旧逻辑下，看完片尾回拖到
+    起转点之前，或 job 被提前收尾后，播放器只能拿到 404。重新起转同样受「空跑
+    退出」上限约束：新 job 也产不出来就标记为产不出来，不无限重下发。"""
+    session = _vod_session(tmp_path / "session", head=0, completed=set(range(5)))
+    session.remote = True
+    session.state = "ready"
+    session.remote_job_id = "job-0"
+    session.remote_worker_id = "mac-mini-a"
+    session.directory.mkdir(parents=True)
+    for i in range(5):
+        (session.directory / f"seg{i:05d}.m4s").write_bytes(b"done")
+    monkeypatch.setattr(session_mod, "get_remote_worker_registry", lambda: _FinishedJobRegistry())
+    restarts: list[int] = []
+
+    async def fake_restart_remote(sess, index: int) -> None:
+        restarts.append(index)
+        sess.head_segment = index
+        sess.remote_job_id = f"job-{len(restarts)}"
+        sess.state = "ready"
+
+    monkeypatch.setattr(manager, "_restart_remote", fake_restart_remote)
+    monkeypatch.setattr(TranscodeSessionManager, "_SEGMENT_WAIT_S", 2.0)
+
+    assert await manager.ensure_segment(session, 5) is None
+    assert session.state != "failed"
+    # 先从缺口重启一次；新 job 也没产出就再给一次机会，然后停手
+    assert restarts == [5, 5]
+    assert 5 in session.unreachable_segments
+    # 早已落盘的分片照常可播
+    assert await manager.ensure_segment(session, 4) == session.directory / "seg00004.m4s"
+
+
+@pytest.mark.asyncio
+async def test_worker_reported_artifact_loss_enters_retry_ledger(manager, tmp_path, caplog):
+    """Worker 重试用尽放弃上传某片后报给 NAS：它进补片台账，下一次等这一片时走
+    「上传失败补片」重启。NAS 自己收不到任何请求（网络断了）或只收到半截（499，
+    按设计不记失败），不靠这份报告只能对着缺口一轮轮等到超时。"""
+    session = _vod_session(tmp_path / "session", head=0, completed=set())
+    session.remote = True
+    session.remote_job_id = "job-1"
+    manager._sessions[session.id] = session
+
+    with caplog.at_level("WARNING"):
+        manager.record_remote_artifact_failure(
+            {"job_id": "job-1", "name": "seg00007.ts", "status": 499, "error": "连接中断"}
+        )
+        manager.record_remote_artifact_failure({"job_id": "job-other", "name": "seg00009.ts"})
+
+    assert session.remote_failed_segments == {7}  # 499 也按失败记，冒名 job 忽略
+    assert any("seg00007.ts" in r.getMessage() for r in caplog.records)
+    manager._sessions.clear()
+
+
+@pytest.mark.asyncio
+async def test_local_crash_and_session_end_are_logged(manager, monkeypatch, caplog):
+    """转码中途崩溃此前没有任何日志，只剩下一次分片请求触发的重启；会话结束也
+    没有小结。两者都要落日志：前者带退出码与 stderr 末尾，后者带停止原因。"""
+    crashes_later = """
+import sys, time, pathlib
+pathlib.Path(sys.argv[1]).write_text("#EXTM3U\\n#EXT-X-VERSION:7\\n")
+time.sleep(0.8)
+print("[h264_vaapi] Failed to upload frame", file=sys.stderr, flush=True)
+sys.exit(187)
+"""
+    install_fake(monkeypatch, crashes_later)
+    caplog.set_level("INFO", logger="movieclaw_api.playback.session")
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0, segment_plan=_boundaries(800)
+    )
+    try:
+        assert await wait_until(
+            lambda: any("本地转码进程异常退出" in r.getMessage() for r in caplog.records)
+        )
+        crash = next(r.getMessage() for r in caplog.records if "异常退出" in r.getMessage())
+        assert "187" in crash and "Failed to upload frame" in crash
+        await manager.stop(session.id, reason="测试结束")
+        summary = [r.getMessage() for r in caplog.records if "转码会话结束" in r.getMessage()]
+        assert summary and "测试结束" in summary[0] and session.id in summary[0]
     finally:
         await manager.shutdown()

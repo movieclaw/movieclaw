@@ -189,6 +189,9 @@ struct LiveDecodeTests {
     @Test func siteList() async throws {
         try await LiveServer.check { try await $0.siteList() }
     }
+    @Test func siteBoostPoolShow() async throws {
+        try await LiveServer.check { try await $0.siteBoostPoolShow() }
+    }
     @Test func siteBoostStats() async throws {
         try await LiveServer.check { try await $0.siteBoostStats() }
     }

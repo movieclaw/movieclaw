@@ -183,6 +183,76 @@ export function listSiteBoostStats(init?: RequestInit): Promise<Record<string, S
   return unwrap(request<ApiEnvelope<Record<string, SiteBoostStats>>>("/sites/boost-stats", init));
 }
 
+/** 在池刷流种子的清理状态（见 schemas.site.BoostPoolTaskView）。 */
+export interface BoostPoolTask {
+  info_hash: string;
+  site_id: string;
+  /** 保留期到期时刻（站点保留天数与 H&R 考核时长取大）；null=现在删不涉及保留期 */
+  protected_until: string | null;
+  /** 已请求清理，等保留期满（或下载器恢复可达）后自动删除 */
+  cleanup_scheduled: boolean;
+}
+
+/** 某站点在池刷流种子的概况（见 schemas.site.BoostPoolSiteView）。 */
+export interface BoostPoolSite {
+  site_id: string;
+  site_name: string;
+  boost_enabled: boolean;
+  boost_paused: boolean;
+  task_count: number;
+  size_bytes: number;
+  deletable_count: number;
+  deletable_bytes: number;
+  /** 还在保留期内的种子数（现在删可能被记 H&R） */
+  protected_count: number;
+  protected_bytes: number;
+  /** 保留期内种子里最晚的到期时刻 */
+  protected_until: string | null;
+  /** 已请求清理、等待自动删除的种子数 */
+  scheduled_count: number;
+}
+
+export interface BoostPool {
+  sites: BoostPoolSite[];
+  tasks: BoostPoolTask[];
+}
+
+/** 清理结果（见 schemas.site.BoostCleanupResult）。 */
+export interface BoostCleanupResult {
+  deleted_count: number;
+  deleted_bytes: number;
+  scheduled_count: number;
+  scheduled_until: string | null;
+  failed_count: number;
+  disabled_sites: string[];
+}
+
+/** 刷流在池种子概况：关闭刷流不会删种，这里看清残留、决定清理。 */
+export function getBoostPool(init?: RequestInit): Promise<BoostPool> {
+  return unwrap(request<ApiEnvelope<BoostPool>>("/sites/boost-pool", init));
+}
+
+/**
+ * 清理残留的刷流种子（连数据删除，无法恢复）。默认先关闭目标站点的刷流；
+ * 保留期内的标记后到期自动删除，force=true 才立即全删（可能被记 H&R）。
+ * siteIds 省略 = 全部有在池种子的站点。
+ */
+export function cleanupBoostPool(options: {
+  siteIds?: string[];
+  force?: boolean;
+}): Promise<BoostCleanupResult> {
+  return unwrap(
+    request<ApiEnvelope<BoostCleanupResult>>("/sites/boost-pool/cleanup", {
+      method: "POST",
+      body: JSON.stringify({
+        site_ids: options.siteIds ?? null,
+        disable_boost: true,
+        force: options.force ?? false,
+      }),
+    }),
+  );
+}
+
 /** 手动重新触发一次验证。 */
 export function reverifySite(siteId: string): Promise<ConfiguredSite> {
   return unwrap(

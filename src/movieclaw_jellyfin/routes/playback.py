@@ -47,6 +47,7 @@ from movieclaw_api.services.playback.ffmpeg_args import (
     SEGMENT_SECONDS,
     is_mpegts,
     segment_pattern,
+    segment_type,
 )
 from movieclaw_api.services.playback.hwprobe import (
     available_backends,
@@ -103,6 +104,7 @@ from movieclaw_playback import state as playback_state
 from movieclaw_playback.decide import (
     AudioPlan,
     PlaybackPlan,
+    PlaybackPolicy,
     PlaybackRejected,
     PlaybackTier,
     VideoPlan,
@@ -239,7 +241,7 @@ async def playback_info(
     # 策略（硬件自检 + 软转开关）只在有普通本地文件时读一次：strm 与原盘
     # 不走码率协商，纯 strm 条目不为此碰硬件探测
     policy = (
-        await load_policy()
+        await _load_policy_for(negotiation.segment_container)
         if any(not f.is_disc() and not is_strm(f.file_path) for f, _ in pairs)
         else None
     )
@@ -260,6 +262,31 @@ async def playback_info(
             "PlaySessionId": play_session_id,
         }
     )
+
+
+async def _load_policy_for(segment_container: str) -> PlaybackPolicy:
+    """转码策略，按播放器要的分片容器校正「有没有硬件」。
+
+    ``load_policy`` 把在线的远程 Worker 算作 VideoToolbox 硬件，但 TS 分片只能交给
+    声明了 ``mpegts`` 的 Worker：旧版 Mac Worker 的上传代理只放行 fMP4 产物，TS
+    分片在它本机就被拒收，ffmpeg 却不看上传响应码、照样退出码 0 转完整部片，播放器
+    等满 30 秒只拿到 404（issue #444）。硬件只剩这种 Worker 时本次按「无硬件」协商：
+    软转开着就退软转，没开就按直连应答（硬边界 4），并在日志里点名要更新 Worker。
+    PlaybackInfo 与 master 用同一个结论，两处的计划才对得上。
+    """
+    policy = await load_policy()
+    if segment_container != "ts" or not policy.hardware_available:
+        return policy
+    if await asyncio.to_thread(available_local_backends):
+        return policy
+    if remote_worker_available("videotoolbox", segment_type="mpegts"):
+        return policy
+    if remote_worker_available("videotoolbox"):
+        logger.warning(
+            "在线的远程转码 Worker 版本过旧，传不回 Infuse 等播放器要的 TS 分片，本次按无硬件"
+            "处理。请把 Mac 上的 MovieClaw Transcoder 更新到与服务端相同的版本"
+        )
+    return replace(policy, hardware_available=False)
 
 
 def _apply_disc_transcoding(
@@ -988,7 +1015,7 @@ async def _capped_transcode_spec(f: LibraryFile, params: TranscodeParams) -> _Se
     滤镜链不兼容）时按软转开关决定退软转还是拒绝，绝不把硬件档的计划悄悄交给
     libx264。
     """
-    policy = await load_policy()
+    policy = await _load_policy_for(params.segment_container)
     audio_ref = (
         audio_track_for_index(f, params.audio_stream_index)
         if params.audio_stream_index is not None
@@ -1025,7 +1052,9 @@ async def _capped_transcode_spec(f: LibraryFile, params: TranscodeParams) -> _Se
             decision,
             available=backends,
             local_backends=local_backends,
-            remote_video_available=remote_worker_available("videotoolbox"),
+            remote_video_available=remote_worker_available(
+                "videotoolbox", segment_type=segment_type(decision)
+            ),
         )
         if hw_backend is None:
             if not policy.software_transcode_enabled:

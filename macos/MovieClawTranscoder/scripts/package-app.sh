@@ -28,6 +28,25 @@ if [ -n "${MOVIECLAW_WORKER_VERSION:-}" ]; then
     echo "已注入版本号：${MOVIECLAW_WORKER_VERSION}"
 fi
 
+# 校正二进制里记录的「链接所用 SDK 版本」（LC_BUILD_VERSION 的 sdk 字段）。
+#
+# SwiftPM 的新构建系统（swiftbuild，Xcode 27 起默认）链接时把部署目标 12.0 当成
+# SDK 版本写进去，旧的 native 构建系统写的是真实版本（同一台机器实测：swiftbuild
+# 写 12.0、native 写 27.0）。系统按这个字段判断 App「用哪版 SDK 链接」来决定新
+# 行为是否生效：写成 12.0，macOS 26 起菜单、按钮、窗口的液态玻璃新外观一律不
+# 启用，其它按 SDK 版本开关的行为也全退回 macOS 12 时代。代码确实是对着当前 SDK
+# 编译的，这里改回真实值；同样必须在 codesign 之前（改完原签名即失效）。
+BINARY="${APP_DIR}/Contents/MacOS/movieclaw-transcoder"
+SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+BUILD_INFO="$(xcrun vtool -show-build "${BINARY}")"
+MIN_OS="$(awk '$1 == "minos" { print $2; exit }' <<<"${BUILD_INFO}")"
+RECORDED_SDK="$(awk '$1 == "sdk" { print $2; exit }' <<<"${BUILD_INFO}")"
+if [ -n "${MIN_OS}" ] && [ -n "${SDK_VERSION}" ] && [ "${RECORDED_SDK}" != "${SDK_VERSION}" ]; then
+    xcrun vtool -set-build-version macos "${MIN_OS}" "${SDK_VERSION}" \
+        -replace -output "${BINARY}" "${BINARY}"
+    echo "已把链接 SDK 版本从 ${RECORDED_SDK:-未知} 校正为 ${SDK_VERSION}（最低系统 ${MIN_OS} 不变）"
+fi
+
 # 由内向外逐个签，不用 --deep。
 #
 # --deep 已被 Apple 标为不推荐：它对嵌套内容套用同一套参数，签出来的结果和

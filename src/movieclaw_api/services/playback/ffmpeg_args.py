@@ -68,6 +68,11 @@ def segment_pattern(plan: PlaybackPlan) -> str:
     return TS_SEGMENT_PATTERN if is_mpegts(plan) else SEGMENT_PATTERN
 
 
+def segment_type(plan: PlaybackPlan) -> str:
+    """分片类型，取值同 ffmpeg ``-hls_segment_type``；远程 Worker 按它声明回传能力。"""
+    return "mpegts" if is_mpegts(plan) else "fmp4"
+
+
 #: 分片时长（秒）。转码档自己控制 GOP，可以精确对齐；直通档 copy 模式下
 #: ffmpeg 只能切在源片已有的关键帧上，这个值是「至少多久」，实际分片会更长。
 #: 取 4：VOD 预生成列表的分片栅格与这里必须同值（hls_vod.compute_segment_plan），
@@ -140,6 +145,14 @@ READRATE_BURST_SECONDS = 60
 # ffmpeg 永久阻塞，既不再产出分片，也不退出释放 Worker 槽位；播放器的 30 秒
 # 分片等待窗口也能在它超时后走失败回路。
 REMOTE_IO_TIMEOUT_US = 30_000_000
+#: 远程源连接断开后续读的最长退避（秒）。ffmpeg 的 HTTP 输入默认**不重连**：
+#: 连接中途断开时只打一行「Stream ends prematurely」，按文件已读完收尾、退出码 0
+#: ——实测 40 秒片源在 6 MB 处掐断，只产出 4/10 个分片，Worker 却上报「任务成功」，
+#: NAS 随后把会话判死。最常见的断开来自领先量节流：远程 job 被 SIGSTOP 超过
+#: 10 分钟，容器内 nginx 的 send_timeout（600 秒）会掐掉这条取源连接；Wi-Fi
+#: 抖动、NAT 映射老化同理。开启后按断点发 Range 续读（退避 0/1/3/7/15 秒，共约
+#: 26 秒），与 NAS 30 秒的分片等待窗口相当。
+REMOTE_RECONNECT_DELAY_MAX_S = 15
 
 #: 软件 HDR→SDR 色调映射。必须用 BT.2390 EETF——简单 clip 会把高光全压成
 #: 死白（雪景、天空、爆炸场面直接糊掉）。
@@ -444,6 +457,13 @@ def build_hls_command(
         # 输入与输出分别设置一次：前者约束 HTTPS Range 读取，后者由 HLS muxer
         # 传给每个 init/segment/playlist 的 HTTP PUT。
         argv += ["-rw_timeout", str(REMOTE_IO_TIMEOUT_US)]
+        # 远程源是 HTTP：连接断了按断点续读，不能当成读到了片尾（理由见常量注释）。
+        # 只重试网络错误，不重试 HTTP 4xx——会话已结束时源地址返回 404，该停就停。
+        argv += [
+            "-reconnect", "1",
+            "-reconnect_on_network_error", "1",
+            "-reconnect_delay_max", str(REMOTE_RECONNECT_DELAY_MAX_S),
+        ]
     if input_format == "concat":
         # -safe 0：清单里是绝对路径（默认的 safe 模式只认相对路径）
         argv += ["-f", "concat", "-safe", "0"]

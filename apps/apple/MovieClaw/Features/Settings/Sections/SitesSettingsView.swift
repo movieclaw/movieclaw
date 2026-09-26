@@ -27,6 +27,10 @@ struct SitesSettingsView: View {
     @State private var sheet: SettingsBSiteSheet?
     @State private var presetEditor: SettingsBSitePresetDraft?
     @State private var editMode: EditMode = .inactive
+    /// 待确认关闭刷流、且还有在池种子的站点（弹三选一：关闭并清理 / 关闭保留 / 取消）
+    @State private var disableTarget: API.ConfiguredSite?
+    /// 待确认删除、且还有在池刷流种子的站点（弹三选一：删除并清理 / 删除保留 / 取消）
+    @State private var deleteTarget: API.ConfiguredSite?
 
     var body: some View {
         Form {
@@ -73,6 +77,32 @@ struct SitesSettingsView: View {
         }
         .sheet(item: $presetEditor) { draft in
             SettingsBSitePresetEditorSheet(draft: draft, store: presets).sheetFeedback()
+        }
+        .confirmationDialog(
+            disableTarget.map { "关闭「\(store.item(for: $0.siteId).displayName)」的自动刷分享率？" } ?? "",
+            isPresented: Binding(get: { disableTarget != nil }, set: { if !$0 { disableTarget = nil } }),
+            titleVisibility: .visible,
+            presenting: disableTarget
+        ) { site in
+            Button("关闭并清理种子", role: .destructive) { Task { await disableAndCleanup(site) } }
+            Button("关闭，种子继续做种") {
+                run(site) { try await api.siteRatioBoostSet(siteId: site.siteId, body: .init(enabled: false)) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: { site in
+            Text(disableMessage(site))
+        }
+        .confirmationDialog(
+            deleteTarget.map { "删除「\(store.item(for: $0.siteId).displayName)」的配置？" } ?? "",
+            isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
+            titleVisibility: .visible,
+            presenting: deleteTarget
+        ) { site in
+            Button("删除并清理刷流种子", role: .destructive) { Task { await performDelete(site, cleanup: true) } }
+            Button("删除，种子继续做种", role: .destructive) { Task { await performDelete(site, cleanup: false) } }
+            Button("取消", role: .cancel) {}
+        } message: { site in
+            Text(deleteMessage(site))
         }
     }
 
@@ -242,14 +272,20 @@ struct SitesSettingsView: View {
         }
     }
 
-    /// 关闭刷流：二次确认讲清后果（不删数据，只停新增）
+    /// 关闭刷流：还有在池种子时三选一（关闭并清理 / 关闭保留 / 取消）——关掉刷流不会删种，
+    /// 残留种子会一直满速做种、占着磁盘；这是「关的那一刻顺手清掉」的入口，事后也能在
+    /// 「活动 → 刷流做种」清理（docs/design/site-protection-ratio-boost.md §2.9）。
+    /// 没有在池种子时只需一次普通确认。
     private func disableBoost(_ site: API.ConfiguredSite) async {
+        if (store.boostStats[site.siteId]?.activeCount ?? 0) > 0 {
+            disableTarget = site
+            return
+        }
         let name = store.item(for: site.siteId).displayName
         let ok = await feedback.confirm(
             "关闭「\(name)」的自动刷分享率？",
             message: [
                 "停止抢该站新发布的免费种子",
-                "已在做种的刷流任务全部保留，不删除任何数据",
                 "站点索引同步回到正常自适应节奏",
                 "重新开启时会再次确认预算与保留期",
             ].map { "• " + $0 }.joined(separator: "\n"),
@@ -259,21 +295,81 @@ struct SitesSettingsView: View {
         run(site) { try await api.siteRatioBoostSet(siteId: site.siteId, body: .init(enabled: false)) }
     }
 
+    private func disableMessage(_ site: API.ConfiguredSite) -> String {
+        let stats = store.boostStats[site.siteId]
+        let count = stats?.activeCount ?? 0
+        let size = ActivityFormat.bytes(Double(stats?.usedBytes ?? 0))
+        return [
+            "停止抢该站新发布的免费种子。该站还有 \(count) 个刷流种子（\(size)）：",
+            "• 清理：连数据文件一起删除；还没做满站点要求做种时长的，等到期后再自动删，避免被记 H&R",
+            "• 继续做种：种子保留并满速做种，引擎不再汰换；之后可在「活动 → 刷流做种」随时清理",
+        ].joined(separator: "\n")
+    }
+
+    /// 关闭并清理：后端先关刷流再删种（保留期内的标记到期删），完成后刷新站点与刷流统计
+    private func disableAndCleanup(_ site: API.ConfiguredSite) async {
+        do {
+            var result: API.BoostCleanupResult?
+            try await store.withBusy(site.siteId) {
+                result = try await api.siteBoostPoolCleanup(
+                    body: .init(siteIds: [site.siteId], disableBoost: true, force: false)
+                )
+            }
+            await store.refreshConfigured(api)
+            await store.refreshStats(api)
+            if let result { feedback.success("已关闭刷流。" + ActivityBoostCleanupText.summary(result)) }
+        } catch {
+            feedback.error(error)
+        }
+    }
+
+    /// 删除站点配置。还有在池刷流种子时三选一：删除并清理 / 删除保留（转出管理继续做种，之后只能去
+    /// 下载器按 movieclaw-boost 分类手动清）/ 取消；没有时一次普通确认。
     private func delete(_ site: API.ConfiguredSite) async {
+        if (store.boostStats[site.siteId]?.activeCount ?? 0) > 0 {
+            deleteTarget = site
+            return
+        }
         let name = store.item(for: site.siteId).displayName
         let ok = await feedback.confirm(
             "删除「\(name)」的配置？",
-            message: "该站点将不再参与搜索与订阅投递；在池的刷流任务会转出管理并继续做种。可随时重新接入。",
+            message: "该站点将不再参与搜索与订阅投递。可随时重新接入。",
             confirmTitle: "删除",
             destructive: true
         )
         guard ok else { return }
+        await performDelete(site, cleanup: false)
+    }
+
+    private func deleteMessage(_ site: API.ConfiguredSite) -> String {
+        let stats = store.boostStats[site.siteId]
+        let count = stats?.activeCount ?? 0
+        let size = ActivityFormat.bytes(Double(stats?.usedBytes ?? 0))
+        return [
+            "该站点将不再参与搜索与订阅投递，可随时重新接入。它还有 \(count) 个刷流种子（\(size)）：",
+            "• 清理：连数据文件一起删除；还没做满站点要求做种时长的，等到期后再自动删，避免被记 H&R",
+            "• 保留：种子转出刷流管理并继续做种，之后只能在下载器里按 movieclaw-boost 分类手动清理",
+        ].joined(separator: "\n")
+    }
+
+    /// 先清理（后端先关刷流、保留期内的记下到期时刻）再删配置：已请求清理的种子不会随删站点被放生
+    private func performDelete(_ site: API.ConfiguredSite, cleanup: Bool) async {
         do {
-            try await store.withBusy(site.siteId) { _ = try await api.siteDelete(siteId: site.siteId) }
+            var result: API.BoostCleanupResult?
+            try await store.withBusy(site.siteId) {
+                if cleanup {
+                    result = try await api.siteBoostPoolCleanup(
+                        body: .init(siteIds: [site.siteId], disableBoost: true, force: false)
+                    )
+                }
+                _ = try await api.siteDelete(siteId: site.siteId)
+            }
             store.remove(site.siteId)
             if expanded == site.siteId { expanded = nil }
+            if let result { feedback.success("已删除站点配置。" + ActivityBoostCleanupText.summary(result)) }
         } catch {
             feedback.error(error)
+            await store.refreshConfigured(api)
         }
     }
 

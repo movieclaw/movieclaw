@@ -130,22 +130,35 @@ struct ActivityActiveJobRow: View {
     }
 }
 
-/// 刷流做种一行：实时汇总，点进二级页看逐种子明细
+/// 刷流做种一行：实时汇总 + 按站点开关状态说清楚（全关了显示「刷流已关闭 · N 个种子仍在做种」），
+/// 点进二级页看逐站点、逐种子明细
 struct ActivityBoostSummaryRow: View {
     let tasks: [API.DownloadTaskView]
+    /// 刷流在池概况（站点开关 / 暂停、待清理）；nil = 还没取到
+    let pool: API.BoostPoolView?
 
     var body: some View {
         let totals = ActivityBoostTotals(tasks)
+        let sites = ActivityBoostSites(tasks: tasks, pool: pool)
+        let scheduled = sites.scheduledCount
+        let off = sites.count(.off), paused = sites.count(.paused)
+        let allOff = off == totals.count, allPaused = paused == totals.count
         HStack(spacing: 12) {
-            Image(systemName: "leaf.fill").foregroundStyle(Theme.success).frame(width: 26)
+            Image(systemName: allPaused ? "pause.circle.fill" : "leaf.fill")
+                .foregroundStyle(allOff ? Theme.textFaint : allPaused ? Theme.warning : Theme.success)
+                .frame(width: 26)
             VStack(alignment: .leading, spacing: 3) {
-                Text("刷流做种").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                Text(allOff ? "刷流已关闭" : allPaused ? "刷流已暂停" : "刷流做种")
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
                 Text(WatchFormat.metaLine([
-                    "\(totals.count) 个种子",
+                    allOff ? "\(totals.count) 个种子仍在做种" : allPaused ? "\(totals.count) 个种子限速做种" : "\(totals.count) 个种子",
                     "↑ \(ActivityFormat.rate(Double(totals.upSpeed)))",
-                    "已上传 \(ActivityFormat.bytes(Double(totals.uploaded)))",
+                    !allOff && off > 0 ? "\(off) 个来自已关闭刷流的站点" : nil,
+                    !allPaused && paused > 0 ? "\(paused) 个已暂停" : nil,
+                    scheduled > 0 ? "\(scheduled) 个等待到期删除" : nil,
+                    allOff || off > 0 || paused > 0 || scheduled > 0 ? nil : "已上传 \(ActivityFormat.bytes(Double(totals.uploaded)))",
                 ]))
-                .font(.footnote).monospacedDigit().foregroundStyle(Theme.textMuted).lineLimit(1)
+                .font(.footnote).monospacedDigit().foregroundStyle(Theme.textMuted).lineLimit(2)
             }
         }
         .padding(.vertical, 4)
@@ -155,7 +168,7 @@ struct ActivityBoostSummaryRow: View {
 
 // MARK: - 最近播放 / 观看统计 / 最近完成
 
-/// 最近播放一行：小海报 · 片名 / 成员 · 设备 · 右侧上下两行「相对时间 / 看到哪」。
+/// 最近播放一行：小海报 · 片名 / 成员 · 设备 · 右侧上下两行「看到哪 / 相对时间」。
 /// 观看进度放右列且不截断：设备名（Jellyfin 客户端常带长长的型号与系统版本）只截断它自己那一行，
 /// 不会再把「看到 42%」挤没。
 struct ActivityRecentPlayRow: View {
@@ -175,15 +188,17 @@ struct ActivityRecentPlayRow: View {
                     .font(.footnote).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
             Spacer(minLength: 8)
+            // 结果在上（与片名同一行、字重高一档），时间在下（与副标题同一行、更淡）
             VStack(alignment: .trailing, spacing: 2) {
-                Text(playing ? "播放中" : ActivityFormat.relative(entry.startedAt))
-                    .foregroundStyle(playing ? Theme.success : Theme.textFaint)
+                if playing {
+                    Text("播放中").fontWeight(.medium).foregroundStyle(Theme.success)
+                } else if entry.completed {
+                    Label("看完", systemImage: "checkmark").labelStyle(.titleAndIcon).fontWeight(.medium).foregroundStyle(Theme.success)
+                } else if let percent = entry.progressPercent {
+                    Text("看到 \(percent)%").fontWeight(.medium).foregroundStyle(Theme.textMuted)
+                }
                 if !playing {
-                    if entry.completed {
-                        Label("看完", systemImage: "checkmark").labelStyle(.titleAndIcon).foregroundStyle(Theme.success)
-                    } else if let percent = entry.progressPercent {
-                        Text("看到 \(percent)%").foregroundStyle(Theme.textMuted)
-                    }
+                    Text(ActivityFormat.relative(entry.startedAt)).foregroundStyle(Theme.textFaint)
                 }
             }
             .font(.footnote)

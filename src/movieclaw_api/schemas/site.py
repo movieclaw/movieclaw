@@ -298,3 +298,85 @@ class SiteBoostStatsView(BaseModel):
     avg_used_bytes_24h: int = Field(default=0, description="近 24 小时平均在池体积（字节）")
     uploaded_bytes_7d: int = Field(default=0, description="近 7 天上传量（字节）")
     avg_used_bytes_7d: int = Field(default=0, description="近 7 天平均在池体积（字节）")
+
+
+
+# ---------------------------------------------------------------------------
+# 刷流在池概况与清理（docs/design/site-protection-ratio-boost.md §2.9）
+# ---------------------------------------------------------------------------
+
+
+class BoostPoolTaskView(BaseModel):
+    """在池刷流任务的清理相关状态（逐种子，供界面在对应行上标注）。"""
+
+    info_hash: str = Field(description="种子 infohash（小写）")
+    site_id: str = Field(description="站点标识")
+    protected_until: datetime | None = Field(
+        default=None,
+        description="保留期到期时刻（站点保留天数与 H&R 考核时长取大）；null=现在删不涉及保留期",
+    )
+    cleanup_scheduled: bool = Field(
+        default=False, description="已请求清理，等保留期满（或下载器恢复可达）后自动删除"
+    )
+
+
+class BoostPoolSiteView(BaseModel):
+    """某站点在池刷流种子的概况：开关状态、体积、能否立即删。"""
+
+    site_id: str = Field(description="站点标识")
+    site_name: str = Field(description="站点显示名")
+    boost_enabled: bool = Field(description="该站当前是否开着刷流（站点配置已删除时为 false）")
+    boost_paused: bool = Field(description="该站刷流是否处于暂停")
+    task_count: int = Field(description="在池种子数")
+    size_bytes: int = Field(description="在池种子总体积（字节）")
+    deletable_count: int = Field(description="现在就能删的种子数（已过保留期或未下完）")
+    deletable_bytes: int = Field(description="现在就能删的体积（字节）")
+    protected_count: int = Field(description="还在保留期内的种子数（现在删可能被记 H&R）")
+    protected_bytes: int = Field(description="还在保留期内的体积（字节）")
+    protected_until: datetime | None = Field(
+        default=None, description="保留期内种子里最晚的到期时刻；null=没有保留期内的种子"
+    )
+    scheduled_count: int = Field(description="已请求清理、等待自动删除的种子数")
+
+
+class BoostPoolView(BaseModel):
+    """刷流在池概况：按站点汇总 + 逐种子的清理状态。"""
+
+    sites: list[BoostPoolSiteView] = Field(default_factory=list, description="有在池种子的站点")
+    tasks: list[BoostPoolTaskView] = Field(default_factory=list, description="在池种子的清理状态")
+
+
+class BoostCleanupRequest(BaseModel):
+    """清理残留刷流种子的请求体。"""
+
+    site_ids: list[str] | None = Field(
+        default=None, description="只清理这些站点；null=全部有在池种子的站点"
+    )
+    disable_boost: bool = Field(
+        default=True,
+        description="先关闭这些站点的刷流（不关的话引擎几分钟内会重新拉新种）",
+    )
+    force: bool = Field(
+        default=False,
+        description=(
+            "true=保留期内的也立即删除（可能被站点记 H&R）；"
+            "false=保留期内的先标记，到期后由引擎自动删除"
+        ),
+    )
+
+
+class BoostCleanupResult(BaseModel):
+    """清理结果。"""
+
+    deleted_count: int = Field(description="已连数据删除的种子数")
+    deleted_bytes: int = Field(description="已释放的体积（字节）")
+    scheduled_count: int = Field(description="保留期内、已标记到期自动删除的种子数")
+    scheduled_until: datetime | None = Field(
+        default=None, description="标记的种子里最晚的到期时刻"
+    )
+    failed_count: int = Field(
+        description="下载器不可达等原因这次没删成的种子数（已标记，下一轮巡检自动重试）"
+    )
+    disabled_sites: list[str] = Field(
+        default_factory=list, description="本次顺带关闭了刷流的站点"
+    )

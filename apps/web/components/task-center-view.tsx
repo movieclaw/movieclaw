@@ -13,7 +13,7 @@ import {
   TaskStatusDot,
 } from "@/components/job-center";
 import { BrandLoader } from "@/components/brand-loader";
-import { useToast } from "@/components/feedback";
+import { useConfirm, useToast } from "@/components/feedback";
 import { HandoffButton } from "@/components/handoff-button";
 import {
   ChevronRightIcon,
@@ -32,6 +32,14 @@ import {
   type DownloadTask,
   type DownloadTaskSource,
 } from "@/lib/api/downloaders";
+import {
+  type BoostPool,
+  type BoostPoolSite,
+  type BoostPoolTask,
+  cleanupBoostPool,
+  getBoostPool,
+} from "@/lib/api/sites";
+import { boostCleanupSummary, formatCleanupDeadline } from "@/lib/boost-cleanup";
 import { useDownloadTasks } from "@/lib/download-tasks";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { imageUrl } from "@/lib/image-proxy";
@@ -332,7 +340,9 @@ export function TaskCenterView({
 
         {/* 刷流做种分组：默认折叠，头部常显实时汇总（速度 / 已上传 / 已下载）。
             这些种子没有入库流转语义，不进时间线，也不参与关注判定 */}
-        {showActive && boostTasks.length > 0 && <BoostTaskSection tasks={boostTasks} />}
+        {showActive && boostTasks.length > 0 && (
+          <BoostTaskSection tasks={boostTasks} onChanged={refresh} />
+        )}
 
         {showHistory && standaloneHistoricalJobs.length > 0 && (
           <TaskHistorySection
@@ -928,10 +938,107 @@ function SpeedStat({
  * 刷流做种分组：默认折叠的 <details>，头部常显最值得关心的实时汇总——
  * ↑/↓ 总速度与已上传/已下载总量；展开后逐种子一行（站点 + 名称 + 状态 +
  * 各自的速度与累计上传）。刷流种子没有媒体身份与入库流转，刻意不渲染
- * 生命周期，也不提供删除入口（汰换归引擎管，手动删除去下载器按
- * movieclaw-boost 分类操作）。
+ * 生命周期，也不提供逐条删除（汰换归引擎管）。
+ *
+ * 关闭刷流不会删种：残留种子继续满速做种、引擎不再汰换，一直占着磁盘。所以头部按
+ * 来源站点的开关状态写「刷流已关闭 / 已暂停」，展开后底部给整体清理入口
+ * （docs/design/site-protection-ratio-boost.md §2.9）：保留期内的默认到期后自动删，
+ * 勾选才立即全删（可能被记 H&R）；还开着刷流的站点会一并关闭。
  */
-function BoostTaskSection({ tasks }: { tasks: DownloadTask[] }) {
+function BoostTaskSection({ tasks, onChanged }: { tasks: DownloadTask[]; onChanged: () => void }) {
+  const confirm = useConfirm();
+  const toast = useToast();
+  const [pool, setPool] = useState<BoostPool | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+  // 种子数变化（汰换、清理、新抢入）时重取在池概况：站点开关 / 保留期 / 待删除标注都靠它
+  useEffect(() => {
+    let cancelled = false;
+    getBoostPool()
+      .then((next) => !cancelled && setPool(next))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [tasks.length]);
+  const poolSites = new Map((pool?.sites ?? []).map((site) => [site.site_id, site]));
+  const taskStates = new Map((pool?.tasks ?? []).map((task) => [task.info_hash.toLowerCase(), task]));
+  // 站点状态未知（概况没取到）时按运行中处理，不替用户下「已关闭」的结论
+  const modeOf = (task: DownloadTask) => {
+    if (!pool) return "running";
+    const site = poolSites.get(task.site_id ?? "");
+    if (!site?.boost_enabled) return "off";
+    return site.boost_paused ? "paused" : "running";
+  };
+  const offCount = tasks.filter((t) => modeOf(t) === "off").length;
+  const pausedCount = tasks.filter((t) => modeOf(t) === "paused").length;
+  const scheduledCount = (pool?.tasks ?? []).filter((t) => t.cleanup_scheduled).length;
+  const label =
+    offCount === tasks.length ? "刷流已关闭" : pausedCount === tasks.length ? "刷流已暂停" : "刷流做种";
+
+  async function cleanup() {
+    if (cleaning) return;
+    let latest: BoostPool;
+    try {
+      // 先取最新概况再确认：刚关掉刷流 / 保留期刚过，旧数据会讲错后果
+      latest = await getBoostPool();
+      setPool(latest);
+    } catch (e) {
+      toast.error((e as Error).message);
+      return;
+    }
+    const sum = (pick: (site: BoostPoolSite) => number) =>
+      latest.sites.reduce((total, site) => total + pick(site), 0);
+    const count = sum((site) => site.task_count);
+    const protectedCount = sum((site) => site.protected_count);
+    const enabledNames = latest.sites.filter((site) => site.boost_enabled).map((site) => site.site_name);
+    const until = formatCleanupDeadline(
+      latest.sites.map((site) => site.protected_until).filter(Boolean).sort().at(-1),
+    );
+    const bullets = [
+      `从下载器删除 ${count} 个刷流种子及其数据文件（${formatBytes(sum((site) => site.size_bytes))}），无法恢复`,
+      ...(enabledNames.length > 0
+        ? [`${enabledNames.join("、")} 还开着刷流，会一并关闭（否则引擎几分钟内又会拉新种）`]
+        : []),
+      ...(protectedCount > 0
+        ? [
+            `其中 ${protectedCount} 个（${formatBytes(sum((site) => site.protected_bytes))}）还没做满站点要求的做种时长，现在删可能被记 H&R，默认到期后自动删除${until ? `（最晚 ${until}）` : ""}`,
+          ]
+        : []),
+    ];
+    const options = {
+      title: `清理 ${count} 个刷流种子？`,
+      bullets,
+      confirmLabel: enabledNames.length > 0 ? "关闭刷流并清理" : "清理",
+      tone: "danger" as const,
+    };
+    let force = false;
+    if (protectedCount > 0) {
+      const result = await confirm({
+        ...options,
+        checkbox: {
+          label: `保留期内的 ${protectedCount} 个也立即删除`,
+          description: "可能被站点记 H&R（影响账号），只在确定不在乎时勾选。",
+          defaultChecked: false,
+        },
+      });
+      if (!result.ok) return;
+      force = result.checked;
+    } else if (!(await confirm(options))) {
+      return;
+    }
+    setCleaning(true);
+    try {
+      const result = await cleanupBoostPool({ force });
+      toast.success(boostCleanupSummary(result));
+      onChanged();
+      setPool(await getBoostPool());
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setCleaning(false);
+    }
+  }
+
   const sum = (pick: (task: DownloadTask) => number | null) =>
     tasks.reduce((total, task) => total + (pick(task) ?? 0), 0);
   const upSpeed = sum((t) => t.upspeed_bytes);
@@ -955,8 +1062,18 @@ function BoostTaskSection({ tasks }: { tasks: DownloadTask[] }) {
     <section className="mt-3" aria-label="刷流做种">
       <details className="group border-b border-white/[0.07] py-3.5 last:border-b-0">
         <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 rounded-lg py-1 text-ui transition [&::-webkit-details-marker]:hidden">
-          <span className="font-semibold text-[var(--accent)]">刷流做种</span>
-          <span className="tnum text-caption text-white/60">{tasks.length} 个种子</span>
+          <span
+            className={`font-semibold ${label === "刷流已关闭" ? "text-white/60" : label === "刷流已暂停" ? "text-[var(--warn)]" : "text-[var(--accent)]"}`}
+          >
+            {label}
+          </span>
+          <span className="tnum text-caption text-white/60">
+            {tasks.length} 个种子
+            {label === "刷流已关闭" && " 仍在做种"}
+            {label === "刷流做种" && offCount > 0 && ` · ${offCount} 个来自已关闭刷流的站点`}
+            {label !== "刷流已暂停" && pausedCount > 0 && ` · ${pausedCount} 个已暂停`}
+            {scheduledCount > 0 && ` · ${scheduledCount} 个等待到期删除`}
+          </span>
           {/* 实时汇总：速度是"现在"，总量是"战果"——都放头部，折叠时也一眼可见。
               上传走 --ok 绿（刷流的战果就是上传量），下载走 --info 蓝，数值带淡辉光
               从灰色标签里跳出来；标签本身保持浅灰，让数字成为视觉焦点。
@@ -986,8 +1103,27 @@ function BoostTaskSection({ tasks }: { tasks: DownloadTask[] }) {
         </summary>
         <div className="mt-2 divide-y divide-white/[0.05]">
           {sorted.map((task) => (
-            <BoostTaskRow key={task.id} task={task} />
+            <BoostTaskRow
+              key={task.id}
+              task={task}
+              cleanupNote={cleanupNote(taskStates.get(task.info_hash.toLowerCase()))}
+            />
           ))}
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <p className="text-caption text-white/35">
+            {offCount > 0
+              ? "关闭刷流不会删除已有种子：它们会继续满速做种，引擎也不再自动汰换。"
+              : "刷流种子由引擎在预算内自动汰换。"}
+          </p>
+          <button
+            type="button"
+            onClick={() => void cleanup()}
+            disabled={cleaning}
+            className="shrink-0 rounded-lg px-2 py-1 text-caption font-medium text-[var(--danger)] transition hover:bg-[var(--danger)]/10 disabled:opacity-50"
+          >
+            {cleaning ? "正在清理…" : "清理刷流种子…"}
+          </button>
         </div>
       </details>
     </section>
@@ -1006,7 +1142,14 @@ function BoostTaskSection({ tasks }: { tasks: DownloadTask[] }) {
  * 挂着一排毫无信息量的破折号，还把上行速度挤到要换行。它改成和进度百分比一起跟在
  * 名称后面，只在真的在下载时出现。
  */
-function BoostTaskRow({ task }: { task: DownloadTask }) {
+/** 刷流单行的清理备注：已请求清理的种子标出何时自动删除 */
+function cleanupNote(state: BoostPoolTask | undefined): string | null {
+  if (!state?.cleanup_scheduled) return null;
+  const until = formatCleanupDeadline(state.protected_until);
+  return until ? `已请求清理 · ${until} 保留期满后自动删除` : "已请求清理 · 下一轮巡检删除";
+}
+
+function BoostTaskRow({ task, cleanupNote }: { task: DownloadTask; cleanupNote?: string | null }) {
   const downloading = task.state === "downloading";
   const percent = task.progress == null ? null : Math.floor(task.progress * 100);
   const showDownloadNote = (downloading && percent != null) || (task.dlspeed_bytes ?? 0) > 0;
@@ -1059,6 +1202,7 @@ function BoostTaskRow({ task }: { task: DownloadTask }) {
           <SpeedStat direction="down" bytesPerSecond={task.dlspeed_bytes} />
         </div>
       )}
+      {cleanupNote && <div className="w-full text-caption text-[var(--warn)]/80">{cleanupNote}</div>}
     </div>
   );
 }

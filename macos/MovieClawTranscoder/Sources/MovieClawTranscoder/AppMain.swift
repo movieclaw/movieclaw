@@ -107,6 +107,7 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
             )
             // 「配没配过」只看 UserDefaults 里的标记，不读钥匙串
             isConfigured = !snapshot.nasURL.isEmpty && snapshot.tokenConfigured
+            menuBar.nasAddress = isConfigured ? snapshot.nasURL : nil
             // 这里**刻意不去读令牌**。
             //
             // 读令牌意味着敲钥匙串，而钥匙串可能弹窗要密码（见 KeychainStore
@@ -515,6 +516,7 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
                     managedPath: snapshot.managedFFmpegPath,
                     managedVersion: snapshot.managedFFmpegVersion
                 )
+                self.menuBar.nasAddress = nil
                 self.menuBar.update(status: nil, configured: false)
                 self.menuBar.update(ffmpeg: self.ffmpegManager.menuState)
                 AppLogger.shared.info("Worker 配置已清除")
@@ -535,6 +537,7 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
     private func applyConfiguration(_ newConfiguration: WorkerConfiguration?) {
         configuration = newConfiguration
         isConfigured = newConfiguration != nil
+        menuBar.nasAddress = newConfiguration?.nasURL.absoluteString
         if let snapshot = try? configurationStore.snapshot() {
             ffmpegSource = snapshot.ffmpegSource
             ffmpegManager.configure(
