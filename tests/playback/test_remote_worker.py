@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import re
+from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
+from movieclaw_api.api.routes.transcode_worker import _ARTIFACT_NAME
 from movieclaw_api.services.playback import remote_signing
 from movieclaw_api.services.playback import remote_worker as remote_worker_module
 from movieclaw_api.services.playback.ffmpeg_args import build_hls_command
 from movieclaw_api.services.playback.remote_config import RemoteTranscodeRuntimeConfig
 from movieclaw_api.services.playback.remote_worker import (
     RemoteWorkerRegistry,
+    RemoteWorkerUnavailable,
 )
 from movieclaw_playback.decide import AudioPlan, PlaybackPlan, PlaybackTier, VideoPlan
 
@@ -174,6 +179,79 @@ async def test_registry_marks_jobs_failed_when_worker_disconnects():
     event = await registry.wait_job_event("job-a", timeout=0.1)
     assert event["type"] == "job.failed"
     assert "断开" in event["error"]
+
+
+@pytest.mark.asyncio
+async def test_registry_sends_ts_jobs_only_to_workers_declaring_mpegts():
+    """issue #444：没声明分片类型的旧版 Worker 只当它会 fMP4——它的上传代理会把 TS
+    分片悄悄拒收。TS 任务只派给声明了 mpegts 的 Worker，fMP4 任务照旧谁都能接。"""
+    registry = RemoteWorkerRegistry()
+    videotoolbox = {"backends": ["videotoolbox"], "encoders": ["h264_videotoolbox"]}
+    old = await registry.register(
+        FakeWebSocket(), {"worker_id": "mac-old", "capabilities": videotoolbox}
+    )
+    assert old.capabilities.segment_types == ("fmp4",)
+
+    with pytest.raises(RemoteWorkerUnavailable, match="版本过旧"):
+        registry.reserve("job-ts", backend="videotoolbox", segment_type="mpegts")
+    assert registry.reserve("job-mp4", backend="videotoolbox").worker_id == "mac-old"
+
+    new = await registry.register(
+        FakeWebSocket(),
+        {
+            "worker_id": "mac-new",
+            "capabilities": {**videotoolbox, "segment_types": ["fmp4", "mpegts", "bogus"]},
+        },
+    )
+    assert new.capabilities.segment_types == ("fmp4", "mpegts")
+    reserved = registry.reserve("job-ts", backend="videotoolbox", segment_type="mpegts")
+    assert reserved.worker_id == "mac-new"
+
+
+@pytest.mark.asyncio
+async def test_registry_hands_back_artifact_failures_only_from_the_job_owner(caplog):
+    """Worker 报「某产物重试用尽没传上去」：校验归属与轮次后交回调用方转给会话层，
+    不写进任务状态表（否则会盖掉 accepted/progress）。别的 Worker 冒名的、旧轮次的
+    一律忽略。任务失败要在 NAS 日志里留下原因、退出码与 stderr 末尾。"""
+    registry = RemoteWorkerRegistry()
+    videotoolbox = {"backends": ["videotoolbox"], "encoders": ["h264_videotoolbox"]}
+    owner = await registry.register(
+        FakeWebSocket(), {"worker_id": "mac-a", "capabilities": videotoolbox}
+    )
+    other = await registry.register(
+        FakeWebSocket(), {"worker_id": "mac-b", "capabilities": videotoolbox}
+    )
+    registry.create_job_waiter("job-1")
+    await _dispatch(registry, "job-1", {"attempt_id": "job-1"}, backend="videotoolbox")
+    await registry.handle_message(owner, {"type": "job.accepted", "job_id": "job-1"})
+    failure = {
+        "type": "job.artifact_failed",
+        "job_id": "job-1",
+        "attempt_id": "job-1",
+        "name": "seg00007.ts",
+        "status": 502,
+        "error": "The network connection was lost.",
+    }
+
+    assert await registry.handle_message(other, failure) is None
+    assert await registry.handle_message(owner, {**failure, "attempt_id": "old"}) is None
+    assert await registry.handle_message(owner, failure) == failure
+    assert registry.job_state("job-1")["type"] == "job.accepted"
+
+    with caplog.at_level("WARNING"):
+        await registry.handle_message(
+            owner,
+            {
+                "type": "job.failed",
+                "job_id": "job-1",
+                "attempt_id": "job-1",
+                "exit_code": 1,
+                "error": "ffmpeg 退出码：1",
+                "stderr_tail": "line 1\nline 2\n[h264_videotoolbox] Error: cannot create session\n",
+            },
+        )
+    logged = [r.getMessage() for r in caplog.records if "远程转码任务失败" in r.getMessage()]
+    assert logged and "cannot create session" in logged[0] and "mac-a" in logged[0]
 
 
 @pytest.mark.asyncio
@@ -358,6 +436,34 @@ def test_remote_hls_command_uses_http_artifact_urls():
     )
 
 
+def test_remote_source_resumes_after_connection_drop():
+    """ffmpeg 的 HTTP 输入默认不重连：取源连接中途断开（领先量节流把 job 挂起超过
+    nginx 的 600 秒 send_timeout、Wi-Fi 抖动）时它当成读到了片尾，退出码 0 收工，
+    后面的分片永远不来。远程命令必须带上按断点续读的输入选项（放在 -i 之前才
+    作用于输入）；本地读文件的命令用不着。"""
+    remote = build_hls_command(
+        _transcode_plan(),
+        source_path="http://10.1.1.5:3000/api/source?token=source",
+        session_dir=Path("/data/transcodes/session-a"),
+        start_number=0,
+        hw_backend="videotoolbox",
+        output_base_url="http://10.1.1.5:3000/api/artifacts",
+        output_url_suffix="?token=artifact",
+    ).argv
+    input_at = remote.index("-i")
+    for flag in ("-reconnect", "-reconnect_on_network_error", "-reconnect_delay_max"):
+        assert flag in remote[:input_at], flag
+    assert remote[remote.index("-reconnect") + 1] == "1"
+
+    local = build_hls_command(
+        _transcode_plan(),
+        source_path="/media/movie.mkv",
+        session_dir=Path("/data/transcodes/session-a"),
+        start_number=0,
+    ).argv
+    assert "-reconnect" not in local
+
+
 def test_remote_hls_command_reports_progress_on_stdout():
     command = build_hls_command(
         _transcode_plan(),
@@ -369,6 +475,57 @@ def test_remote_hls_command_reports_progress_on_stdout():
 
     assert command.argv[-1].endswith("index.m3u8?token=artifact")
     assert command.argv[command.argv.index("-progress") + 1] == "pipe:1"
+
+
+_WORKER_PROXY_SOURCE = (
+    Path(__file__).resolve().parents[2]
+    / "macos/MovieClawTranscoder/Sources/MovieClawTranscoder/ArtifactUploadProxy.swift"
+)
+
+
+def _worker_artifact_pattern() -> re.Pattern[str]:
+    """从 Mac Worker 源码里读出它上传代理的产物文件名白名单。"""
+    source = _WORKER_PROXY_SOURCE.read_text(encoding="utf-8")
+    match = re.search(
+        r'artifactNamePattern\s*=\s*try!\s*NSRegularExpression\(\s*pattern:\s*#"(.+?)"#', source
+    )
+    assert match, f"{_WORKER_PROXY_SOURCE.name} 里找不到 artifactNamePattern，本守卫要跟着改"
+    return re.compile(match.group(1))
+
+
+@pytest.mark.parametrize("container", ["hls-fmp4", "hls-ts"])
+@pytest.mark.parametrize("start_number", [None, 0])
+def test_worker_upload_whitelist_accepts_every_artifact_the_nas_asks_for(
+    container: str, start_number: int | None
+):
+    """issue #444 的守卫：NAS 让远程 ffmpeg 上传的每一种产物，Mac Worker 的上传代理和
+    NAS 的产物端点都必须放行。
+
+    当初 NAS 为 Infuse 加了 TS 分片，只改了自己这一侧的白名单，Worker 侧仍只认
+    ``.m4s``——TS 分片全在 Worker 本机被 404 拒收，而 ffmpeg 不看上传响应码，退出码 0、
+    stderr 为空，两边日志都看不出原因。产物名取自真实装配出的命令，以后新增产物
+    类型也逃不过这条检查。
+    """
+    command = build_hls_command(
+        replace(_transcode_plan(), container=container),
+        source_path="http://10.1.1.5:3000/api/source?token=source",
+        session_dir=Path("/data/transcodes/session-a"),
+        start_number=start_number,
+        hw_backend="videotoolbox",
+        output_base_url="http://10.1.1.5:3000/api/artifacts",
+        output_url_suffix="?token=artifact",
+    )
+    paths = [urlsplit(arg).path for arg in command.argv if "/artifacts/" in arg]
+    if "-hls_fmp4_init_filename" in command.argv:
+        paths.append(urlsplit(command.argv[command.argv.index("-hls_fmp4_init_filename") + 1]).path)
+    templates = {path.rsplit("/", 1)[-1] for path in paths}
+    names = {template % 12 if "%" in template else template for template in templates}
+    assert any(name.startswith("seg") for name in names), names
+
+    worker = _worker_artifact_pattern()
+    for name in sorted(names):
+        assert _ARTIFACT_NAME.fullmatch(name), f"NAS 产物端点拒收 {name}"
+        assert worker.fullmatch(name), f"Mac Worker 上传代理拒收 {name}，要同步改 Swift 白名单"
 
 
 def _ws_scope(

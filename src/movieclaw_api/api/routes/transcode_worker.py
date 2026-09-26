@@ -7,6 +7,7 @@ import errno
 import logging
 import os
 import re
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Annotated
@@ -54,6 +55,28 @@ logger = logging.getLogger("movieclaw_api.playback.transcode_worker")
 router = APIRouter(prefix="/transcode-worker", tags=["transcode-worker"])
 
 _ARTIFACT_NAME = re.compile(r"^(?:init\.mp4|(?:live|index)\.m3u8|seg\d{5}\.(?:m4s|ts))$")
+
+#: 同一来源、同一原因的告警多久最多记一条。令牌被吊销的 Worker 会按退避（最长
+#: 30 秒）无限重连，版本不匹配时每个分片都会被拒——每次都记就是每天几千行重复。
+_WARN_INTERVAL_S = 600.0
+_warned_at: dict[tuple[str, ...], float] = {}
+
+
+def _warn_throttled(key: tuple[str, ...], message: str, *args: object) -> None:
+    """同一 ``key`` 在 ``_WARN_INTERVAL_S`` 内只记第一条 WARNING。"""
+    now = time.monotonic()
+    last = _warned_at.get(key)
+    if last is not None and now - last < _WARN_INTERVAL_S:
+        return
+    if len(_warned_at) > 1024:
+        # key 只来自已知来源（客户端地址、会话、文件），正常到不了这个量；兜底防涨
+        _warned_at.clear()
+    _warned_at[key] = now
+    logger.warning(message, *args)
+
+
+def _client_host(websocket: WebSocket) -> str:
+    return websocket.client.host if websocket.client else "未知地址"
 
 
 def _artifact_write_failure(
@@ -198,18 +221,23 @@ async def transcode_worker_websocket(websocket: WebSocket) -> None:
     #
     # 先判凭证再判开关：没有有效令牌的人不该从错误文案里读出这台服务器的
     # 功能开关状态。
+    # 每条拒绝都在 NAS 留一行（同一来源同一原因限频）：拒绝理由只随关闭帧发给
+    # Worker，用户说「Worker 连不上」时，NAS 日志此前一个字都没有。
+    client = _client_host(websocket)
     principal = await resolve_worker_principal(websocket.headers.get("authorization"))
     if principal is None:
-        await websocket.close(
-            code=1008,
-            reason="凭证无效或已被吊销，请在网页「设置 → 设备」重新配对",
+        reason = "凭证无效或已被吊销，请在网页「设置 → 设备」重新配对"
+        _warn_throttled(
+            ("ws-auth", client), "拒绝远程转码 Worker 连接（来自 %s）：%s", client, reason
         )
+        await websocket.close(code=1008, reason=reason)
         return
     if not remote_worker_enabled():
-        await websocket.close(
-            code=1008,
-            reason="服务端尚未启用远程转码，请在网页「应用 → 远程转码」打开开关并确认地址",
+        reason = "服务端尚未启用远程转码，请在网页「应用 → 远程转码」打开开关并确认地址"
+        _warn_throttled(
+            ("ws-disabled", client), "拒绝远程转码 Worker 连接（来自 %s）：%s", client, reason
         )
+        await websocket.close(code=1008, reason=reason)
         return
 
     await websocket.accept()
@@ -219,20 +247,36 @@ async def transcode_worker_websocket(websocket: WebSocket) -> None:
         try:
             hello = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
         except TimeoutError:
+            _warn_throttled(
+                ("ws-hello", client),
+                "远程转码 Worker 握手超时（来自 %s）：10 秒内没发 hello",
+                client,
+            )
             await websocket.close(code=1008, reason="Worker hello 超时")
             return
-        if (
-            not isinstance(hello, dict)
-            or hello.get("type") != "worker.hello"
-            or hello.get("protocol_version") != REMOTE_WORKER_PROTOCOL_VERSION
-        ):
-            await websocket.close(code=1008, reason="Worker hello 格式错误")
+        reason = None
+        if not isinstance(hello, dict) or hello.get("type") != "worker.hello":
+            reason = "Worker hello 格式错误"
+        elif hello.get("protocol_version") != REMOTE_WORKER_PROTOCOL_VERSION:
+            # 版本不一致单独说清楚：笼统的「格式错误」会让人以为是 Worker 坏了
+            reason = (
+                f"Worker 协议版本（{hello.get('protocol_version')}）与服务端"
+                f"（{REMOTE_WORKER_PROTOCOL_VERSION}）不一致，请把 Worker 与服务端更新到同一版本"
+            )
+        if reason is not None:
+            _warn_throttled(
+                ("ws-hello", client), "拒绝远程转码 Worker 连接（来自 %s）：%s", client, reason
+            )
+            await websocket.close(code=1008, reason=reason)
             return
         try:
             connection = await registry.register(
                 websocket, hello, observed_base_url=_observed_base_url(websocket)
             )
         except ValueError as exc:
+            _warn_throttled(
+                ("ws-register", client), "拒绝远程转码 Worker 连接（来自 %s）：%s", client, exc
+            )
             await websocket.close(code=1008, reason=str(exc))
             return
         await connection.send(
@@ -244,7 +288,10 @@ async def transcode_worker_websocket(websocket: WebSocket) -> None:
         while True:
             message = await websocket.receive_json()
             if isinstance(message, dict):
-                await registry.handle_message(connection, message)
+                artifact_failure = await registry.handle_message(connection, message)
+                if artifact_failure is not None:
+                    # Worker 放弃了某个产物的上传：转给会话层记账补片
+                    get_session_manager().record_remote_artifact_failure(artifact_failure)
     except WebSocketDisconnect as exc:
         # 断开码是区分「Worker 崩了」和「用户自己退出」的唯一线索，必须打出来：
         # 1000/1001 是对端发了关闭帧的正常退出；1006 代表连关闭帧都没来得及发，
@@ -309,6 +356,16 @@ async def transcode_source(
         raise NotFoundException("远程转码源文件不存在")
     path = Path(file.file_path)
     if not path.is_file():
+        # Worker 那边只会看到 ffmpeg 报 404、任务失败；真正的原因在 NAS 这一侧
+        # （文件被移走/删除，或媒体目录的挂载静默失效），必须在这里说出来
+        _warn_throttled(
+            ("source-missing", str(file.id)),
+            "远程转码源文件不在磁盘上：session=%s file_id=%s path=%s"
+            "（文件已被移动或删除，或媒体目录挂载失效）",
+            session_id,
+            file.id,
+            file.file_path,
+        )
         raise NotFoundException("远程转码源文件已不在磁盘上")
     return DisconnectAwareFileResponse(
         path,
@@ -335,6 +392,16 @@ async def put_transcode_artifact(
     重启），所以端点必须幂等。临时文件名含随机会话 ID，避免并发重传互相覆盖。
     """
     if not _ARTIFACT_NAME.fullmatch(name):
+        # 持有效凭据的 Worker 传来不认识的产物名，是两端版本不一致（issue #444
+        # 的反方向）。只给有效凭据记日志：名字取自请求路径，匿名请求可以随便编
+        if token and await verify_remote_grant(token, session_id=session_id, kind="artifact"):
+            _warn_throttled(
+                ("artifact-name", session_id),
+                "远程转码产物名不在服务端白名单内，已拒收：session=%s name=%s"
+                "（Worker 可能比服务端新，请把两边更新到同一版本）",
+                session_id,
+                name[:80],
+            )
         raise NotFoundException("远程转码产物名称无效")
     grant = await _verify_grant(token, session_id=session_id, kind="artifact")
     playback_session = get_session_manager().get(session_id)
@@ -356,6 +423,11 @@ async def put_transcode_artifact(
         raise NotFoundException("远程转码任务已结束")
     directory = playback_session.directory
     if not directory.is_dir():
+        _warn_throttled(
+            ("artifact-dir", session_id),
+            "远程转码产物无处落盘：session=%s 的缓存目录不存在（被删除，或数据目录挂载失效）",
+            session_id,
+        )
         raise NotFoundException("远程转码会话目录不存在")
     limit = effective_remote_transcode_config().max_artifact_bytes
     content_length = request.headers.get("content-length")
@@ -477,6 +549,14 @@ async def put_transcode_artifact(
         return Response(status_code=499, headers={"Cache-Control": "no-store"})
     except HTTPException as exc:
         temporary.unlink(missing_ok=True)
+        logger.warning(
+            "远程转码产物被拒收：session=%s name=%s HTTP %s 已收 %s 字节（上限 %s 字节）",
+            session_id,
+            name,
+            exc.status_code,
+            written,
+            limit,
+        )
         playback_session.record_remote_upload(
             name,
             status=exc.status_code,

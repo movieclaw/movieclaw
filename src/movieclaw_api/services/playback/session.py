@@ -52,6 +52,7 @@ from movieclaw_api.services.playback.ffmpeg_args import (
     TranscodeCommand,
     build_hls_command,
     segment_pattern,
+    segment_type,
 )
 from movieclaw_api.services.playback.limits import auto_quota_bytes
 from movieclaw_api.services.playback.remote_signing import issue_remote_grant
@@ -263,6 +264,18 @@ class TranscodeSession:
     #: 仍拿不到就说明失败原因不是偶发中断，继续重启只会变成风暴
     #: （issue #286：任务每 2~3 秒被杀一次，播放器永远等不到片）。
     remote_segment_retries: dict[int, int] = field(default_factory=dict)
+    #: 分片号 → 从它起转的写者（本地 ffmpeg / 远程 job）没产出它就退出了几次。
+    #: 源文件比台账时长短（片尾孤儿分片、边下边播的半截文件）时这种退出是必然
+    #: 的，不计数就会每 100 毫秒拉起一个 ffmpeg——见 ``_maybe_restart_for``。
+    empty_restarts: dict[int, int] = field(default_factory=dict)
+    #: 本会话内确认产不出来的分片：请求直接 404，不再为它重启写者。
+    unreachable_segments: set[int] = field(default_factory=set)
+    #: 会话结束小结用的计数：供出的分片数、分片等待超时次数。
+    served_segments: int = 0
+    segment_timeouts: int = 0
+    #: ``_terminate`` 正在杀的进程 PID。stderr 读取任务据此区分「我们杀的」
+    #: 与「自己崩的」，只给后者记异常退出日志。
+    terminating_pid: int | None = None
     #: 最近一次分片供给请求，用于把「卡在哪里」直接显示给用户。
     last_requested_segment: int | None = None
     last_requested_at_ms: int | None = None
@@ -506,7 +519,7 @@ class TranscodeSessionManager:
                     await task
                 setattr(self, attr, None)
         for session_id in list(self._sessions):
-            await self.stop(session_id)
+            await self.stop(session_id, reason="服务关闭或重启")
 
     async def _reap_loop(self) -> None:
         while True:
@@ -558,6 +571,31 @@ class TranscodeSessionManager:
             state = get_remote_worker_registry().job_state(session.remote_job_id)
             return state is None or state.get("type") not in {"job.failed", "job.finished"}
         return session.process is not None and session.process.returncode is None
+
+    @staticmethod
+    def _remote_job_finished(session: TranscodeSession) -> bool:
+        """当前远程 job 是否已正常结束（ffmpeg 退出码 0，写者不在了）。"""
+        if session.remote_restarting or not session.remote_job_id:
+            return False
+        state = get_remote_worker_registry().job_state(session.remote_job_id)
+        return bool(state) and state.get("type") == "job.finished"
+
+    @staticmethod
+    def _mark_failed(session: TranscodeSession, error: str) -> None:
+        """判会话失败，并在状态切换的那一刻记一条日志。
+
+        失败后每个分片请求都会再走到这里，只在切换时记，免得播放器重试把同一句
+        刷成几十行。Jellyfin 客户端（Infuse / VidHub）看不到网页端的诊断面板，
+        这一行是排查「放着放着断了」的第一线索。"""
+        if session.state != "failed":
+            logger.warning(
+                "转码会话失败：session=%s（%s）%s",
+                session.id,
+                session.display_name or "-",
+                error,
+            )
+        session.state = "failed"
+        session.error = error
 
     async def _throttle_session(self, session: TranscodeSession) -> None:
         """按领先量决定这一路该停还是该走（迟滞两档，见 LEAD_HIGH_S）。"""
@@ -639,8 +677,10 @@ class TranscodeSessionManager:
             if now - s.last_ping > SESSION_IDLE_TIMEOUT_S
         ]
         for sid in stale:
-            logger.info("会话 %s 超过 %.0f 秒无心跳，回收", sid, SESSION_IDLE_TIMEOUT_S)
-            await self.stop(sid)
+            await self.stop(
+                sid,
+                reason=f"超过 {SESSION_IDLE_TIMEOUT_S:.0f} 秒无心跳回收（播放器已关闭或网络中断）",
+            )
         return len(stale)
 
     # -- 会话操作 ---------------------------------------------------------
@@ -755,7 +795,7 @@ class TranscodeSessionManager:
             # 表里、ffmpeg 继续空转到超时回收——「关了播放 ffmpeg 还在跑」
             # 的一条服务端来路。清理后原样重抛，取消语义不变。
             with contextlib.suppress(Exception):
-                await self.stop(session.id)
+                await self.stop(session.id, reason="启动失败或起播途中客户端断开")
             raise
         return session
 
@@ -849,6 +889,7 @@ class TranscodeSessionManager:
             connection = registry.reserve(
                 job_id,
                 backend=session.hw_backend or "videotoolbox",
+                segment_type=segment_type(session.plan),
                 attempt_id=job_id,
             )
         except RemoteWorkerUnavailable as exc:
@@ -1092,12 +1133,35 @@ class TranscodeSessionManager:
         session.touch()
 
     async def _drain_stderr(self, session: TranscodeSession) -> None:
-        assert session.process is not None and session.process.stderr is not None
+        # 先把进程抓在手里：seek 重启会把 session.process 换成新进程
+        process = session.process
+        assert process is not None and process.stderr is not None
         try:
-            async for raw in session.process.stderr:
+            async for raw in process.stderr:
                 line = raw.decode(errors="replace").rstrip()
                 if line:
                     session.stderr_tail.append(line)
+            # stderr 读到头 = 进程在退出。此前转码中途崩溃没有任何日志，只剩下一次
+            # 分片请求触发的重启，看不出它为什么死。我们自己杀的（stop / seek 重启）
+            # 不记；起步阶段就死的由开会话那条路径带着 stderr 报错，这里也不重复。
+            returncode = await process.wait()
+            if (
+                returncode != 0
+                and session.state == "ready"
+                and session.terminating_pid != process.pid
+            ):
+                signal_note = ""
+                if returncode < 0:
+                    with contextlib.suppress(ValueError):
+                        signal_note = f"（被信号 {signal.Signals(-returncode).name} 终止）"
+                logger.warning(
+                    "本地转码进程异常退出：session=%s（%s）退出码=%s%s stderr 末尾：%s",
+                    session.id,
+                    session.display_name or "-",
+                    returncode,
+                    signal_note,
+                    " | ".join(list(session.stderr_tail)[-5:]) or "（无输出）",
+                )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
@@ -1156,6 +1220,10 @@ class TranscodeSessionManager:
     #: 播放器永远等不到片。达到上限后该分片退出补片路径，交给常规的
     #: 「等它转过来 / 30 秒超时 404」处理，让播放器的重试与降档接手。
     _MAX_SEGMENT_RETRIES = 2
+    #: 从某段起转的写者没产出它就退出，最多再为它重启几次。给一次是防偶发
+    #: 崩溃；再退出就说明这段根本产不出来（源比台账时长短、半截文件、解码必挂），
+    #: 本会话内不再为它拉进程。
+    _MAX_EMPTY_RESTARTS = 1
 
     async def ensure_segment(self, session: TranscodeSession, index: int) -> Path | None:
         """确保 VOD 会话的第 index 个分片就绪，返回文件路径；超时返回 None。
@@ -1196,6 +1264,7 @@ class TranscodeSessionManager:
             if result is not None:
                 session.last_served_segment = index
                 session.last_served_at_ms = int(time.time() * 1000)
+                session.served_segments += 1
             if result is not None and not session.first_segment_served:
                 session.first_segment_served = True
                 # 起播链路的最后一公里：「会话就绪」只等到 playlist，画面
@@ -1261,18 +1330,24 @@ class TranscodeSessionManager:
                         "重启直奔" if session.head_segment != head_before else "顺序追赶",
                     )
                 return target
+            if index in session.unreachable_segments:
+                # 已确认产不出来（见 _maybe_restart_for）：别让播放器干等 30 秒
+                return None
             # seek 重启会先清空旧 job/worker，再异步下发新 job。这个短窗口
             # 内不检查旧状态，否则等待者会把正常切换误报成 Worker 断线。
             if session.remote and not session.remote_restarting and session.remote_job_id:
                 registry = get_remote_worker_registry()
-                job_state = registry.job_state(session.remote_job_id or "")
-                if job_state and job_state.get("type") in {"job.failed", "job.finished"}:
-                    session.state = "failed"
-                    session.error = _remote_job_failure_message(job_state)
+                job_state = registry.job_state(session.remote_job_id or "") or {}
+                if job_state.get("type") == "job.failed":
+                    self._mark_failed(session, _remote_job_failure_message(job_state))
                     return None
-                if not registry.worker_online(session.remote_worker_id):
-                    session.state = "failed"
-                    session.error = "远程 Worker 已断开连接"
+                # 正常结束（job.finished）的任务不再需要 Worker 在线：缺的分片与本地
+                # 进程退出同理，交给下面的重启判定——seek 回起转点之前、或任务被提前
+                # 收尾，都该从缺口重新起转，而不是把整个会话判死。
+                if job_state.get("type") != "job.finished" and not registry.worker_online(
+                    session.remote_worker_id
+                ):
+                    self._mark_failed(session, "远程 Worker 已断开连接")
                     return None
             try:
                 await self._maybe_restart_for(session, index)
@@ -1289,6 +1364,23 @@ class TranscodeSessionManager:
             # 尾巴上省的就是这几十毫秒。解析已被 _sync_completed 的签名门控
             # 挡住，轮询本身只剩 stat 调用，再快也没有收益。
             await asyncio.sleep(0.05)
+        session.segment_timeouts += 1
+        if session.remote:
+            # 远程分片靠 Worker 回传。issue #444 里旧版 Worker 在本机悄悄拒收了全部
+            # TS 分片，这里却只说「转码进程卡死或存储过慢」，把排查引向了错误的
+            # 方向——所以带上「Worker 到底回传过什么」这条最直接的线索。
+            last = session.remote_uploads[-1] if session.remote_uploads else None
+            logger.warning(
+                "分片等待超时：session=%s seg=%05d worker=%s（%s）",
+                session.id,
+                index,
+                session.remote_worker_id or "未知",
+                f"最近一次回传：{last.name} HTTP {last.status}"
+                if last is not None
+                else "Worker 至今没有回传过任何产物，多半是 Worker 端上传被拒"
+                "或版本与服务端不匹配，请查看 Worker 日志",
+            )
+            return None
         logger.warning(
             "分片等待超时：session=%s seg=%05d（转码进程可能卡死或存储过慢）",
             session.id,
@@ -1409,7 +1501,9 @@ class TranscodeSessionManager:
             # 宽限期（挡住探测的余波）就照常重启直奔。
             now = time.monotonic()
             waiting = [
-                i for i in session.pending_segments if i not in session.completed_segments
+                i
+                for i in session.pending_segments
+                if i not in session.completed_segments and i not in session.unreachable_segments
             ]
             failed_uploads = (
                 self._retryable_failed_segments(session, waiting)
@@ -1453,8 +1547,11 @@ class TranscodeSessionManager:
             # 没有写者：进程已退出，或缓存命中起播时根本没起（§B），或远程
             # 会话还没派过任务——要的分片不在盘上就得拉一个起来
             if session.remote:
-                # 远程 seek 切换 job 的窗口里 job_id 暂空，那不是「没有写者」
-                writer_missing = session.remote_job_id is None and not session.remote_restarting
+                # 远程 seek 切换 job 的窗口里 job_id 暂空，那不是「没有写者」；
+                # job 正常结束了（转到片尾或被提前收尾）则与本地进程退出同理
+                writer_missing = (
+                    session.remote_job_id is None and not session.remote_restarting
+                ) or self._remote_job_finished(session)
             else:
                 writer_missing = (
                     session.process is None or session.process.returncode is not None
@@ -1468,18 +1565,42 @@ class TranscodeSessionManager:
             ):
                 return
             index = wanted
+            only_writer_gone = not (retry_failed or behind or ahead)
+            if only_writer_gone and wanted == session.head_segment:
+                # 上一个写者就是从 wanted 起转的，却没产出它就退出了：源比台账
+                # 时长短（片尾孤儿分片、边下边播的半截文件），或解码到这里必挂。
+                # 不设上限就是每 100 毫秒拉起一个 ffmpeg（实测 30 秒等待约 300 次）。
+                empties = session.empty_restarts.get(wanted, 0) + 1
+                session.empty_restarts[wanted] = empties
+                if empties > self._MAX_EMPTY_RESTARTS:
+                    session.unreachable_segments.add(wanted)
+                    logger.warning(
+                        "转码进程从第 %d 段起转了 %d 次都没产出它就退出了，本会话不再为它"
+                        "重启（源文件可能比台账时长短、还在下载或已损坏）：session=%s（%s）",
+                        wanted,
+                        empties,
+                        session.id,
+                        session.display_name or "-",
+                    )
+                    return
             if retry_failed:
                 # 先记账再重启：重启过程中新的失败记录可能落地，计数必须
                 # 在它们之前生效，否则上限会被多算掉一轮。
                 session.remote_segment_retries[index] = (
                     session.remote_segment_retries.get(index, 0) + 1
                 )
+            if retry_failed:
+                restart_reason = "上传失败补片"
+            elif only_writer_gone:
+                restart_reason = "远程任务已结束" if session.remote else "转码进程已退出"
+            else:
+                restart_reason = "seek/追赶"
             logger.info(
                 "转码重启直奔分片：session=%s seg=%05d（原因=%s 当前头=%d 已产出到=%d "
                 "在等=%s 失败台账=%s 本片第 %d 次补片）",
                 session.id,
                 index,
-                "上传失败补片" if retry_failed else "seek/追赶",
+                restart_reason,
                 session.head_segment,
                 produced,
                 sorted(session.pending_segments),
@@ -1570,6 +1691,7 @@ class TranscodeSessionManager:
                 connection = registry.reserve(
                     job_id,
                     backend=session.hw_backend or "videotoolbox",
+                    segment_type=segment_type(session.plan),
                     attempt_id=job_id,
                 )
                 try:
@@ -1693,10 +1815,51 @@ class TranscodeSessionManager:
         session.touch()
         return True
 
-    async def stop(self, session_id: str) -> bool:
+    def record_remote_artifact_failure(self, message: dict[str, Any]) -> None:
+        """Worker 报告它放弃了某个产物的上传（重试用尽）：记进补片台账并留日志。
+
+        ffmpeg 不看上传响应码，丢掉的分片它不会回头补写；而网络断开时 NAS 要么
+        一个字节都没收到，要么只收到半截（499，按设计不记失败，见
+        ``record_remote_upload``）。不靠 Worker 报告，NAS 只能对着这个缺口一轮轮
+        等到超时——播放器卡死在这一片。记账后，下一次等这一片时走「上传失败补片」
+        重启（有次数上限）。消息已由注册表校验过归属与轮次。"""
+        job_id = str(message.get("job_id") or "")
+        name = str(message.get("name") or "")
+        session = next(
+            (s for s in self._sessions.values() if job_id and s.remote_job_id == job_id), None
+        )
+        if session is None or not name:
+            return
+        status = message.get("status")
+        # 只认明确的失败码；缺失、非法或 499（主动取消）一律按 502 记，保证进台账
+        if not (isinstance(status, int) and not isinstance(status, bool) and status >= 400):
+            status = 502
+        if status == 499:
+            status = 502
+        session.record_remote_upload(
+            name,
+            status=status,
+            received_bytes=0,
+            content_length=None,
+            transfer_encoding=None,
+            attempt_id=job_id,
+        )
+        logger.warning(
+            "远程 Worker 放弃上传产物：session=%s（%s）worker=%s name=%s（%s），"
+            "播放器请求到它时会从这里补片重启",
+            session.id,
+            session.display_name or "-",
+            session.remote_worker_id or "-",
+            name,
+            str(message.get("error") or "未说明原因")[:300],
+        )
+
+    async def stop(self, session_id: str, *, reason: str = "播放器结束播放") -> bool:
+        """结束会话。``reason`` 只进结束小结日志，说明是谁、为什么停的。"""
         session = self._sessions.pop(session_id, None)
         if session is None:
             return False
+        self._log_session_summary(session, reason)
         # 先置状态再抢重启锁：正在排队等锁的 VOD 分片重启会在临界区入口看到
         # stopped 直接放弃。终止必须与 _maybe_restart_for 互斥——不互斥的话，
         # 一次「杀旧进程 → 拉新进程」的重启可能在本次 killpg **之后**才把新
@@ -1727,6 +1890,38 @@ class TranscodeSessionManager:
             session.activity_meter = None
         return True
 
+    @staticmethod
+    def _log_session_summary(session: TranscodeSession, reason: str) -> None:
+        """会话结束时的一行小结。
+
+        开会话那一行只说明它是怎么起的；用户反馈「放着放着卡了 / 断了」时，要看
+        的是它怎么过完的：供了多少片、重启与等待超时各几次、最后停在哪、有没有
+        错误。有错误或超时记 WARNING，正常结束记 INFO。"""
+        if session.remote:
+            where = f"远程 Worker {session.remote_worker_id or '（已断开）'}"
+        elif session.is_transcoding:
+            where = f"本地 {session.hw_backend}" if session.hw_backend else "本地软件转码"
+        else:
+            where = "本地直通"
+        # 错误里可能带多行 stderr：压成一行，日志按行检索才不会断开
+        error = " | ".join(line.strip() for line in (session.error or "").splitlines() if line)
+        log = logger.warning if (error or session.segment_timeouts) else logger.info
+        log(
+            "转码会话结束：session=%s（%s）原因=%s · 档 %d %s · 持续 %.1f 分钟 · 供片 %d 段"
+            " · 重启 %d 次 · 等待超时 %d 次 · 最后请求第 %s 段%s",
+            session.id,
+            session.display_name or "-",
+            reason,
+            int(session.tier),
+            where,
+            (time.monotonic() - session.created_at) / 60,
+            session.served_segments,
+            session.restart_generation,
+            session.segment_timeouts,
+            "-" if session.last_requested_segment is None else session.last_requested_segment,
+            f" · 错误：{error[:500]}" if error else "",
+        )
+
     def touch_for_device(self, device_id: str) -> int:
         """给一台设备名下的全部会话续命，返回续命的会话数。
 
@@ -1744,13 +1939,13 @@ class TranscodeSessionManager:
                 count += 1
         return count
 
-    async def stop_for_device(self, device_id: str) -> int:
-        """停掉一台浏览器设备的全部会话（管理员「结束播放」）。"""
+    async def stop_for_device(self, device_id: str, *, reason: str = "设备结束播放") -> int:
+        """停掉一台设备的全部会话（管理员「结束播放」、播放器按设备停播）。"""
         if not device_id:
             return 0
         victims = [sid for sid, s in self._sessions.items() if s.device_id == device_id]
         for sid in victims:
-            await self.stop(sid)
+            await self.stop(sid, reason=reason)
         return len(victims)
 
     async def stop_for_file(self, file_id: int, member_id: int) -> int:
@@ -1766,7 +1961,7 @@ class TranscodeSessionManager:
         ]
         started_at = time.monotonic()
         for sid in victims:
-            await self.stop(sid)
+            await self.stop(sid, reason="同一文件开了新会话（换清晰度 / 换音轨 / 重开）")
         if victims:
             # 换字幕烧录/换音轨/seek 重开会话都要先走这里，SIGTERM 的收尾
             # 等待（最多 3 秒）会整段计入用户感知的切换延迟——「换轨慢」时
@@ -1801,6 +1996,8 @@ class TranscodeSessionManager:
         # 挂起的进程不会处理 SIGTERM（信号排队到 SIGCONT 之后），不解冻直接杀
         # 只能等 3 秒超时走 SIGKILL——白等。领先量节流与磁盘低水位两种挂起同理
         await self._release(session)
+        # 先登记再发信号：stderr 读取任务看到这个 PID 就知道是我们杀的，不记异常退出
+        session.terminating_pid = process.pid
         first_signal = signal.SIGTERM if graceful else signal.SIGKILL
         try:
             os.killpg(os.getpgid(process.pid), first_signal)

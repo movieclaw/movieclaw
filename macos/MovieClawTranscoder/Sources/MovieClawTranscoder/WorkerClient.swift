@@ -11,7 +11,17 @@ actor WorkerClient {
     private let configuration: WorkerConfiguration
     private let capabilities: WorkerCapabilities
     private var socket: URLSessionWebSocketTask?
-    private var jobs: [String: JobExecution] = [:]
+    private var jobs: [String: JobExecution] = [:] {
+        didSet { updateSleepPrevention() }
+    }
+    /// 有任务在跑时持有的系统活动令牌，阻止空闲睡眠与 App Nap。
+    ///
+    /// 空闲睡眠看的是键鼠有没有动，不看 CPU 忙不忙：没人碰的 Mac mini 在默认电源
+    /// 设置下十来分钟就会睡过去，控制连接随之中断，NAS 把任务判失败，正在看的片子
+    /// 当场断掉。领先量节流会把 ffmpeg 挂起很久，这段时间 App 自己也几乎不干活，
+    /// 菜单栏 App 又没有可见窗口，正是 App Nap 的目标——心跳定时器一被拖慢，NAS
+    /// 就会判离线。任务全部结束立即归还，平时不影响 Mac 正常睡眠。
+    private var sleepActivity: NSObjectProtocol?
     private var uploadProxies: [String: ArtifactUploadProxy] = [:]
     private var jobAttempts: [String: String] = [:]
     /// 任务的展示名（服务端下发的源文件名），只用于菜单栏显示。
@@ -144,6 +154,8 @@ actor WorkerClient {
                 "encoders": capabilities.encoders,
                 "backends": capabilities.backends,
                 "max_jobs": configuration.maxJobs,
+                // 旧版服务端忽略这个字段；新版只把 TS 分片任务派给声明了 mpegts 的 Worker
+                "segment_types": ArtifactUploadProxy.supportedSegmentTypes,
             ],
         ])
         if draining {
@@ -295,7 +307,28 @@ actor WorkerClient {
         var uploadProxy: ArtifactUploadProxy?
         if let remoteBaseURL = ArtifactUploadProxy.remoteArtifactBaseURL(from: arguments) {
             do {
-                let proxy = try ArtifactUploadProxy(jobID: jobID, remoteBaseURL: remoteBaseURL)
+                // ffmpeg 不看上传响应码，产物丢了只能由代理报上来：白名单拒收说明这个
+                // 任务注定交不出产物，立即杀掉让终态带着原因回 NAS；重试用尽则告诉
+                // NAS 哪一片没了，由它补片重启——ffmpeg 自己不会回头补写。
+                let proxy = try ArtifactUploadProxy(
+                    jobID: jobID,
+                    remoteBaseURL: remoteBaseURL
+                ) { [weak self, execution] event in
+                    switch event {
+                    case .rejected:
+                        execution.stop(force: true)
+                    case let .abandoned(name, status, reason):
+                        Task { [weak self] in
+                            await self?.reportArtifactFailure(
+                                jobID: jobID,
+                                attemptID: attemptID,
+                                name: name,
+                                status: status,
+                                reason: reason
+                            )
+                        }
+                    }
+                }
                 let localBaseURL = try await proxy.start()
                 ffmpegArguments = proxy.rewrite(arguments: arguments, localBaseURL: localBaseURL)
                 uploadProxy = proxy
@@ -325,6 +358,10 @@ actor WorkerClient {
             return
         }
         publish(.busy, message: "任务已接收")
+        AppLogger.shared.info(
+            "开始转码任务：job=\(jobID) 片名=\(jobNames[jobID] ?? "-") " +
+            "起点=\(Self.formatStart(message["start_ms"])) 分片=\(Self.segmentType(in: arguments))"
+        )
 
         let activeFFmpegArguments = ffmpegArguments
         let activeUploadProxy = uploadProxy
@@ -343,8 +380,61 @@ actor WorkerClient {
                 jobID: jobID,
                 execution: execution,
                 result: result,
-                uploadFailure: uploadFailure
+                uploadFailure: uploadFailure,
+                arguments: activeFFmpegArguments
             )
+        }
+    }
+
+    /// 告诉 NAS 某个产物重试用尽仍没传上去，由它从这一片补片重启。
+    /// 旧版服务端不认识这条消息，只会忽略——行为与之前一致。
+    private func reportArtifactFailure(
+        jobID: String,
+        attemptID: String,
+        name: String,
+        status: Int,
+        reason: String
+    ) async {
+        // 已被 NAS 叫停的任务（seek 旧轮次）丢片无所谓，不报
+        guard jobs[jobID] != nil else { return }
+        try? await send([
+            "type": "job.artifact_failed",
+            "job_id": jobID,
+            "attempt_id": attemptID,
+            "name": name,
+            "status": status,
+            "error": sanitized(reason),
+        ])
+    }
+
+    /// 任务日志里的起转位置（时:分:秒）。
+    private static func formatStart(_ value: Any?) -> String {
+        guard let milliseconds = value as? Int else { return "-" }
+        let seconds = milliseconds / 1000
+        return String(format: "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
+    }
+
+    /// ffmpeg 参数里的 `-hls_segment_type`（fmp4 / mpegts），排查分片类型问题用。
+    private static func segmentType(in arguments: [String]) -> String {
+        guard let index = arguments.firstIndex(of: "-hls_segment_type"),
+              index + 1 < arguments.count
+        else { return "-" }
+        return arguments[index + 1]
+    }
+
+    /// 按当前任务表拿住或归还防睡眠令牌（见 ``sleepActivity``）。
+    private func updateSleepPrevention() {
+        if jobs.isEmpty {
+            guard let activity = sleepActivity else { return }
+            ProcessInfo.processInfo.endActivity(activity)
+            sleepActivity = nil
+            AppLogger.shared.info("转码任务已全部结束，恢复系统空闲睡眠")
+        } else if sleepActivity == nil {
+            sleepActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated],
+                reason: "MovieClaw 正在转码，播放器在等分片"
+            )
+            AppLogger.shared.info("有转码任务在进行，已阻止系统空闲睡眠与 App Nap")
         }
     }
 
@@ -374,7 +464,8 @@ actor WorkerClient {
         jobID: String,
         execution: JobExecution,
         result: JobResult,
-        uploadFailure: String? = nil
+        uploadFailure: String? = nil,
+        arguments: [String] = []
     ) async {
         // 旧任务可能在同一个 ID 的 seek 新任务之后才退出，只有仍登记的那一
         // 个 execution 才能释放槽位和上报状态。被 NAS job.stop 摘掉的任务也
@@ -424,7 +515,19 @@ actor WorkerClient {
                 "error": error,
                 "stderr_tail": sanitized(result.stderrTail),
             ])
-            AppLogger.shared.warning("远程任务失败：job=\(jobID) error=\(error)", secret: configuration.workerToken)
+            // 失败时把 stderr 末尾和完整参数（令牌已脱敏）一起落进日志：用户反馈时
+            // 附上这一段，就能在另一台 Mac 上照着参数原样复现
+            let stderrTail = result.stderrTail
+                .split(separator: "\n")
+                .suffix(10)
+                .joined(separator: "\n")
+            AppLogger.shared.warning(
+                "远程任务失败：job=\(jobID) error=\(error)\n" +
+                "ffmpeg 退出码：\(result.exitCode)\n" +
+                "ffmpeg stderr 末尾：\n\(stderrTail.isEmpty ? "（无输出）" : stderrTail)\n" +
+                "ffmpeg 参数：\(arguments.joined(separator: " "))",
+                secret: configuration.workerToken
+            )
             lastError = error
         }
         publishCurrent(message: succeeded ? "任务完成" : "任务失败")

@@ -462,7 +462,9 @@ async def end_playback(device_id: str) -> int:
     """
     activity.end_device(device_id)
     stopped = stop_device_streams(device_id)
-    sessions = await get_session_manager().stop_for_device(device_id)
+    sessions = await get_session_manager().stop_for_device(
+        device_id, reason="管理员在活动页结束播放"
+    )
     logger.info(
         "管理员已结束设备「%s」的播放：停止 %d 条取流、%d 个转码会话",
         device_id,
