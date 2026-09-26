@@ -32,6 +32,7 @@ extension AppRoute {
         // 订阅
         case .subscriptions: SubscriptionsView()
         case let .subscription(id, upgradeRun): SubscriptionDetailView(subscriptionId: id, openUpgradeRun: upgradeRun)
+        case let .subscriptionWall(kind): SubscriptionWallView(kind: kind)
         // 活动
         case .activity: ActivityView()
         case let .activityPage(page): ActivityPageView(page: page)

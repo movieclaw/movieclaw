@@ -102,6 +102,8 @@ var knownNonGenerated = []string{
 	"session.follow",
 	"jobs.stream",
 	"playback.up-next",
+	// 订阅首页「刚刚入库」：与接下来继续同类的 App 首页展示聚合，按观看进度过滤
+	"subscriptions.list-recent-arrivals",
 	"ui.discovery.get",
 	"discover.get-person-details",
 	"ui.subscriptions.preview-title",

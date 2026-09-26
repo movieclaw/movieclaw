@@ -117,6 +117,9 @@ class MediaProfile(BaseModel):
     status: str | None = None
     poster_path: str | None = None
     backdrop_path: str | None = None
+    # 片名 Logo：None=这次档案没带图片集（未知，落库时保留旧值）；
+    # 空串=带了图片集但没有可用 Logo
+    logo_path: str | None = None
     seasons: list[SeasonProfile] = Field(default_factory=list, description="仅剧集非空")
 
     # -- 展示层（media_metadata）--------------------------------------------
@@ -290,6 +293,7 @@ async def fetch_media_profile(
             pick_backdrop(data, backdrop_langs, min_width=prefs.backdrop_min_width)
             or data.get("backdrop_path")
         ),
+        logo_path=pick_logo(data, primary_language=primary, original_language=original_language),
         seasons=seasons,
         overview=overview,
         tagline=tagline,
@@ -562,6 +566,40 @@ def pick_poster(
     if not images:
         return None
     return _pick_by_tiers(images, langs, min_width)
+
+
+def pick_logo(
+    data: dict, *, primary_language: str, original_language: str | None
+) -> str | None:
+    """挑一张片名 Logo（订阅首页 Hero 用它代替文字片名）。
+
+    语言档固定为「元数据主语言 → 英文 → 原声语言 → 无文字」：Logo 就是片名
+    字标，语言必须跟页面上的片名对得上——宁可回落文字片名，也不拿一张用户
+    读不懂的日文/韩文字标兜底，所以档位全落空时返回空串而不是退回全量最优。
+    只收 PNG：TMDB 也有 SVG 版，客户端图片管线（含后端缩略图代理）不认 SVG。
+
+    返回 None 表示档案里根本没有图片集（未知，调用方保留旧值）；空串表示
+    看过了、这部片确实没有合适的 Logo。
+    """
+    images = data.get("images")
+    if images is None:
+        return None
+    logos = [
+        logo
+        for logo in images.get("logos") or []
+        if str(logo.get("file_path") or "").lower().endswith(".png")
+    ]
+    tiers = resolve_image_languages(
+        ("meta", "en", "orig", "null"),
+        primary_language=primary_language,
+        original_language=original_language,
+    )
+    for lang in tiers:
+        pool = [logo for logo in logos if logo.get("iso_639_1") == lang]
+        if pool:
+            # Logo 的像素宽度与清晰度关系不大（多为横向长条），只按加权票数挑
+            return _sorted_candidates(pool, 0)[0].get("file_path") or ""
+    return ""
 
 
 def _tier_ordered(images: list[dict], langs: Sequence[str | None], min_width: int) -> list[dict]:

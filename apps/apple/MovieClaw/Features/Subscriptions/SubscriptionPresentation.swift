@@ -252,17 +252,6 @@ struct TodayArrivalPresentation: Equatable {
     }
 }
 
-struct TodayArrivalGroup: Identifiable, Equatable {
-    var subscriptionId: Int
-    var mediaTitle: String
-    var episodeLabel: String
-    var episodeCount: Int
-    var firstWantedId: Int
-    var daysAhead: Int
-    var presentation: TodayArrivalPresentation
-    var id: Int { subscriptionId }
-}
-
 enum TodayArrivals {
     private static func localDayKey(_ date: Date) -> DateComponents {
         Calendar.current.dateComponents([.year, .month, .day], from: date)
@@ -327,7 +316,8 @@ enum TodayArrivals {
         )
     }
 
-    private static func episodeRanges(_ episodes: [Int]) -> String {
+    /// 集号压成区间：[1,2,3,5] →「E01–E03、E05」（订阅首页的 Hero / 日程同用）
+    static func episodeRanges(_ episodes: [Int]) -> String {
         var ranges: [(Int, Int)] = []
         for episode in Array(Set(episodes)).sorted() {
             if let last = ranges.last, episode == last.1 + 1 {
@@ -338,65 +328,6 @@ enum TodayArrivals {
         }
         return ranges.map { $0.0 == $0.1 ? "E\(SubsFormat.pad($0.0))" : "E\(SubsFormat.pad($0.0))–E\(SubsFormat.pad($0.1))" }
             .joined(separator: "、")
-    }
-
-    /// 按订阅聚合（同一部剧只占一行），跟随当前分区过滤，并收敛到最近的那一天
-    static func groups(
-        _ arrivals: [API.TodayArrivalView],
-        filter: String,
-        tasks: [API.DownloadTaskView],
-        now: Date
-    ) -> [TodayArrivalGroup] {
-        let taskByHash = Dictionary(tasks.map { ($0.infoHash.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
-        let presented = arrivals
-            .filter { filter == "all" || $0.mediaKind == filter }
-            .map { arrival in
-                (arrival, presentation(arrival, task: arrival.infoHash.flatMap { taskByHash[$0.lowercased()] }, now: now))
-            }
-        var order: [Int] = []
-        var bySub: [Int: [(API.TodayArrivalView, TodayArrivalPresentation)]] = [:]
-        for row in presented {
-            if bySub[row.0.subscriptionId] == nil { order.append(row.0.subscriptionId) }
-            bySub[row.0.subscriptionId, default: []].append(row)
-        }
-        var groups: [TodayArrivalGroup] = order.compactMap { id in
-            guard let rows = bySub[id], let first = rows.first else { return nil }
-            let label: String
-            if first.0.mediaKind == "movie" {
-                label = "电影"
-            } else {
-                var bySeason: [Int: [Int]] = [:]
-                for row in rows { bySeason[row.0.seasonNumber, default: []].append(row.0.episodeNumber) }
-                label = bySeason.keys.sorted().map { "S\(SubsFormat.pad($0))\(episodeRanges(bySeason[$0] ?? []))" }.joined(separator: " · ")
-            }
-            // 整组以完成最慢的一集为准：阶段靠前优先，同阶段未知时间优先、其次更晚的时间
-            let blocking = rows.map(\.1).sorted { left, right in
-                if left.stageOrder != right.stageOrder { return left.stageOrder < right.stageOrder }
-                switch (left.estimatedAt, right.estimatedAt) {
-                case (nil, nil): return false
-                case (nil, _): return true
-                case (_, nil): return false
-                case let (l?, r?): return l > r
-                }
-            }.first ?? first.1
-            return TodayArrivalGroup(
-                subscriptionId: id,
-                mediaTitle: first.0.mediaTitle,
-                episodeLabel: label,
-                episodeCount: rows.count,
-                firstWantedId: rows.map(\.0.wantedId).min() ?? first.0.wantedId,
-                daysAhead: first.0.daysAhead,
-                presentation: blocking
-            )
-        }
-        groups.sort { left, right in
-            let l = left.presentation.estimatedAt ?? .distantFuture
-            let r = right.presentation.estimatedAt ?? .distantFuture
-            if l != r { return l < r }
-            return left.firstWantedId < right.firstWantedId
-        }
-        guard let nearest = groups.map(\.daysAhead).min() else { return [] }
-        return groups.filter { $0.daysAhead == nearest }
     }
 }
 

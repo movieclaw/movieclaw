@@ -50,6 +50,9 @@ enum AppRoute: Hashable {
     case subscriptions
     /// /subscriptions/{id}?upgrade-run=1
     case subscription(id: Int, upgradeRun: Bool = false)
+    /// 订阅首页「剧集订阅 ›」「电影订阅 ›」压栈的完整海报墙（kind = tv / movie）；
+    /// App 独有的二级页，网页的订阅页本身就是海报墙，没有对应地址
+    case subscriptionWall(kind: String)
 
     // MARK: 活动（管理员）
     /// /activity?view=（标签根）：view 点名二级页（plays / stats / history / active）时，总览会接着压栈打开它
@@ -287,7 +290,7 @@ extension AppRoute {
         switch self {
         case .discover, .discoverCollection, .mediaDetail, .person, .discoveredPerson: .discover
         case .libraryHome, .libraryCustomize, .favorites, .allCollections, .collection, .library, .libraryItem, .libraryManage: .library
-        case .subscriptions, .subscription: .subscriptions
+        case .subscriptions, .subscription, .subscriptionWall: .subscriptions
         case .activity, .activityPage: .activity
         case .my: .more
         case .searchHome, .search, .newSession, .session, .settings, .settingsSection, .share: nil

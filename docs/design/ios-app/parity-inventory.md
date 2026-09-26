@@ -471,6 +471,7 @@ Components: `components/player/*`, `lib/player/*`. Shares use the same player wi
 - Poster wall sections (TV and movies, lazily appended). Cells show a season-range footer, a collected-progress summary, an "upgrading" badge and a rule set → library flow.
 - Data: `GET /subscriptions`, `GET /rule-sets` (admin), `GET /libraries`, and download tasks from `GET /downloaders/tasks`.
 - Empty state: "从一部想看的作品开始" (start with something you want to watch) with a 去发现 (go discover) link. For members without the permission: "当前账号暂未开启订阅权限" (subscriptions not enabled for this account). Error: "订阅列表加载失败" (failed to load) with 重试 (retry).
+- **App difference (accepted, 2026-09-26):** the iOS app lays this page out streaming-style instead — a hero carousel of what arrives next, 刚刚入库 (just arrived, tap to play), 日程 (week schedule), then TV / movie poster shelves whose 「›」 opens the full poster wall with the cells above. No 全部 / 剧集 / 电影 switch; the health banner becomes a toolbar warning button. See `docs/design/ios-app.md` §1.
 
 **SubscribeDialog** (from posters, the hero, detail pages, and 洗版 on library items)
 - Preview: `POST /subscriptions/title-preview`. It has three states:

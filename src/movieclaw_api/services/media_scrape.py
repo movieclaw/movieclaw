@@ -663,6 +663,10 @@ def _merge_identity(
         item.poster_path = profile.poster_path or item.poster_path
     if meta is None or not meta.backdrop_locked:
         item.backdrop_path = profile.backdrop_path or item.backdrop_path
+    # 片名 Logo 没有手动换图入口，不受选图锁约束；存量条目同样靠刷新自然回填。
+    # None=本次档案没带图片集（未知），保留旧值；空串=确实没有，照写
+    if profile.logo_path is not None:
+        item.logo_path = profile.logo_path
     item.aliases = merged_aliases
     item.imdb_id = item.imdb_id or profile.imdb_id
     # 同名同年孪生的探测缓存随元数据刷新一起作废（identity-confidence.md §9）：

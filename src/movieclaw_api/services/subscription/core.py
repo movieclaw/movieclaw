@@ -1189,7 +1189,9 @@ class SubscriptionService:
             rows.append((sub, item, counts.get(sub.id or -1, {})))
         return rows
 
-    async def today_arrivals(self, *, member_id: int | None = None) -> list[TodayArrivalCandidate]:
+    async def today_arrivals(
+        self, *, member_id: int | None = None, whole_week: bool = False
+    ) -> list[TodayArrivalCandidate]:
         """聚合最近一次可能入库的可见内容，不查询外部下载器。
 
         资源预测只负责给出“何时可能出种”。首页把本订阅过往的
@@ -1202,6 +1204,11 @@ class SubscriptionService:
         在订阅少时空着，也不会退化成一张七天流水账。按类型分开收敛是因为首页的
         分区切换就是按类型分的：混在一起收敛会让“电影今天在下载”顶掉“剧集三天后
         更新”，切到剧集分区就只剩一句并不成立的“接下来一周没有更新”。
+
+        ``whole_week=True`` 跳过焦点日收敛，整个窗口按日期排好原样返回——给
+        App 订阅首页的「日程」日期条用：那里本来就是一周的日历，用户点哪天看
+        哪天，不存在“流水账”问题。候选口径（哪些工单算、预计日怎么定）两种
+        模式完全一致。
 
         **电影只在管道内纳入**：电影没有播出日，未投递时给不出可信的预告时间，
         常年在找资源的电影会天天占据首页；已投递/已下载的电影则和剧集一样，
@@ -1286,20 +1293,25 @@ class SubscriptionService:
         # 按媒体类型各算一次——首页的分区切换正是按类型分的，混在一起收敛会让
         # “电影今天在下载”顶掉“剧集三天后更新”，用户切到剧集分区就会看到一句
         # 并不成立的“接下来一周没有更新”。前端过滤完当前分区后再收敛到最近一天。
-        by_kind: dict[str, list[TodayArrivalCandidate]] = {}
-        for row in candidates:
-            by_kind.setdefault(row.media.kind, []).append(row)
-        candidates = [
-            row for rows_of_kind in by_kind.values() for row in _focus_day_rows(rows_of_kind, today)
-        ]
+        if not whole_week:
+            by_kind: dict[str, list[TodayArrivalCandidate]] = {}
+            for row in candidates:
+                by_kind.setdefault(row.media.kind, []).append(row)
+            candidates = [
+                row
+                for rows_of_kind in by_kind.values()
+                for row in _focus_day_rows(rows_of_kind, today)
+            ]
 
         status_order = {
             WantedStatus.DOWNLOADED: 0,
             WantedStatus.GRABBED: 1,
             WantedStatus.WANTED: 2,
         }
+        # 焦点日模式下同一批候选同一天，expected_day 这一键不改变原有顺序
         candidates.sort(
             key=lambda row: (
+                row.expected_day,
                 status_order.get(row.wanted.status, 9),
                 _forecast_predicted_at(row.wanted) or datetime.max,
                 row.media.title,

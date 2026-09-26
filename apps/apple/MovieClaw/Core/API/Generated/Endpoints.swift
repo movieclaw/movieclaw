@@ -2119,6 +2119,15 @@ nonisolated extension APIClient {
         return try await send("GET", "/subscriptions/download-routing-preview", query: query)
     }
 
+    /// 列出最近入库、当前账号还没看完的订阅内容
+    /// `GET /subscriptions/recent-arrivals`
+    func subscriptionsListRecentArrivals(days: Int? = nil, limit: Int? = nil) async throws -> [API.RecentArrivalView] {
+        var query: [URLQueryItem] = []
+        if let days { query.append(URLQueryItem(name: "days", value: "\(days)")) }
+        if let limit { query.append(URLQueryItem(name: "limit", value: "\(limit)")) }
+        return try await send("GET", "/subscriptions/recent-arrivals", query: query)
+    }
+
     /// 预览订阅目标的季集、库存和现有订阅状态
     /// `POST /subscriptions/title-preview`
     func uiSubscriptionsPreviewTitle(body: API.SubscriptionTargetPreviewPayload) async throws -> API.PrepareView {
@@ -2127,8 +2136,10 @@ nonisolated extension APIClient {
 
     /// 列出最近一次可能入库的订阅内容
     /// `GET /subscriptions/today-arrivals`
-    func subscriptionsListTodayArrivals() async throws -> [API.TodayArrivalView] {
-        return try await send("GET", "/subscriptions/today-arrivals")
+    func subscriptionsListTodayArrivals(window: String? = nil) async throws -> [API.TodayArrivalView] {
+        var query: [URLQueryItem] = []
+        if let window { query.append(URLQueryItem(name: "window", value: "\(window)")) }
+        return try await send("GET", "/subscriptions/today-arrivals", query: query)
     }
 
     /// 管理员永久删除一条订阅及其追踪工单（默认不删除已下载内容）

@@ -640,6 +640,8 @@ _MEMBER_ALLOWLIST = {
     # 订阅：读 + 写（写受 allow_subscribe，默认开）；运维接口是管理员专属
     ("GET", "/api/v1/subscriptions"),
     ("GET", "/api/v1/subscriptions/today-arrivals"),
+    # 「刚刚入库」：订阅可见边界同上（自己发起 + 自己关注），文件只列可见库里在位的
+    ("GET", "/api/v1/subscriptions/recent-arrivals"),
     ("POST", "/api/v1/subscriptions"),
     ("POST", "/api/v1/subscriptions/title-preview"),
     ("GET", "/api/v1/subscriptions/{subscription_id}"),
