@@ -63,6 +63,7 @@ struct SubsHomeHeroSlide: Identifiable, Equatable {
     var subscriptionId: Int
     var media: API.MediaBrief
     var stage: Stage
+    /// 这一张的状态：Hero 里只画成信息行开头的一颗小圆点（颜色取语气），文字给读屏用
     var eyebrow: SubsHomeChip
     /// 大号时刻上方的小字（「S03E05 · 预计可看」）；nil = 这一张不讲时间
     var clockLabel: String?
@@ -335,7 +336,8 @@ enum SubscriptionsHome {
                 slide.clockLabel = group.kind == "movie" ? "预计可看" : "\(label) · 预计可看"
                 slide.clock = clockText(eta, now: now)
             } else {
-                slide.detail = label
+                // 给不出预计时间时，信息行得自己把「在下载」说出来（状态只剩一颗蓝点，不写就看不出在干什么）
+                slide.detail = group.kind == "movie" ? "正在下载" : "\(label) · 正在下载"
                 slide.footnote = "下载完成后自动整理入库"
             }
         case "整理中":

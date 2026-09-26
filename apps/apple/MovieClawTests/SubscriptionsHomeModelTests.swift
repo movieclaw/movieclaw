@@ -106,6 +106,8 @@ struct SubscriptionsHomeModelTests {
         // 整理中比下载中更快落地 → 48 小时内刚到的 → 今天的预告 → 更早到的；满 5 张为止，最远的预告挤不进来
         #expect(slides.map(\.subscriptionId) == [2, 1, 5, 3, 6])
         #expect(slides.map(\.stage) == [.organizing, .downloading, .arrived, .today, .arrived])
+        // 下载中给不出预计时间：信息行自己写出「正在下载」
+        #expect(slides[1].detail == "S01E01 · 正在下载")
         // 整理中给出预计可看的时刻（下载完成 1 分钟前 + 历史耗时 10 分钟）
         #expect(slides[0].clock == SubscriptionsHome.clockText(now.addingTimeInterval(9 * 60), now: now))
         // 刚到的主按钮直接播放这一批里第一个没看完的单元，说明写「共 2 集新内容」

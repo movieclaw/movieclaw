@@ -183,7 +183,7 @@ private struct SubsHomeHeroSlideView: View {
         VStack(spacing: 0) {
             titleArt
             if let clock = slide.clock {
-                // 讲时间的：状态标签 + 一句说明，下面是大号细体时刻（粗细反差是这块的主要表情）
+                // 讲时间的：状态小圆点 + 一句说明，下面是大号细体时刻（粗细反差是这块的主要表情）
                 statusLine(slide.clockLabel, keep: .head)
                     .padding(.top, 16)
                 Text(clock)
@@ -220,10 +220,14 @@ private struct SubsHomeHeroSlideView: View {
         .offset(y: max(0, scrollOffset) * 0.15)
     }
 
-    /// Logo 下第一行：实心状态标签 + 一句说明（状态并进信息行，不再单独浮在画面中间）
+    /// Logo 下第一行：状态小圆点 + 一句说明。状态有用但不是重点（用户拍板：文字标签太重），
+    /// 只留一颗点：绿 = 刚到 / 整理中，黄 = 等资源，蓝 = 下载中（呼吸），淡紫 = 今天更新；
+    /// 平常状态（即将更新、追踪中）不放点。状态文字仍在读屏标签里
     private func statusLine(_ text: String?, keep: SubsHomeShortening) -> some View {
-        HStack(spacing: 8) {
-            SubsHomeTag(chip: slide.eyebrow)
+        HStack(spacing: 7) {
+            if slide.eyebrow.tone != .calm {
+                SubsHomeDot(tone: slide.eyebrow.tone, pulse: slide.eyebrow.pulse, size: 7)
+            }
             if let text {
                 fitted(text, keep: keep) { line in
                     line.font(.subheadline.weight(.semibold)).foregroundStyle(.white.opacity(0.9))
@@ -352,23 +356,6 @@ enum SubsHomeShortening {
         }
         var seen = Set<String>()
         return options.filter { seen.insert($0).inserted }
-    }
-}
-
-/// 实心状态标签（Hero 信息行开头）：绿 = 刚到 / 整理中，蓝 = 下载中，淡紫 = 今天更新，琥珀 = 等资源
-struct SubsHomeTag: View {
-    let chip: SubsHomeChip
-
-    var body: some View {
-        Text(chip.text)
-            .font(.system(size: 11, weight: .bold))
-            .monospacedDigit()
-            .foregroundStyle(chip.tone == .calm ? Color.white.opacity(0.92) : Color.black.opacity(0.82))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(chip.tone == .calm ? Color.white.opacity(0.2) : chip.tone.color, in: .rect(cornerRadius: 5, style: .continuous))
-            .shadow(color: chip.tone.glows ? chip.tone.color.opacity(0.45) : .clear, radius: 6)
-            .fixedSize()
     }
 }
 
