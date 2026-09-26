@@ -287,7 +287,10 @@ final class PlaybackController {
             reportedStart = false
             let unit = self.unit, position = positionMs, audio = audioMemory, subtitle = subtitleMemory, duration = durationMs
             let scope = self.scope
-            enqueueReport { await scope.progress(unit, event: "stop", positionMs: position, durationMs: duration, audio: audio, subtitle: subtitle) }
+            enqueueReport {
+                await scope.progress(unit, event: "stop", positionMs: position, durationMs: duration, audio: audio, subtitle: subtitle)
+                NotificationCenter.default.post(name: .playbackStopReported, object: nil, userInfo: ["mediaItemId": unit.mediaItemId])
+            }
             reportMetric()
         }
         if let activeSessionId {

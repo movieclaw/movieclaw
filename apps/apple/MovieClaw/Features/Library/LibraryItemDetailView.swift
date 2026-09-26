@@ -6,7 +6,8 @@ import SwiftUI
 /// 类型 / 系列与合集 → 媒体轨道（先挑版本与音轨字幕）→ 播放键（落点）+ 收藏 / 已看 → 简介 →
 /// 分集（剧集）→ 章节条 → 演职员 → 文件（管理员可删除 / 恢复 / 立即清理）→ 外部词条。
 ///
-/// - 播放键三态：播放 / 继续观看（看到 mm:ss · 剩余 X，进度条）/ 重新播放；续播点来自 `GET /playback/resume`；
+/// - 播放键三态：播放 / 继续 · 从 mm:ss 起播（下方进度条 + 剩余 X）/ 重新播放；续播点来自 `GET /playback/resume`，
+///   关掉播放器、服务端收下「停止」后重拉（`.playbackStopReported`），按钮立即跟上刚才看到的位置；
 /// - 收藏针对整部作品，已看针对当前单元（电影本身 / 选中的那一集），都走 `POST /playback/marks`；
 /// - 刮削进行中每 2 秒、章节图生成中每 3 秒（最多 20 次）重拉详情；
 /// - ⋯ 菜单：搜索资源 / 加入合集 / 分享 / 洗版 / 修正识别 / 刷新元数据 / 重新生成章节 / 更换图片 /
@@ -103,6 +104,11 @@ struct LibraryItemDetailView: View {
         }
         .task { await reload() }
         .task(id: playUnitKey) { await loadResume() }
+        .onReceive(NotificationCenter.default.publisher(for: .playbackStopReported)) { note in
+            guard note.userInfo?["mediaItemId"] as? Int == itemId else { return }
+            Task { await loadResume(keepCurrent: true) }
+            episodesVersion += 1
+        }
         .task { favorite = (try? await api.playbackMarksGet(mediaItemId: itemId))?.isFavorite }
         .polling(every: detail?.scraping == true || kicking ? 2 : 3) {
             guard let detail else { return }
@@ -378,11 +384,11 @@ struct LibraryItemDetailView: View {
         let resumable = !finished && position > 0
         let percent: Int? = resumable && (duration ?? 0) > 0 ? min(100, max(2, Int((Double(position) / Double(duration!) * 100).rounded()))) : nil
         let remaining: Int? = resumable && (duration ?? 0) > position ? Int((Double(duration! - position) / 60000).rounded()) : nil
-        let label = finished ? "重新播放" : resumable ? "继续观看" : "播放"
-        let progressText: String? = resumable ? [
-            "看到 \(Formatters.clock(Double(position) / 1000))",
-            remaining.map { $0 >= 1 ? "剩余 \(Self.runtimeText($0))" : nil } ?? (duration != nil ? "即将看完" : nil),
-        ].compactMap { $0 }.joined(separator: " · ") : nil
+        // 看过一段：按钮直接写从哪里起播（点它就从这里接着放），下方进度条只说还剩多少
+        let label = finished ? "重新播放" : resumable ? "继续 · 从 \(Formatters.clock(Double(position) / 1000)) 起播" : "播放"
+        let progressText: String? = resumable
+            ? remaining.map { $0 >= 1 ? "剩余 \(Self.runtimeText($0))" : "即将看完" } ?? (duration != nil ? "即将看完" : nil)
+            : nil
 
         VStack(alignment: .leading, spacing: 12) {
             Button { play(start: nil) } label: {
@@ -690,13 +696,15 @@ struct LibraryItemDetailView: View {
         router.paths[router.selectedTab] = stack
     }
 
-    private func loadResume() async {
+    /// - Parameter keepCurrent: 播完回来的刷新：旧值先留着、拿到新值再换，播放键不会先闪回「播放」
+    private func loadResume(keepCurrent: Bool = false) async {
         guard let unit = playUnit else {
             watched = nil
             return
         }
-        watched = nil
-        watched = try? await api.playbackResume(mediaItemId: itemId, seasonNumber: unit.season, episodeNumber: unit.episode)
+        if !keepCurrent { watched = nil }
+        let fresh = try? await api.playbackResume(mediaItemId: itemId, seasonNumber: unit.season, episodeNumber: unit.episode)
+        if fresh != nil || !keepCurrent { watched = fresh }
     }
 
     private func toggleFavorite() async {

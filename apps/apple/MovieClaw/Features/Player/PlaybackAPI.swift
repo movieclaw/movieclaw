@@ -1,6 +1,13 @@
 import Foundation
 import UIKit
 
+/// 通知：一场播放的「停止」已被服务端收下（续播点、已看标记已更新）。userInfo["mediaItemId"] 是条目 id。
+/// 详情页据此重拉续播点——关掉播放器回来，播放键从「播放」变「继续」、时间跟上刚才看到的位置。
+/// 在服务端确认之后才发，避免抢在写入前读到旧进度
+nonisolated extension Notification.Name {
+    static let playbackStopReported = Notification.Name("MovieClaw.playbackStopReported")
+}
+
 /// 播放单元：电影用 (0, 0) 哨兵，与后端台账、playback_state 的约定一致。
 struct PlaybackUnit: Hashable {
     var mediaItemId: Int
