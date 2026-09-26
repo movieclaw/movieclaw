@@ -14,12 +14,14 @@ struct ArtworkPickerSheet: View {
     var onChanged: () -> Void = {}
 
     @Environment(\.api) private var api
-    @Environment(Feedback.self) private var feedback
     @Environment(\.dismiss) private var dismiss
 
     @State private var tab: ArtworkTab = .backdrop
     @State private var data: API.ArtworkCandidatesView?
     @State private var failed = false
+    /// 选图 / 恢复自动落盘失败的原因：挂在网格上方，网格保留可以换一张再试
+    /// （与「候选图加载失败」分开：那是整块拿不到候选，这是某一次保存没成功）
+    @State private var saveError: String?
     /// 正在应用的候选 file_path（"" 表示正在恢复自动）；nil = 空闲
     @State private var applying: String?
 
@@ -87,22 +89,33 @@ struct ArtworkPickerSheet: View {
 
     @ViewBuilder
     private var content: some View {
+        if let saveError {
+            Text(saveError)
+                .font(.subheadline)
+                .foregroundStyle(Theme.danger)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("artwork-save-error")
+        }
         if failed {
+            // 候选图拉取失败：网格已有（选图后的静默刷新失败）时照留，提示挂在上方（同 Web）
             VStack(spacing: 10) {
                 Text("候选图加载失败（TMDB 可能不可达）")
                     .foregroundStyle(Theme.danger)
-                Button("重试") { Task { await load() } }
+                Button("重试") { Task { await load(reset: data == nil) } }
                     .buttonStyle(.glass)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 40)
-        } else if data == nil {
-            HStack(spacing: 8) {
-                ProgressView()
-                Text("正在拉取候选图…").foregroundStyle(Theme.textMuted)
+            .padding(.vertical, data == nil ? 40 : 8)
+        }
+        if data == nil {
+            if !failed {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("正在拉取候选图…").foregroundStyle(Theme.textMuted)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 56)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 56)
         } else if candidates.isEmpty {
             Text("TMDB 上没有这个条目的\(tab == .poster ? "海报" : "背景图")")
                 .foregroundStyle(Theme.textMuted)
@@ -196,6 +209,7 @@ struct ArtworkPickerSheet: View {
     /// 选定一张（filePath）或恢复自动（nil）
     private func apply(_ filePath: String?) async {
         applying = filePath ?? ""
+        saveError = nil
         defer { applying = nil }
         do {
             _ = try await api.libraryArtworkSelect(
@@ -205,9 +219,10 @@ struct ArtworkPickerSheet: View {
             )
             onChanged()
             await load(reset: false)
+        } catch is CancellationError {
         } catch {
-            failed = true
-            feedback.error(error)
+            let reason = error.localizedDescription
+            saveError = reason.isEmpty ? "保存失败，请稍后重试" : "保存失败：\(reason)"
         }
     }
 }

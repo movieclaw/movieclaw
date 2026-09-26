@@ -59,6 +59,8 @@ struct RemoteImage: View {
     var contentMode: ContentMode = .fill
     /// 失败或无图时的兜底图标
     var placeholderSymbol: String = "film"
+    /// 失败或无图时改显示这句文字（如「暂无封面」）；nil = 显示图标
+    var placeholderText: String? = nil
 
     var body: some View {
         LazyImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.2))) { state in
@@ -67,9 +69,15 @@ struct RemoteImage: View {
             } else if state.error != nil || url == nil {
                 ZStack {
                     Theme.surfaceRaised
-                    Image(systemName: placeholderSymbol)
-                        .font(.title2)
-                        .foregroundStyle(Theme.textFaint)
+                    if let placeholderText {
+                        Text(placeholderText)
+                            .font(.caption)
+                            .foregroundStyle(Theme.textFaint)
+                    } else {
+                        Image(systemName: placeholderSymbol)
+                            .font(.title2)
+                            .foregroundStyle(Theme.textFaint)
+                    }
                 }
             } else {
                 Theme.surfaceRaised

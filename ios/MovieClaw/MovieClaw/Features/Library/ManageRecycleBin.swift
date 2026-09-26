@@ -140,6 +140,7 @@ struct ManageRecycleBinTab: View {
             facts.title,
             message: manageBinMessage(description, bullets: bullets),
             confirmTitle: "清理 \(facts.files) 个文件",
+            cancelTitle: "先不",
             destructive: true
         )
         guard ok else { return }

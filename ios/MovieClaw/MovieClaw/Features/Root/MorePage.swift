@@ -226,7 +226,7 @@ struct MorePage: View {
     private func rename(_ item: API.SessionSummary) async {
         // 初值是界面上显示的标题；去空白、截 80 字，没变化就不发请求（同 Web）
         let current = title(of: item)
-        guard let input = await feedback.prompt("重命名会话", placeholder: "会话标题（最多 80 字）", initial: current) else { return }
+        guard let input = await feedback.prompt("重命名会话", placeholder: "会话标题（最多 80 字）", initial: current, maxLength: 80) else { return }
         let name = String(input.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
         guard !name.isEmpty, name != current else { return }
         do {

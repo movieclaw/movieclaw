@@ -24,7 +24,8 @@ indirect enum AgentMarkdownBlock: Equatable {
     case quote([AgentMarkdownBlock])
     case rule
     case table(header: [String], rows: [[String]])
-    case image(alt: String, url: String)
+    /// 图片；`link` = 外面包着链接（`[![说明](图)](链接)`），点图打开链接
+    case image(alt: String, url: String, link: String? = nil)
 }
 
 struct AgentMarkdownListItem: Equatable {
@@ -37,20 +38,48 @@ enum AgentMarkdownParser {
     /// `![说明](地址 "可选标题")`
     private static let imagePattern = try? NSRegularExpression(pattern: #"!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)"#)
 
-    /// 段落里的图片拆成独立的图片块，前后文字仍是段落（系统行内解析不渲染图片）
+    /// 带链接的图片 `[![说明](图)](链接)`：整体算一张图，不能只拆里面的图、外层剩下 `[`、`](链接)` 残文
+    private static let linkedImagePattern = try? NSRegularExpression(
+        pattern: #"\[!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)"#
+    )
+    /// 行内代码（成对反引号包住的部分）：里面的 `![x](y)` 是字面文字，不是图片
+    private static let codeSpanPattern = try? NSRegularExpression(pattern: #"(`+)[\s\S]*?\1"#)
+
+    /// 段落里的图片拆成独立的图片块，前后文字仍是段落（系统行内解析不渲染图片）。
+    /// 按语法树的口径处理两种边界（同 Web react-markdown）：行内代码里的不算图片；外面包着链接的整体算一张图
     static func splitImages(_ text: String) -> [AgentMarkdownBlock] {
         guard text.contains("!["), let regex = imagePattern else { return [.paragraph(text)] }
         let ns = text as NSString
+        let whole = NSRange(location: 0, length: ns.length)
+        let codeSpans = codeSpanPattern?.matches(in: text, range: whole).map(\.range) ?? []
+        func inCode(_ range: NSRange) -> Bool {
+            codeSpans.contains { NSIntersectionRange($0, range).length > 0 }
+        }
+        // 先认带链接的整体，再认裸图片；与已认下的区间重叠、或落在行内代码里的都跳过
+        var found: [(range: NSRange, block: AgentMarkdownBlock)] = []
+        for match in linkedImagePattern?.matches(in: text, range: whole) ?? [] where !inCode(match.range) {
+            found.append((match.range, .image(
+                alt: ns.substring(with: match.range(at: 1)),
+                url: ns.substring(with: match.range(at: 2)),
+                link: ns.substring(with: match.range(at: 3))
+            )))
+        }
+        for match in regex.matches(in: text, range: whole) where !inCode(match.range) {
+            guard !found.contains(where: { NSIntersectionRange($0.range, match.range).length > 0 }) else { continue }
+            found.append((match.range, .image(alt: ns.substring(with: match.range(at: 1)), url: ns.substring(with: match.range(at: 2)))))
+        }
+        guard !found.isEmpty else { return [.paragraph(text)] }
+        found.sort { $0.range.location < $1.range.location }
         var blocks: [AgentMarkdownBlock] = []
         var cursor = 0
         func appendText(_ range: NSRange) {
             let piece = ns.substring(with: range).trimmingCharacters(in: .whitespaces)
             if !piece.isEmpty { blocks.append(.paragraph(piece)) }
         }
-        for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            appendText(NSRange(location: cursor, length: match.range.location - cursor))
-            blocks.append(.image(alt: ns.substring(with: match.range(at: 1)), url: ns.substring(with: match.range(at: 2))))
-            cursor = match.range.location + match.range.length
+        for item in found {
+            appendText(NSRange(location: cursor, length: item.range.location - cursor))
+            blocks.append(item.block)
+            cursor = item.range.location + item.range.length
         }
         appendText(NSRange(location: cursor, length: ns.length - cursor))
         return blocks.isEmpty ? [.paragraph(text)] : blocks
@@ -380,8 +409,8 @@ struct AgentMarkdownBlocks: View {
             AgentMarkdownText(text: text, size: size)
         case let .code(_, text):
             AgentCodeBlock(code: text, size: size)
-        case let .image(alt, url):
-            AgentMarkdownImage(alt: alt, url: url)
+        case let .image(alt, url, link):
+            AgentMarkdownImage(alt: alt, url: url, link: link)
         case let .list(ordered, start, items):
             VStack(alignment: .leading, spacing: size * 0.3) {
                 ForEach(items.indices, id: \.self) { i in
@@ -504,9 +533,26 @@ struct AgentCapWidth: Layout {
 struct AgentMarkdownImage: View {
     let alt: String
     let url: String
+    /// 外面包着的链接：点图打开（站内链接由会话页的 openURL 接管，走原生路由）
+    var link: String?
     @Environment(\.api) private var api
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
+        if let target = linkURL {
+            Button { openURL(target) } label: { image }
+                .buttonStyle(.plain)
+        } else {
+            image
+        }
+    }
+
+    private var linkURL: URL? {
+        guard let link, let parsed = URL(string: link) else { return nil }
+        return parsed.scheme == nil ? api.server.resolve(link) : parsed
+    }
+
+    private var image: some View {
         LazyImage(url: api.image(url)) { state in
             if let image = state.image {
                 image.resizable().scaledToFit()

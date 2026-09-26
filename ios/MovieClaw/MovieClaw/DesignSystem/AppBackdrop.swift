@@ -45,10 +45,17 @@ final class AppBackdropStore {
 
     /// 当前图对应的地址（去重用：同一张图不重复下载）
     private var imageKey: String?
-    /// 按「画布尺寸 + 模糊半径」缓存的模糊成品（见 blurred(for:)）；换图时清空
+    /// 按「画布尺寸 + 模糊半径」缓存的模糊成品（见 blurred(for:)）；换图时清空。
+    /// 每个画布尺寸只留最近用到的 `radiiPerSize` 个半径（LRU）：拖动模糊滑杆会扫过几十个半径，
+    /// 不设上限最多攒下四十来张全屏 2x 成品、两百多 MB（第二轮审计 N-00-2）
     private var blurCache: [BlurKey: UIImage] = [:]
+    /// 缓存键按最近使用排序（末尾最新）
+    private var blurRecency: [BlurKey] = []
+    private static let radiiPerSize = 3
+    /// 每个画布尺寸当前想要的半径：后台渲染回来时已经不是它了，就只留作过渡、不进缓存
     /// 每个画布尺寸最近一次的成品：拖动滑杆时新半径还没算完，先显示上一张，不闪底色
     private var lastBlurred: [CGSize: UIImage] = [:]
+    private var wantedBlur: [CGSize: BlurKey] = [:]
 
     struct BlurKey: Hashable {
         var width: Int
@@ -103,6 +110,7 @@ final class AppBackdropStore {
         image = thumbnail.image
         imageKey = key
         blurCache = [:]
+        blurRecency = []
         lastBlurred = [:]
         UserDefaults.standard.set(key, forKey: Self.cacheKey)
         try? thumbnail.jpeg.write(to: Self.cacheFile, options: .atomic)
@@ -122,18 +130,39 @@ final class AppBackdropStore {
         blurCache[Self.key(size, blur)] ?? lastBlurred[size]
     }
 
+    /// 放进缓存并按尺寸淘汰最久没用的半径
+    private func store(_ image: UIImage, for key: BlurKey) {
+        blurCache[key] = image
+        blurRecency.removeAll { $0 == key }
+        blurRecency.append(key)
+        let sameSize = blurRecency.filter { $0.width == key.width && $0.height == key.height }
+        for stale in sameSize.dropLast(Self.radiiPerSize) {
+            blurCache[stale] = nil
+            blurRecency.removeAll { $0 == stale }
+        }
+    }
+
     /// 按需生成模糊成品（后台线程）：先按 cover + 顶部对齐裁成画布比例、缩到 2 倍点数，再做高斯模糊。
     /// 不用 SwiftUI `.blur` 实时模糊：每个页面都要对整屏大图做一次大半径模糊，GPU 开销大，
     /// 模拟器上还会出现分块花屏；预先算好的静态图每页只是贴一张图。
     func prepareBlur(for size: CGSize, blur: Double) async {
         let key = Self.key(size, blur)
-        guard size.width > 1, size.height > 1, blurCache[key] == nil, let image else { return }
+        wantedBlur[size] = key
+        if blurCache[key] != nil {
+            // 命中也刷新一下最近使用顺序
+            blurRecency.removeAll { $0 == key }
+            blurRecency.append(key)
+            return
+        }
+        guard size.width > 1, size.height > 1, let image else { return }
         let source = image
         guard let result = await Self.render(source, canvas: size, blur: Double(key.halfPoints) / 2) else { return }
         // 算的过程中换了图：这张作废
         guard source === self.image else { return }
-        blurCache[key] = result
         lastBlurred[size] = result
+        // 拖滑杆途中早已换了半径：这张只当过渡画面，不占缓存名额
+        guard wantedBlur[size] == key else { return }
+        store(result, for: key)
     }
 
     private static func key(_ size: CGSize, _ blur: Double) -> BlurKey {

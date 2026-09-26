@@ -27,6 +27,15 @@ struct ManageScrapeOverrides: View {
     /// 卡片级三态的五张卡
     private static let followCards: [SettingsBScrapeCard] = [.metaLanguage, .certCountry, .poster, .backdrop, .quality]
 
+    /// 卡片所在分节的标题（只在该节第一张卡前出现）
+    private static func groupTitle(before card: SettingsBScrapeCard) -> String? {
+        switch card {
+        case .metaLanguage: "元数据"
+        case .poster: "图片"
+        default: nil
+        }
+    }
+
     private static let namingFields: [(key: String, label: String, fallback: String)] = [
         ("naming_entry_dir", "条目目录", "{title} ({year})"),
         ("naming_movie_file", "电影文件名", "{title} ({year})"),
@@ -94,10 +103,14 @@ struct ManageScrapeOverrides: View {
                 .accessibilityIdentifier("form-scrape-reset")
         }
 
+        // 四个分节同 Web ScrapeSection：元数据 / 图片 / 命名与整理 / 目录写入
         ForEach(Self.followCards) { card in
+            if let group = Self.groupTitle(before: card) { ManageScrapeGroupTitle(text: group) }
             followCard(card, merged: merged, base: base)
         }
+        ManageScrapeGroupTitle(text: "命名与整理")
         namingCard(base: base)
+        ManageScrapeGroupTitle(text: "目录写入")
         mirrorCard(base: base)
 
         Text("语言与选图的产物挂在条目上（一部片一份档案、一张海报），所以它们按条目的\(Text("刮削归属库").foregroundStyle(Theme.textMuted).fontWeight(.medium))生效——归属本库的条目才跟这里的设置。存量条目需在本库执行「刷新元数据」后按新设置重刮。")
@@ -312,5 +325,18 @@ struct ManageScrapeOverrides: View {
     static func decode(_ dict: [String: API.JSONValue]) -> API.MetadataScrapeSetting? {
         guard let data = try? JSONEncoder().encode(dict) else { return nil }
         return try? JSONDecoder().decode(API.MetadataScrapeSetting.self, from: data)
+    }
+}
+
+/// 刮削覆盖里的分节标题（同 Web ScrapeSection 的小标题）
+struct ManageScrapeGroupTitle: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Theme.textFaint)
+            .padding(.top, 6)
+            .accessibilityAddTraits(.isHeader)
     }
 }

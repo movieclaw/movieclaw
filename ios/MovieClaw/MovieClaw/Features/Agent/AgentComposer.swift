@@ -78,6 +78,8 @@ struct AgentComposer: View {
     /// 「/」快选的技能清单：每次触发现拉（服务端改技能即生效）
     @State private var slashSkills: [API.SkillView] = []
     @State private var slashActive = false
+    /// 技能快选里高亮的那一项（外接键盘上下键移动、回车选中，同 Web Lexical typeahead）
+    @State private var slashHighlight = 0
 
     /// 每条消息的图片上限（与服务端 MAX_ATTACHMENTS_PER_MESSAGE 一致）
     static let maxImages = 4
@@ -99,11 +101,25 @@ struct AgentComposer: View {
                 .lineLimit(2 ... 6)
                 .focused($focused)
                 .disabled(disabled)
-                // 外接键盘同 Web：回车发送、Shift+回车换行（技能快选展开时回车不拦）。
+                // 外接键盘同 Web：回车发送、Shift+回车换行；技能快选展开时回车选中高亮的技能、上下键移动高亮。
                 // 屏幕键盘的换行键仍是换行、发送靠发送键，符合 iOS 多行输入习惯
                 .onKeyPress(.return, phases: .down) { press in
-                    guard !press.modifiers.contains(.shift), !(slashActive && slash != nil) else { return .ignored }
+                    guard !press.modifiers.contains(.shift) else { return .ignored }
+                    if slashActive, let slash {
+                        let matches = slashMatches(slash.query)
+                        guard !matches.isEmpty else { return .ignored }
+                        pickSlash(matches[min(slashHighlight, matches.count - 1)].name)
+                        return .handled
+                    }
                     submit()
+                    return .handled
+                }
+                .onKeyPress(keys: [.upArrow, .downArrow], phases: .down) { press in
+                    guard slashActive, let slash else { return .ignored }
+                    let count = slashMatches(slash.query).count
+                    guard count > 0 else { return .ignored }
+                    let step = press.key == .upArrow ? -1 : 1
+                    slashHighlight = (min(slashHighlight, count - 1) + step + count) % count
                     return .handled
                 }
                 .padding(.horizontal, 16)
@@ -120,6 +136,8 @@ struct AgentComposer: View {
             let active = AgentSkillText.slashQuery(in: text) != nil
             if active, !slashActive { Task { slashSkills = (try? await api.skillsList()) ?? [] } }
             slashActive = active
+            // 查询变了高亮回到第一项
+            slashHighlight = 0
         }
         .photosPicker(isPresented: $pickingPhotos, selection: $photoItems, maxSelectionCount: max(1, Self.maxImages - draft.images.count - uploading), matching: .images)
         .onChange(of: photoItems) { _, items in
@@ -300,21 +318,30 @@ struct AgentComposer: View {
 
     // MARK: 「/」技能快选
 
-    private func slashMenu(query: String) -> some View {
-        let matches = slashSkills.filter {
+    /// 快选候选（最多 8 项）
+    private func slashMatches(_ query: String) -> [API.SkillView] {
+        Array(slashSkills.filter {
             query.isEmpty || $0.name.lowercased().contains(query) || $0.description.lowercased().contains(query)
-        }.prefix(8)
+        }.prefix(8))
+    }
+
+    private func slashMenu(query: String) -> some View {
+        let matches = slashMatches(query)
         return Group {
             if !matches.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("使用技能").font(.system(size: 13)).foregroundStyle(Theme.textFaint).padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 2)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(matches), id: \.name) { skill in
+                            ForEach(Array(matches.enumerated()), id: \.element.name) { index, skill in
                                 Button {
                                     pickSlash(skill.name)
                                 } label: {
                                     AgentSkillRow(skill: skill)
+                                        .background(
+                                            index == min(slashHighlight, matches.count - 1) ? Color.white.opacity(0.08) : .clear,
+                                            in: .rect(cornerRadius: 10)
+                                        )
                                 }
                                 .buttonStyle(.plain)
                             }

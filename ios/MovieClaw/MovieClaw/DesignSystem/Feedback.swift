@@ -29,6 +29,8 @@ final class Feedback {
         var title: String
         var message: String?
         var confirmTitle: String
+        /// 取消键文案（网页部分确认框写「先不」）
+        var cancelTitle: String = "取消"
         var destructive: Bool
         var resume: (Bool) -> Void
     }
@@ -40,6 +42,8 @@ final class Feedback {
         var placeholder: String
         var text: String
         var confirmTitle: String
+        /// 输入上限（字符数）：输入时就截住，同网页 prompt 的 maxLength
+        var maxLength: Int?
         var resume: (String?) -> Void
     }
 
@@ -72,19 +76,20 @@ final class Feedback {
         toasts.removeAll { $0.id == toast.id }
     }
 
-    func confirm(_ title: String, message: String? = nil, confirmTitle: String = "确定", destructive: Bool = false) async -> Bool {
+    func confirm(_ title: String, message: String? = nil, confirmTitle: String = "确定", cancelTitle: String = "取消", destructive: Bool = false) async -> Bool {
         await withCheckedContinuation { continuation in
             confirmRequest = Confirm(
-                title: title, message: message, confirmTitle: confirmTitle, destructive: destructive,
+                title: title, message: message, confirmTitle: confirmTitle, cancelTitle: cancelTitle, destructive: destructive,
                 resume: { continuation.resume(returning: $0) }
             )
         }
     }
 
-    func prompt(_ title: String, message: String? = nil, placeholder: String = "", initial: String = "", confirmTitle: String = "确定") async -> String? {
+    func prompt(_ title: String, message: String? = nil, placeholder: String = "", initial: String = "", confirmTitle: String = "确定", maxLength: Int? = nil) async -> String? {
         await withCheckedContinuation { continuation in
             promptRequest = Prompt(
-                title: title, message: message, placeholder: placeholder, text: initial, confirmTitle: confirmTitle,
+                title: title, message: message, placeholder: placeholder,
+                text: maxLength.map { String(initial.prefix($0)) } ?? initial, confirmTitle: confirmTitle, maxLength: maxLength,
                 resume: { continuation.resume(returning: $0) }
             )
         }
@@ -116,7 +121,7 @@ struct FeedbackHost: ViewModifier {
                 ),
                 presenting: feedback.confirmRequest
             ) { request in
-                Button("取消", role: .cancel) { feedback.confirmRequest = nil; request.resume(false) }
+                Button(request.cancelTitle, role: .cancel) { feedback.confirmRequest = nil; request.resume(false) }
                 Button(request.confirmTitle, role: request.destructive ? .destructive : nil) {
                     feedback.confirmRequest = nil
                     request.resume(true)
@@ -134,7 +139,10 @@ struct FeedbackHost: ViewModifier {
             ) { request in
                 TextField(request.placeholder, text: Binding(
                     get: { feedback.promptRequest?.text ?? "" },
-                    set: { feedback.promptRequest?.text = $0 }
+                    set: { value in
+                        // 有上限时输入即截断（同网页 maxLength：超出的字根本打不进去）
+                        feedback.promptRequest?.text = request.maxLength.map { String(value.prefix($0)) } ?? value
+                    }
                 ))
                 Button("取消", role: .cancel) { feedback.promptRequest = nil; request.resume(nil) }
                 Button(request.confirmTitle) {

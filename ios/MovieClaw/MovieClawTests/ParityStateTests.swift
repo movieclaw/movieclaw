@@ -109,3 +109,22 @@ struct ParityStateTests {
         #expect(tail == [.settings, .settingsSection(.playback)])
     }
 }
+
+/// AI 会话 Markdown 图片拆分的边界（第二轮审计 N-09-2，口径同 Web react-markdown 语法树）
+struct AgentMarkdownImageEdgeTests {
+    @Test func imageSyntaxInsideInlineCodeStaysText() {
+        #expect(AgentMarkdownParser.parse("写法是 `![说明](地址)` 这样") == [.paragraph("写法是 `![说明](地址)` 这样")])
+    }
+
+    @Test func linkedImageBecomesOneBlockWithoutLeftovers() {
+        #expect(AgentMarkdownParser.parse("[![海报](/images/a.jpg)](/library/19/item/5)") == [
+            .image(alt: "海报", url: "/images/a.jpg", link: "/library/19/item/5"),
+        ])
+        #expect(AgentMarkdownParser.parse("前 [![](https://x/a.jpg)](https://x) 后 ![b](/b.jpg)") == [
+            .paragraph("前"),
+            .image(alt: "", url: "https://x/a.jpg", link: "https://x"),
+            .paragraph("后"),
+            .image(alt: "b", url: "/b.jpg"),
+        ])
+    }
+}

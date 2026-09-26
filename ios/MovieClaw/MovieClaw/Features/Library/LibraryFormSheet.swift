@@ -221,6 +221,8 @@ struct ManageCreateLibraryForm: View {
                 TextField("如：电影库 / 动漫库", text: $name)
                     .autocorrectionDisabled()
                     .submitLabel(.done)
+                    // 回车执行主按钮（同 Web；输入法选词的回车由系统消化，不会走到 onSubmit）
+                    .onSubmit { if !primaryDisabled { primaryAction() } }
                     .accessibilityIdentifier("form-name")
             }
             Section {
