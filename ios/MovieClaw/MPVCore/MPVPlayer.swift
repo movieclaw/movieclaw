@@ -33,9 +33,28 @@ public final class MPVPlayer {
     public var onVideoOutputRebuild: (() -> Void)?
 
     private let handle: MPVHandle
-    /// Metal 渲染表面（OpenGL 路径为 nil）：尺寸变化时要通知 mpv 重新排布画面
-    private var metalViewForResize: MPVMetalView?
-    private var resizeTask: Task<Void, Never>?
+    /// Metal 画面容器与其中的渲染面（OpenGL 路径为 nil）：渲染面按视频比例摆放，mpv 出图要跟上它的尺寸
+    private var metalContainer: MPVMetalContainerView?
+    private var metalViewForResize: MPVMetalView? { metalContainer?.pictureView }
+    /// 视频输出驱动（兜底重建时切回它）
+    private let videoOutput: String
+
+    // 以下都由 mpv 的属性事件推送、在主线程缓存——尺寸核对全程不在主线程同步读 mpv（会等核心锁）
+    /// 渲染面当前的出图像素尺寸（我们设给 CAMetalLayer 的 drawableSize）
+    private var drawableTarget = (width: 0, height: 0)
+    /// mpv 实际的出图尺寸（osd-width / osd-height）
+    private var outputSize = (width: 0, height: 0)
+    /// 视频显示尺寸（dwidth / dheight，已计像素宽高比）与旋转元数据
+    private var displaySize = (width: 0, height: 0)
+    private var rotation = 0
+    /// 正在出视频（有视频轨且 VO 已配置）；关视频轨、纯音频时为 false
+    private var hasVideo = false
+    /// 出图尺寸对不上时的兜底计时，与兜底重建本身
+    private var fallbackTask: Task<Void, Never>?
+    private var rebuildTask: Task<Void, Never>?
+    #if DEBUG
+    private var resizeStartedAt: (width: Int, height: Int, at: ContinuousClock.Instant)?
+    #endif
 
     /// 需要持续观察的属性（变化时推送 `.property` 事件）
     private static let observed: [(String, mpv_format)] = [
@@ -50,6 +69,10 @@ public final class MPVPlayer {
         ("dwidth", MPV_FORMAT_INT64),
         ("dheight", MPV_FORMAT_INT64),
         ("core-idle", MPV_FORMAT_FLAG),
+        // 以下三项 MPVCore 自己用：出图尺寸核对、画面比例（见 observeGeometry）
+        ("osd-width", MPV_FORMAT_INT64),
+        ("osd-height", MPV_FORMAT_INT64),
+        ("video-out-params/rotate", MPV_FORMAT_INT64),
     ]
 
     /// - Parameters:
@@ -92,6 +115,7 @@ public final class MPVPlayer {
             base["vo"] = "libmpv"
         }
         for (key, value) in options { base[key] = value }
+        videoOutput = base["vo"] ?? "gpu-next"
 
         #if DEBUG
         mpv_request_log_messages(mpv, "warn")
@@ -101,11 +125,11 @@ public final class MPVPlayer {
 
         switch chosen {
         case .metal:
-            let metalView = MPVMetalView()
-            view = metalView
-            metalViewForResize = metalView
+            let container = MPVMetalContainerView()
+            view = container
+            metalContainer = container
             // wid 传的是 CAMetalLayer 的指针（MPVKit 的 moltenvk 补丁约定）
-            var layerPointer = Int64(Int(bitPattern: Unmanaged.passUnretained(metalView.metalLayer).toOpaque()))
+            var layerPointer = Int64(Int(bitPattern: Unmanaged.passUnretained(container.pictureView.metalLayer).toOpaque()))
             mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &layerPointer)
         case .openGL:
             view = MPVGLView()
@@ -136,113 +160,151 @@ public final class MPVPlayer {
         }
         handle.sink = { [weak self] event in
             // 已在主线程
+            self?.observeGeometry(event)
             self?.onEvent?(event)
         }
         handle.startEventLoop()
 
-        // 视频输出尺寸与视图对齐：MPVKit 的 moltenvk 上下文只在 VO 初始化/视频配置时读一次
-        // drawableSize（ra_vk_ctx_resize），之后的尺寸变化它感知不到。两种后果（真机与模拟器 Metal 路径实测）：
-        // ① 转横屏后仍按竖屏尺寸（1206x2622）排布画面——压扁、偏到一边；
-        // ② 起播时 VO 先于界面排版初始化，拿到 0 尺寸、输出停在 1x1——整片黑屏。
-        // 所以视图尺寸变化后、以及起播后各核对一次，对不上就重建输出（见 scheduleVideoRelayout）。
+        // 渲染面出图尺寸变了（旋转、视频比例确定）：核对 mpv 是否跟上，见 checkOutputSize
         metalViewForResize?.onDrawableSizeChange = { [weak self] size in
-            // 补丁版 libmpv 会在下一帧自己跟上新尺寸；150ms 后仍对不上才走重建兜底
-            self?.scheduleVideoRelayout(after: .milliseconds(150))
+            guard let self else { return }
+            drawableTarget = (Int(size.width.rounded()), Int(size.height.rounded()))
             #if DEBUG
-            self?.measureRelayout(to: size)
+            resizeStartedAt = (drawableTarget.width, drawableTarget.height, .now)
+            let animated = UIView.inheritedAnimationDuration > 0 ? "随旋转动画" : "无动画"
+            MPVDiag.log("出图尺寸改为 \(drawableTarget.width)x\(drawableTarget.height)（\(animated)），mpv 当前 \(outputSize.width)x\(outputSize.height)")
             #endif
+            // 兜底计时从最近一次尺寸变化重新算：连续快速旋转时，不能拿上一次的计时误判 mpv 没跟上
+            fallbackTask?.cancel()
+            fallbackTask = nil
+            checkOutputSize()
         }
     }
 
-    /// 兜底：核对 mpv 输出尺寸，对不上就重建视频输出（VO），让它按新尺寸排布画面。
+    // MARK: - 画面尺寸（事件驱动）
+
+    /// 从属性事件里取 MPVCore 自己关心的几项：mpv 出图尺寸、视频显示尺寸与旋转。
+    /// 只认有效值——关视频轨（切后台）时这些属性变成「不可用」，保留上次的比例，回前台不用重算一轮
+    private func observeGeometry(_ event: MPVEvent) {
+        guard case let .property(name, value) = event else { return }
+        let number: Int? = if case let .int(raw) = value { Int(raw) } else { nil }
+        switch name {
+        case "osd-width", "osd-height":
+            if name == "osd-width" { outputSize.width = number ?? 0 } else { outputSize.height = number ?? 0 }
+            checkOutputSize()
+        case "dwidth", "dheight":
+            if name == "dwidth" { hasVideo = (number ?? 0) > 0 }
+            guard let number, number > 0 else { return }
+            if name == "dwidth" { displaySize.width = number } else { displaySize.height = number }
+            updateVideoSize()
+        case "video-out-params/rotate":
+            guard let number else { return }
+            rotation = number
+            updateVideoSize()
+        default:
+            break
+        }
+    }
+
+    /// 把视频显示尺寸交给画面容器，由它按比例摆放渲染面。
+    /// 带 90°/270° 旋转元数据的视频（手机竖拍）mpv 会转过来画，宽高要对调
+    private func updateVideoSize() {
+        guard let metalContainer, displaySize.width > 0, displaySize.height > 0 else { return }
+        let turned = rotation % 180 != 0
+        metalContainer.videoSize = CGSize(
+            width: turned ? displaySize.height : displaySize.width,
+            height: turned ? displaySize.width : displaySize.height
+        )
+    }
+
+    /// 核对 mpv 实际出图尺寸是否等于渲染面的 drawableSize。渲染面尺寸变化、mpv 出图尺寸变化时各调一次，纯事件驱动。
     ///
-    /// 正常情况下用不到：Vendor/MPVKit 里的 libmpv 打了 0004-moltenvk-detect-resize 补丁，
-    /// Metal 渲染面尺寸一变，mpv 的 VO 线程下一帧就自己 resize（真机旋转无黑屏、无错位）。
-    /// 只有换回上游未打补丁的 libmpv 时才会走到下面的重建流程。
-    ///
-    /// 为什么要重建：上游 iOS 版 libmpv 没有 android-surface-size 之类的外部尺寸通知（设置返回 -12），
-    /// video-reload 在参数不变时跳过配置，改 video-aspect-override / video-rotate 也不重算输出尺寸
-    /// （真机逐一实测过）。可行的只有重建 VO，两种做法真机测速（iPhone Air，4K 杜比视界）：
-    /// - 切 vo 到 null 再切回：只重建输出、保留解码器，约 0.6 秒——默认用它；
-    /// - 关开视频轨：连解码器一起重启、要从关键帧重新拉 4K 数据，约 1.2 秒——作为兜底。
-    /// 旋转时不等动画结束（校正与动画并行），期间把画面层隐藏、校正完成再淡入，
-    /// 用户看到的是短暂黑一下，而不是压扁/偏位的过渡画面。
-    private func scheduleVideoRelayout(after delay: Duration = .zero) {
-        guard metalViewForResize != nil else { return }
-        resizeTask?.cancel()
-        resizeTask = Task { [weak self] in
-            if delay > .zero { try? await Task.sleep(for: delay) }
-            guard !Task.isCancelled, let self, let metalView = self.metalViewForResize else { return }
-            let layer = metalView.metalLayer
-            // 没有在放视频（未加载、已关视频输出、VO 还没初始化）时不用管，初始化时自然读到当前尺寸
-            guard let vid = self.string("vid"), vid != "no", self.string("path") != nil else {
-                metalView.setPictureHidden(false)
-                return
-            }
-            let target = (width: Int(layer.drawableSize.width), height: Int(layer.drawableSize.height))
-            let width = self.int("osd-width") ?? 0, height = self.int("osd-height") ?? 0
-            guard width > 0, height > 0, width != target.width || height != target.height else {
-                metalView.setPictureHidden(false)
-                return
-            }
+    /// Vendor/MPVKit 里的 libmpv 打了 0004-moltenvk-detect-resize 补丁：drawableSize 一变，mpv 的 VO 线程
+    /// 下一帧就自己按新尺寸出图，这里正常只会看到「对上了」。对不上时挂一个兜底计时，
+    /// 600ms 后仍对不上（例如换回了没打补丁的上游 libmpv）才重建视频输出。
+    /// 画面位置不依赖 mpv 何时跟上（见 MPVMetalView），所以兜底不必抢时间。
+    private func checkOutputSize() {
+        let target = drawableTarget, output = outputSize
+        // 渲染面还没排版、mpv 还没出过图：等下一次事件
+        guard target.width > 0, output.width > 0, output.height > 0 else { return }
+        if Self.sizesMatch(output, target) {
+            fallbackTask?.cancel()
+            fallbackTask = nil
             #if DEBUG
-            let started = Date()
+            if let started = resizeStartedAt, started.width == target.width, started.height == target.height {
+                let elapsed = ContinuousClock.now - started.at
+                MPVDiag.log("mpv 跟上新尺寸 \(target.width)x\(target.height)：\(Int(elapsed / .milliseconds(1))) 毫秒")
+                resizeStartedAt = nil
+            }
+            #endif
+            return
+        }
+        guard hasVideo, fallbackTask == nil, rebuildTask == nil else { return }
+        fallbackTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, let self else { return }
+            fallbackTask = nil
+            rebuildVideoOutput()
+        }
+    }
+
+    /// 出图尺寸与目标一致（容差 1 像素：像素密度非整数的机型上，MoltenVK 与我们对 bounds × scale 的取整可能差 1）
+    private static func sizesMatch(_ a: (width: Int, height: Int), _ b: (width: Int, height: Int)) -> Bool {
+        abs(a.width - b.width) <= 1 && abs(a.height - b.height) <= 1
+    }
+
+    /// 兜底：重建视频输出（VO），让没跟上新尺寸的 mpv 按新尺寸出图。
+    ///
+    /// 只有换回没打补丁的上游 libmpv 时才会走到这里。上游 iOS 版 libmpv 只在 VO 初始化/视频配置时
+    /// 读一次 drawableSize，没有外部尺寸通知（android-surface-size 设置返回 -12），video-reload 在参数不变时
+    /// 跳过配置，改 video-aspect-override / video-rotate 也不重算输出尺寸（真机逐一实测过）。
+    /// 可行的只有重建 VO，两种做法真机测速（iPhone Air，4K 杜比视界）：
+    /// - 切 vo 到 null 再切回：只重建输出、保留解码器，约 0.6 秒——先用它；
+    /// - 关开视频轨：连解码器一起重启、要从关键帧重新拉 4K 数据，约 1.2 秒——作为兜底。
+    /// 期间把画面隐藏、完成再淡入：用户看到的是短暂黑一下，而不是错位的画面。
+    private func rebuildVideoOutput() {
+        let target = drawableTarget
+        guard let metalView = metalViewForResize, hasVideo, rebuildTask == nil, !Self.sizesMatch(outputSize, target) else { return }
+        rebuildTask = Task { [weak self] in
+            guard let self else { return }
+            #if DEBUG
+            let started = ContinuousClock.now
             #endif
             metalView.setPictureHidden(true)
-            self.onVideoOutputRebuild?()
+            onVideoOutputRebuild?()
 
             // 快路径：只重建视频输出
-            let vo = self.string("vo").flatMap { $0.isEmpty ? nil : $0 } ?? "gpu-next"
-            self.setString("vo", "null")
+            setString("vo", "null")
             try? await Task.sleep(for: .milliseconds(30))
             guard !Task.isCancelled else { return }
-            self.setString("vo", vo)
-            var fixed = await self.waitForOutput(target, timeout: .milliseconds(1500))
+            setString("vo", videoOutput)
+            var fixed = await waitForOutput(target, timeout: .milliseconds(1500))
 
-            // 兜底：关开视频轨（连解码器一起重启）
+            // 兜底：关开视频轨（连解码器一起重启）。App 只在前后台切换时关视频轨，重开一律 auto
             if !fixed, !Task.isCancelled {
-                self.onVideoOutputRebuild?()
-                self.setString("vid", "no")
+                onVideoOutputRebuild?()
+                setString("vid", "no")
                 try? await Task.sleep(for: .milliseconds(60))
                 guard !Task.isCancelled else { return }
-                self.setString("vid", vid)
-                fixed = await self.waitForOutput(target, timeout: .milliseconds(3000))
+                setString("vid", "auto")
+                fixed = await waitForOutput(target, timeout: .milliseconds(3000))
             }
             #if DEBUG
-            MPVDiag.log("尺寸校正\(fixed ? "完成" : "未完成")：\(Int(Date().timeIntervalSince(started) * 1000)) 毫秒，目标 \(target.width)x\(target.height)")
+            MPVDiag.log("兜底重建视频输出\(fixed ? "完成" : "未完成")：\(Int((ContinuousClock.now - started) / .milliseconds(1))) 毫秒，目标 \(target.width)x\(target.height)")
             #endif
             guard !Task.isCancelled else { return }
+            rebuildTask = nil
             metalView.setPictureHidden(false)
         }
     }
 
-    #if DEBUG
-    /// 真机测速：尺寸变化后多久 mpv 的输出尺寸跟上（每 10ms 查一次，最多 1 秒）
-    private func measureRelayout(to size: CGSize) {
-        MPVDiag.log("渲染面尺寸变为 \(Int(size.width))x\(Int(size.height))，当前 mpv 输出 \(int("osd-width") ?? -1)x\(int("osd-height") ?? -1)")
-        guard string("path") != nil else { return }
-        let started = Date()
-        Task { [weak self] in
-            for _ in 0 ..< 100 {
-                try? await Task.sleep(for: .milliseconds(10))
-                guard let self else { return }
-                if self.int("osd-width") == Int(size.width), self.int("osd-height") == Int(size.height) {
-                    MPVDiag.log("mpv 自行跟上新尺寸 \(Int(size.width))x\(Int(size.height))：\(Int(Date().timeIntervalSince(started) * 1000)) 毫秒")
-                    return
-                }
-            }
-            MPVDiag.log("1 秒内 mpv 未自行跟上新尺寸（未打补丁？）")
-        }
-    }
-    #endif
-
-    /// 轮询 mpv 输出尺寸直到等于目标（每 30 毫秒一次）
+    /// 等 mpv 出图尺寸变成目标值（看事件推送的缓存值，不读 mpv）
     private func waitForOutput(_ target: (width: Int, height: Int), timeout: Duration) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(30))
             if Task.isCancelled { return false }
-            if int("osd-width") == target.width, int("osd-height") == target.height { return true }
+            if Self.sizesMatch(outputSize, target) { return true }
         }
         return false
     }
@@ -254,8 +316,6 @@ public final class MPVPlayer {
         setString("start", start.map { String(format: "%.3f", max(0, $0)) } ?? "none")
         setFlag("pause", paused)
         command(["loadfile", url.absoluteString, "replace"])
-        // 起播后核对一次输出尺寸（VO 可能先于界面排版初始化，停在 1x1）
-        scheduleVideoRelayout(after: .seconds(2))
     }
 
     public func play() { setFlag("pause", false) }
@@ -364,6 +424,8 @@ public final class MPVPlayer {
     public func destroy() {
         onEvent = nil
         handle.sink = nil
+        fallbackTask?.cancel()
+        rebuildTask?.cancel()
         if let glView = view as? MPVGLView {
             // GL 渲染上下文必须在 GL 上下文当前、且 mpv 还活着时释放
             glView.detach()
@@ -643,7 +705,7 @@ nonisolated final class MPVHandle: @unchecked Sendable {
 
 #if DEBUG
 /// 真机排查用：写 stderr，`xcrun devicectl device process launch --console` 能收到
-enum MPVDiag {
+nonisolated enum MPVDiag {
     static func log(_ message: String) {
         let line = Data("[MPVDiag] \(message)\n".utf8)
         FileHandle.standardError.write(line)

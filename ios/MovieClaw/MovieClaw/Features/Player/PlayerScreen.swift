@@ -54,12 +54,17 @@ struct PlayerScreen: View {
             created.start()
             UIApplication.shared.isIdleTimerDisabled = true
             #if DEBUG
-            // 真机排查用：-mcAutoLandscape <秒> 起播后自动切横屏
+            // 真机排查用：-mcAutoLandscape <秒> 起播后自动切横屏；
+            // 再加 -mcAutoRotate <次数> 则之后每 3 秒横竖交替，共转这么多次（测旋转耗时）
             let autoLandscape = UserDefaults.standard.double(forKey: "mcAutoLandscape")
             if autoLandscape > 0 {
+                let rotations = max(1, UserDefaults.standard.integer(forKey: "mcAutoRotate"))
                 Task {
                     try? await Task.sleep(for: .seconds(autoLandscape))
-                    PlayerOrientation.request(landscape: true)
+                    for index in 0 ..< rotations {
+                        if index > 0 { try? await Task.sleep(for: .seconds(3)) }
+                        PlayerOrientation.request(landscape: index % 2 == 0)
+                    }
                 }
             }
             #endif

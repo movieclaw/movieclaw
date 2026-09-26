@@ -2,52 +2,98 @@ import GLKit
 import Libmpv
 import UIKit
 
-/// Metal 渲染表面：mpv 的 gpu-next（经 MoltenVK）直接往这个 CAMetalLayer 上画。
+/// Metal 画面容器：黑底铺满播放区域，真正的渲染面（MPVMetalView）按视频比例居中摆在里面。
 ///
-/// 我们只负责跟随视图尺寸更新 layer 的 frame 与像素密度，绘制完全在 mpv 的渲染线程里。
+/// ## 渲染面只占画面那一块：横竖屏切换全程不变形、不黑屏
+/// 渲染面的宽高比始终等于视频的宽高比。旋转时 UIKit 的旋转动画让它的 frame 从「竖屏画面区」连续变到
+/// 「横屏画面区」，两端比例相同、中间每一帧也相同：mpv 还没按新尺寸出图时，旧帧被等比缩放着显示，
+/// 位置和比例全程正确；mpv（打了尺寸自检补丁）一两帧后按新尺寸出图，只是让画面变清晰，位置不跳。
+/// 以前渲染面铺满视图：mpv 跟上之前旧帧被拉伸到新的屏幕比例（压扁、偏到一边），只能先藏画面再等 mpv。
+///
+/// 为什么不让渲染面铺满、只把 drawableSize 设成画面大小：MoltenVK 1.4 重建交换链时按 layer 的
+/// bounds × contentsScale 取尺寸，随即把 drawableSize 改回整个视图（模拟器 Metal 路径实测）。
+///
+/// 视频比例未知时（起播前、纯音频）渲染面铺满，由 mpv 自己加黑边。
+/// 连带效果：mpv 的字幕画布就是画面区域，字号与底边距按「画面高度」计——
+/// 与网页、AVPlayer 路径（SubtitleOverlay 锚定画面矩形）的字幕口径一致。
+final class MPVMetalContainerView: UIView {
+    let pictureView = MPVMetalView()
+    /// 视频显示尺寸（已计入像素宽高比与旋转元数据）；.zero = 还不知道
+    var videoSize: CGSize = .zero {
+        didSet { if videoSize != oldValue { setNeedsLayout() } }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black
+        addSubview(pictureView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // 旋转时这里在系统的旋转动画里执行：frame 变化随动画走，渲染面等比缩放
+        pictureView.frame = Self.pictureFrame(video: videoSize, in: bounds)
+    }
+
+    /// 画面区：视频按原比例放进容器（aspect-fit）并居中；边长取整到点，出图像素尺寸因此是整数
+    nonisolated static func pictureFrame(video: CGSize, in bounds: CGRect) -> CGRect {
+        guard video.width > 0, video.height > 0, bounds.width > 0, bounds.height > 0 else { return bounds }
+        let fit = min(bounds.width / video.width, bounds.height / video.height)
+        let size = CGSize(width: (video.width * fit).rounded(), height: (video.height * fit).rounded())
+        return CGRect(
+            x: ((bounds.width - size.width) / 2).rounded(),
+            y: ((bounds.height - size.height) / 2).rounded(),
+            width: size.width,
+            height: size.height
+        )
+    }
+}
+
+/// Metal 渲染表面：mpv 的 gpu-next（经 MoltenVK）直接往这个视图自己的 CAMetalLayer 上画。
+///
+/// 绘制完全在 mpv 的渲染线程里；摆放由 MPVMetalContainerView 按视频比例决定，这里只管出图像素尺寸。
 final class MPVMetalView: UIView {
-    let metalLayer = MPVMetalLayer()
-    /// 像素尺寸变化（含首次拿到有效尺寸、旋转、分屏）时回调。
-    /// mpv 的 moltenvk 上下文只在视频输出初始化/配置时读取 drawableSize，之后的尺寸变化它感知不到，需要外部触发。
+    override class var layerClass: AnyClass { MPVMetalLayer.self }
+    /// 视图自己的 layer（不是另挂的子层）：尺寸变化才会跟着 UIKit 的旋转动画一起走
+    var metalLayer: MPVMetalLayer { layer as! MPVMetalLayer }
+    /// 出图像素尺寸变化（含首次拿到有效尺寸、旋转、视频比例确定）时回调
     var onDrawableSizeChange: ((CGSize) -> Void)?
     private var lastDrawableSize: CGSize = .zero
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
+        // 旧帧与新尺寸比例有细微出入（取整）时按比例缩放而不是拉伸：contentMode 决定 layer 的 contentsGravity
+        contentMode = .scaleAspectFit
         metalLayer.framebufferOnly = true
-        metalLayer.backgroundColor = UIColor.black.cgColor
-        layer.addSublayer(metalLayer)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// 隐藏/显示画面层（尺寸校正期间隐藏，避免露出压扁或偏位的过渡帧）；显示时短暂淡入
+    /// 隐藏/显示画面（兜底重建视频输出期间隐藏，避免露出错位的过渡帧）；显示时短暂淡入
     func setPictureHidden(_ hidden: Bool) {
-        guard (metalLayer.opacity == 0) != hidden else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(hidden)
-        CATransaction.setAnimationDuration(0.15)
-        metalLayer.opacity = hidden ? 0 : 1
-        CATransaction.commit()
+        guard (alpha == 0) != hidden else { return }
+        if hidden {
+            alpha = 0
+        } else {
+            UIView.animate(withDuration: 0.15) { self.alpha = 1 }
+        }
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         let scale = window?.screen.nativeScale ?? traitCollection.displayScale
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        metalLayer.frame = bounds
-        metalLayer.contentsScale = scale
-        // CAMetalLayer 不会随 frame 自动改像素尺寸：必须显式同步 drawableSize，
-        // 否则转横屏后 mpv（MoltenVK 交换链按 drawableSize 建）仍按竖屏尺寸出图，
-        // 画面被压扁/偏到一角（真机横竖屏切换实测）。尺寸变化后交换链失效，mpv 会自行重建。
+        if contentScaleFactor != scale { contentScaleFactor = scale }
+        // CAMetalLayer 不会随 bounds 自动改像素尺寸，要显式设 drawableSize（与 MoltenVK 取的 bounds × contentsScale 一致）。
+        // 旋转时这里拿到的已是动画终点的 bounds：出图尺寸一步到位，动画过程交给层的等比缩放
         let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
-        metalLayer.drawableSize = size
-        CATransaction.commit()
         guard size.width > 1, size.height > 1, size != lastDrawableSize else { return }
         lastDrawableSize = size
+        metalLayer.drawableSize = size
         onDrawableSizeChange?(size)
     }
 }

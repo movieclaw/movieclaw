@@ -1,0 +1,28 @@
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index 2d95eb8..4c8d4a2 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -1259,6 +1259,23 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+     bool valid = false;
+     p->is_interpolated = false;
+ 
++    // MovieClaw：以本帧交换链图像的实际尺寸为准排布画面。
++    // iOS 旋转时 MoltenVK 在取图（acquire）那一刻发现 CAMetalLayer 尺寸变了，libplacebo 随即按新尺寸
++    // 重建交换链——此时 mpv 还没收到尺寸变化（vo->dwidth/dheight、p->dst 都是旧的），这一帧会按旧尺寸
++    // 画进新尺寸的图：画面缩在一角或只露出一部分，持续一两帧（模拟器 Metal 路径逐帧录屏实测）。
++    // 这里只重算画面位置与 OSD 尺寸；不调 resize()——它会调整交换链尺寸，不能在一帧中途做。
++    if (swframe.fbo->params.w != vo->dwidth || swframe.fbo->params.h != vo->dheight) {
++        vo->dwidth = swframe.fbo->params.w;
++        vo->dheight = swframe.fbo->params.h;
++        struct mp_rect src, dst;
++        struct mp_osd_res osd;
++        vo_get_src_dst_rects(vo, &src, &dst, &osd);
++        p->osd_sync++;
++        p->osd_res = osd;
++        p->src = src;
++        p->dst = dst;
++    }
++
+     // Calculate target
+     struct pl_frame target;
+     pl_frame_from_swapchain(&target, &swframe);

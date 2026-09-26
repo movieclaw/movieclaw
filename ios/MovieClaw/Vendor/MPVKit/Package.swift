@@ -6,7 +6,8 @@
 // 1. 只保留 LGPL 产品 `MPVKit`，去掉 GPL 变体——上游包把 GPL 版二进制也声明成依赖，
 //    SPM 会连带下载约 1.7GB 用不上的文件；
 // 2. `Libmpv` 换成打了 MovieClaw 补丁的构建（patches/0004-moltenvk-detect-resize.patch：
-//    Metal 渲染面尺寸变化时 mpv 自己立即重排画面，旋转屏幕不再需要重建视频输出）。
+//    Metal 渲染面尺寸变化时 mpv 自己立即重排画面，旋转屏幕不再需要重建视频输出；
+//    0005-vo-gpu-next-follow-swapchain-size.patch：每帧以交换链实际尺寸为准排布画面，旋转开头不再有缩在一角的帧）。
 //    其余二进制仍直接引用上游 1.0.0 发布包，地址与校验和原样照抄。
 // 重新构建 Libmpv 见 ../../scripts/build-libmpv.sh。
 
