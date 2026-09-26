@@ -162,7 +162,8 @@ struct DiscoverView: View {
             Menu { titleMenu } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(currentType == "tv" ? "剧集" : "电影")
-                        .font(.system(size: 34, weight: .bold))
+                        // 30pt：文字高度要落在工具栏按钮的高度（约 36pt）以内，34pt 会在菜单形变动画时被裁掉上半截
+                        .font(.system(size: 30, weight: .bold))
                         .foregroundStyle(Theme.text)
                     Text(source == "tmdb" ? "TMDB" : "豆瓣")
                         .font(.footnote.weight(.semibold))
@@ -173,8 +174,9 @@ struct DiscoverView: View {
                 }
                 .fixedSize()
                 .contentShape(.rect)
-                // 工具栏按钮自带内边距，比系统大标题多缩进约 9pt：挪回去与其它标签页的大标题左边对齐
-                .offset(x: -9)
+                // 不要用 offset 往左挪去对齐其它页的系统大标题（工具栏按钮自带约 9pt 内边距）：
+                // 菜单弹出 / 收起的形变动画以按钮边界为起点，挪出边界的部分会被裁掉，切换瞬间「电」字缺一截（真机截图）。
+                // 系统大标题位置（ToolbarItem .largeTitle）又不能交互，只能接受这 9pt 缩进
             }
             .accessibilityLabel("正在看\(currentType == "tv" ? "剧集" : "电影")，数据源\(source == "tmdb" ? "TMDB" : "豆瓣")")
             .accessibilityHint("切换类型或数据源")
