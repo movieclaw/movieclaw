@@ -7,8 +7,8 @@ import SwiftUI
 /// - 任务：有什么需要我处理——全部 / 进行中 / 需要处理 / 已结束。
 /// 两者维度不同，把观看塞进任务的状态切片会稀释「需要处理」的优先级（docs/design/activity.md）。
 ///
-/// 一级切换挂在顶栏中间（同 Web 手机端挂进全局顶栏那一行），两边各带提示：
-/// 观看是「此刻有人在播」的绿点；任务是数字——需要处理时红、只是进行中时蓝，与标签角标同源同数。
+/// 一级切换是大标题下方通栏的原生分段控件，段名后带数字提示：观看=正在播放人数，
+/// 任务=需要处理数（没有则为进行中数），与标签角标同源同数。
 /// 数据来自外壳常驻的 `ShellBadges.tasks / media`，来回切换不打断轮询与 SSE。
 struct ActivityView: View {
     var initialView: String?
@@ -117,62 +117,26 @@ enum TaskSlice: String, CaseIterable {
     }
 }
 
-/// 一级视角切换胶囊：观看旁呼吸绿点（有人在播），任务旁数字（红=需要处理 / 蓝=进行中）
+/// 一级视角切换：系统原生分段控件（iOS 26 自带液态玻璃滑块——按住会鼓成透镜、可拖着换段、带触感），
+/// 通栏铺满与下方「正在播放 / 最近播放…」这类二级切片胶囊拉开层级。
+/// 原生分段只能放纯文字，提示改成段名后的数字：观看=正在播放的人数、任务=需要处理数（没有时为进行中数）；
+/// 红/蓝之分留给标签栏的活动角标，二级切片里「需要处理」也有计数。
 struct ActivityScopeSwitcher: View {
     @Binding var scope: ActivityView.Scope
     let liveCount: Int
     let taskBadge: TaskCenter.Badge
 
     var body: some View {
-        HStack(spacing: 2) {
-            segment(.media) {
-                // 绿点挂在文字右上角、不占横向宽度（同网页）：顶栏中间位宽度有限，
-                // 以前并排放在文字后面，一出现就把「观看」挤得折行/缩进
-                Text("观看")
-                    .overlay(alignment: .topTrailing) {
-                        if liveCount > 0 {
-                            ActivityStatusDot(color: Theme.success, pulse: true, size: 6, label: "有人正在观看")
-                                .offset(x: 7, y: -3)
-                        }
-                    }
-            }
-            segment(.tasks) {
-                Text("任务")
-                if taskBadge.count > 0 {
-                    Text("\(taskBadge.count)")
-                        .font(.system(size: 11, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(taskBadge.alert ? Theme.danger : Theme.info)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background((taskBadge.alert ? Theme.danger : Theme.info).opacity(0.2), in: .capsule)
-                        .accessibilityLabel(taskBadge.hint)
-                        .accessibilityIdentifier("activity-task-badge")
-                }
-            }
+        Picker("活动视角", selection: $scope.animation(.snappy(duration: 0.2))) {
+            Text(liveCount > 0 ? "观看 \(liveCount)" : "观看")
+                .accessibilityLabel(liveCount > 0 ? "观看，\(liveCount) 人正在观看" : "观看")
+                .tag(ActivityView.Scope.media)
+            Text(taskBadge.count > 0 ? "任务 \(taskBadge.count)" : "任务")
+                .accessibilityLabel(taskBadge.count > 0 ? "任务，\(taskBadge.hint)" : "任务")
+                .tag(ActivityView.Scope.tasks)
         }
-        .padding(3)
-        .glassEffect(.regular, in: .capsule)
-    }
-
-    private func segment(_ value: ActivityView.Scope, @ViewBuilder label: () -> some View) -> some View {
-        let selected = scope == value
-        return Button {
-            withAnimation(.snappy(duration: 0.2)) { scope = value }
-        } label: {
-            HStack(spacing: 6) { label() }
-                .lineLimit(1)
-                .fixedSize()
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(selected ? Theme.text : Theme.textMuted)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .background(selected ? Color.white.opacity(0.15) : .clear, in: .capsule)
-                .contentShape(.capsule)
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("activity-scope-\(value.rawValue)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        .pickerStyle(.segmented)
+        .accessibilityIdentifier("activity-scope")
     }
 }
 
