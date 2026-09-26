@@ -11,8 +11,8 @@ import UIKit
 /// 这里是**时间驱动**的——居中的片名 Logo 下面讲「几点能看」，大号细体时刻是主角，
 /// 刚到的那张主按钮直接播放。
 ///
-/// 视觉：剧照铺满并慢速推近（Ken Burns），上滑时视差下沉、文字淡出；底部渐隐进页面的
-/// 氛围色（当前这张剧照的主色，见 `SubsHomeAmbient`），整页像被这部作品的光照着。
+/// 视觉：剧照铺满并慢速推近（Ken Burns），上滑时视差下沉、文字淡出；底部渐隐进页面底色——
+/// 底色取自当前这张剧照底边的颜色（同 Apple Music，见 `SubsHomeAmbient`），剧照像延伸成了整页。
 /// 8 秒一张，指示器里当前那枚胶囊按 8 秒填满（看得出「还有多久换下一张」）；
 /// 手动滑动后重新计时，退到后台不推进。
 struct SubsHomeHero: View {
@@ -417,13 +417,12 @@ struct SubsHomePressStyle: ButtonStyle {
 
 // MARK: - 氛围色
 
-/// 页面底色：纯黑之上叠一层当前 Hero 剧照的主色，从顶部向下渐隐（Apple TV / Apple Music 的做法）。
-///
-/// 剧照底部渐隐进这层颜色，Hero 与下面的内容之间没有硬边；换下一张时颜色 1.2 秒交叉淡入。
-/// 列表往下滚时整体退淡，不让下半页一直泡在颜色里。
+/// 页面底色（同 Apple Music 专辑页）：整页铺当前那张剧照**底边**的颜色，剧照底部渐隐进去，
+/// 看起来像剧照自己延伸成了整页；往下只轻微加深一点做层次，不再渐隐成黑、滚动也不变淡。
+/// 没有 Hero（无订阅 / 非沉浸）时是纯黑。换张时颜色 1.2 秒过渡。
 struct SubsHomeAmbient: View {
     let tint: Color?
-    /// 列表滚动距离：滚得越深颜色越淡
+    /// 列表滚动距离（保留参数：曾用于滚深变淡，现在整页恒定铺色）
     let scrollOffset: CGFloat
 
     var body: some View {
@@ -431,14 +430,12 @@ struct SubsHomeAmbient: View {
             Theme.background
             if let tint {
                 LinearGradient(stops: [
-                    .init(color: tint.opacity(0.85), location: 0),
-                    .init(color: tint.opacity(0.5), location: 0.42),
-                    .init(color: tint.opacity(0.14), location: 0.72),
-                    .init(color: .clear, location: 1),
+                    .init(color: tint, location: 0),
+                    .init(color: tint, location: 0.55),
+                    .init(color: tint.mix(with: .black, by: 0.35), location: 1),
                 ], startPoint: .top, endPoint: .bottom)
                 .id(tint.description)
                 .transition(.opacity)
-                .opacity(Double(max(0.35, 1 - max(0, scrollOffset) / 900)))
             }
         }
         .animation(.easeInOut(duration: 1.2), value: tint?.description)
@@ -446,8 +443,13 @@ struct SubsHomeAmbient: View {
     }
 }
 
-/// 从剧照里取一个「能当底色」的主色：按饱和度加权求色相（灰黑白不参与），
-/// 亮度统一压到深色档，保证上面的白字永远读得清。结果按地址缓存，轮播回到同一张不再计算。
+/// 从剧照里取页面底色：**底边那一条的平均色**（Apple Music 的做法），而不是全图主色——
+/// 剧照底部要无缝融进这个颜色，取别处的颜色就会在交界处看出一道色差。
+///
+/// - 只取屏幕上真正露出来的部分：Hero 是竖向大区域，横向剧照按高度铺满、左右裁掉，
+///   所以横向只取中间 45%，纵向取最底下 12%；
+/// - 亮度按 Hero 底部压暗后的观感换算（剧照底部本来就在渐隐里，交界处自然过渡），
+///   封顶 0.5，白字永远读得清；饱和度略提，避免发闷。结果按地址缓存，轮播回到同一张不再计算。
 @MainActor
 enum SubsHomeAmbientColor {
     private static var cache: [URL: Color] = [:]
@@ -456,14 +458,14 @@ enum SubsHomeAmbientColor {
         if let cached = cache[url] { return cached }
         // 与 Hero 显示同一个地址：命中 Nuke 的内存 / 磁盘缓存，不会重复下载
         guard let image = try? await ImagePipeline.shared.image(for: url) else { return nil }
-        let color = await Task.detached(priority: .utility) { dominant(of: image) }.value
+        let color = await Task.detached(priority: .utility) { bottomEdge(of: image) }.value
         cache[url] = color
         return color
     }
 
-    /// 缩到 24×24 取样：每个像素按「饱和度² ×（亮度 + 0.25）」加权，色相按单位圆求平均（避免红色 0/1 两端相消）
-    nonisolated static func dominant(of image: UIImage) -> Color {
-        let side = 24
+    /// 缩到 48×48 后取底部 6 行 × 中间 22 列求平均，再换算成页面底色
+    nonisolated static func bottomEdge(of image: UIImage) -> Color {
+        let side = 48
         guard let cgImage = image.cgImage,
               let context = CGContext(
                   data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
@@ -474,31 +476,30 @@ enum SubsHomeAmbientColor {
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: side, height: side))
         guard let data = context.data?.bindMemory(to: UInt8.self, capacity: side * side * 4) else { return fallback }
 
-        var x = 0.0, y = 0.0, saturation = 0.0, weightSum = 0.0
-        for index in 0 ..< side * side {
-            let r = Double(data[index * 4]) / 255, g = Double(data[index * 4 + 1]) / 255, b = Double(data[index * 4 + 2]) / 255
-            let maxC = max(r, g, b), minC = min(r, g, b)
-            let value = maxC
-            let delta = maxC - minC
-            guard value > 0.12, delta > 0.04 else { continue }
-            let s = delta / maxC
-            var hue: Double
-            if maxC == r { hue = (g - b) / delta } else if maxC == g { hue = 2 + (b - r) / delta } else { hue = 4 + (r - g) / delta }
-            hue /= 6
-            if hue < 0 { hue += 1 }
-            let weight = s * s * (value + 0.25)
-            x += cos(hue * 2 * .pi) * weight
-            y += sin(hue * 2 * .pi) * weight
-            saturation += s * weight
-            weightSum += weight
+        // 位图内存按行自上而下：最后 6 行就是图片底边
+        let rows = (side - 6) ..< side
+        let columns = (side - 22) / 2 ..< (side + 22) / 2
+        var r = 0.0, g = 0.0, b = 0.0, count = 0.0
+        for row in rows {
+            for column in columns {
+                let index = (row * side + column) * 4
+                r += Double(data[index]); g += Double(data[index + 1]); b += Double(data[index + 2])
+                count += 1
+            }
         }
-        guard weightSum > 2 else { return fallback }
-        var hue = atan2(y, x) / (2 * .pi)
-        if hue < 0 { hue += 1 }
-        let meanSaturation = saturation / weightSum
-        return Color(hue: hue, saturation: min(0.72, max(0.28, meanSaturation * 1.1)), brightness: 0.44)
+        guard count > 0 else { return fallback }
+        let edge = UIColor(red: r / count / 255, green: g / count / 255, blue: b / count / 255, alpha: 1)
+        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+        edge.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        // 色相保持剧照原样；亮度按 Hero 底部压暗后的观感换算并封顶 0.5（白字读得清），
+        // 饱和度略提一档——压暗后的颜色会发闷，Apple Music 的底色是「亮而不刺眼」的那一档
+        return Color(
+            hue: hue,
+            saturation: min(1, saturation * 1.15),
+            brightness: max(0.08, min(0.5, brightness * 0.72))
+        )
     }
 
-    /// 灰调剧照（黑白片、夜景）：冷银灰，与 App 的银色强调色同一家族
-    nonisolated static let fallback = Color(hue: 0.61, saturation: 0.14, brightness: 0.36)
+    /// 取不到图时的底色：冷银灰，与 App 的银色强调色同一家族
+    nonisolated static let fallback = Color(hue: 0.61, saturation: 0.14, brightness: 0.2)
 }
