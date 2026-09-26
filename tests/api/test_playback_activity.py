@@ -438,6 +438,26 @@ async def _seed_movie_in_library(
         return movie.id, library.id
 
 
+async def test_ios_app_progress_is_labelled_as_ios_client(client: TestClient) -> None:
+    """原生 iOS App 与网页共用上报接口：按 User-Agent 认出来，活动页记成
+    「MovieClaw iOS · iPhone · iOS 26.0」并带 App 版本，而不是「MovieClaw Web · 浏览器」。"""
+    movie_id, _ = await _seed_movie_in_library(title="盗梦空间", tmdb_id=27205, library_name="电影")
+    ua = {
+        "User-Agent": "MovieClaw-iOS/0.1.0 (iPhone; iOS 26.0; build 7) CFNetwork/3860 Darwin/26.0.0"
+    }
+    resp = client.post(
+        "/api/v1/playback/progress",
+        json={"media_item_id": movie_id, "event": "start", "device_id": "ios-abc"},
+        headers=ua,
+    )
+    assert resp.status_code == 200, resp.text
+
+    live = client.get("/api/v1/playback/activity").json()["data"]["sessions"][0]
+    assert live["client"] == "MovieClaw iOS"
+    assert live["device_name"] == "iPhone · iOS 26.0"
+    assert live["client_version"] == "0.1.0"
+
+
 async def test_web_player_progress_feeds_live_session(client: TestClient) -> None:
     """网页播放器的上报走与 Jellyfin 同一条服务：开始后立刻出现在「正在播放」，
     带浏览器推导的设备名、不可注销；停止后从实时视图消失、留在播放记录。"""
