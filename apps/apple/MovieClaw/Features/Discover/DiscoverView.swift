@@ -351,6 +351,9 @@ final class DiscoverFeed {
 /// Hero 大横幅：精选影片每 8 秒自动轮播，左右滑动手动切换（手动切换后重新计时），右下圆点指示。
 /// 整块点按进详情；订阅键与海报卡一致（已订阅切成状态键，打开订阅弹层的管理态）。
 struct DiscoverHero: View {
+    /// Hero 高度（pt，从屏幕物理顶边算起）：固定 520，约占 iPhone 屏高六成（用户拍板，原先 440）
+    static let height: CGFloat = 520
+
     let items: [DiscoverPosterItem]
     @State private var index = 0
     @Environment(\.scenePhase) private var scenePhase
@@ -363,7 +366,7 @@ struct DiscoverHero: View {
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
-        .containerRelativeFrame(.vertical) { height, _ in max(height * 0.62, 440) }
+        .frame(height: DiscoverHero.height)
         .overlay(alignment: .bottomTrailing) {
             if items.count > 1 {
                 HStack(spacing: 6) {
@@ -404,7 +407,7 @@ private struct DiscoverHeroSlide: View {
         let sub = SubscriptionIndex.shared.subscription(for: item)
         ZStack(alignment: .bottomLeading) {
             Color.clear
-                .overlay { RemoteImage(url: api.image(item.backdropUrl ?? item.posterUrl)) }
+                .overlay { RemoteImage(url: api.image(Self.fullResolution(item.backdropUrl) ?? item.posterUrl)) }
                 .clipped()
                 .mask(LinearGradient(stops: [.init(color: .black, location: 0.55), .init(color: .black.opacity(0.6), location: 0.78), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
             LinearGradient(colors: [Self.shade.opacity(0.55), .clear], startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.25))
@@ -457,6 +460,12 @@ private struct DiscoverHeroSlide: View {
         .accessibilityLabel("查看《\(item.title)》详情")
     }
 
+    /// TMDB 剧照换原始尺寸（3840×2160，约 400KB）：发现接口给的是 w1280（1280×720），Hero 要把 16:9 横图
+    /// 放大裁切铺满竖向大区域（3 倍屏上约需 2400～3000 像素宽），1280 的图被拉伸发糊；原图到 720pt 高都不用放大
+    static func fullResolution(_ raw: String?) -> String? {
+        raw?.replacingOccurrences(of: "image.tmdb.org/t/p/w1280/", with: "image.tmdb.org/t/p/original/")
+    }
+
     private var meta: some View {
         HStack(spacing: 10) {
             if item.rating > 0 {
@@ -500,7 +509,7 @@ private struct HeroButtonStyle: PrimitiveButtonStyle {
 struct DiscoverHeroSkeleton: View {
     var body: some View {
         DiscoverSkeletonBlock(cornerRadius: 0)
-            .containerRelativeFrame(.vertical) { height, _ in max(height * 0.62, 440) }
+            .frame(height: DiscoverHero.height)
             .accessibilityLabel("发现页加载中")
     }
 }
