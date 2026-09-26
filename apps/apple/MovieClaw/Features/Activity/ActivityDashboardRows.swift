@@ -155,12 +155,15 @@ struct ActivityBoostSummaryRow: View {
 
 // MARK: - 最近播放 / 观看统计 / 最近完成
 
-/// 最近播放一行：小海报 · 片名 / 成员 · 设备 · 看到哪 · 右侧相对时间
+/// 最近播放一行：小海报 · 片名 / 成员 · 设备 · 右侧上下两行「相对时间 / 看到哪」。
+/// 观看进度放右列且不截断：设备名（Jellyfin 客户端常带长长的型号与系统版本）只截断它自己那一行，
+/// 不会再把「看到 42%」挤没。
 struct ActivityRecentPlayRow: View {
     let entry: API.PlaybackLogEntryView
     @Environment(\.api) private var api
 
     var body: some View {
+        let playing = entry.endedAt == nil
         HStack(spacing: 12) {
             RemoteImage(url: api.image(entry.media.posterUrl, .posterCard), placeholderSymbol: "film")
                 .frame(width: 34, height: 50)
@@ -168,14 +171,24 @@ struct ActivityRecentPlayRow: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.1)))
             VStack(alignment: .leading, spacing: 2) {
                 title.font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text).lineLimit(1)
-                Text(WatchFormat.metaLine([entry.memberName, entry.deviceName.isEmpty ? entry.client : entry.deviceName, outcome]))
+                Text(WatchFormat.metaLine([entry.memberName, entry.deviceName.isEmpty ? entry.client : entry.deviceName]))
                     .font(.footnote).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
             Spacer(minLength: 8)
-            Text(entry.endedAt == nil ? "播放中" : ActivityFormat.relative(entry.startedAt))
-                .font(.footnote)
-                .foregroundStyle(entry.endedAt == nil ? Theme.success : Theme.textFaint)
-                .fixedSize()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(playing ? "播放中" : ActivityFormat.relative(entry.startedAt))
+                    .foregroundStyle(playing ? Theme.success : Theme.textFaint)
+                if !playing {
+                    if entry.completed {
+                        Label("看完", systemImage: "checkmark").labelStyle(.titleAndIcon).foregroundStyle(Theme.success)
+                    } else if let percent = entry.progressPercent {
+                        Text("看到 \(percent)%").foregroundStyle(Theme.textMuted)
+                    }
+                }
+            }
+            .font(.footnote)
+            .monospacedDigit()
+            .fixedSize()
         }
     }
 
@@ -185,12 +198,6 @@ struct ActivityRecentPlayRow: View {
             text = text + Text(" \(unit)").fontWeight(.regular).foregroundStyle(Theme.textMuted)
         }
         return text
-    }
-
-    private var outcome: String? {
-        guard entry.endedAt != nil else { return nil }
-        if entry.completed { return "看完" }
-        return entry.progressPercent.map { "看到 \($0)%" }
     }
 }
 
