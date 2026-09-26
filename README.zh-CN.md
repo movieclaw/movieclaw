@@ -537,5 +537,5 @@ v0.27.0 之后发布的版本采用 [MovieClaw 许可证](LICENSE)：在 Apache 
 - **商业使用须经书面授权**，包括以 SaaS 或托管服务形式对外提供、销售或预装进
   NAS 等硬件、收费代部署，以及企业使用。
 
-v0.27.0 及之前的版本仍适用 MIT 许可证。商业授权请通过
-[Issue](https://github.com/movieclaw/movieclaw/issues) 联系。
+v0.27.0 及之前的版本仍适用 MIT 许可证。商业授权请发送邮件至
+[service@movieclaw.io](mailto:service@movieclaw.io)。

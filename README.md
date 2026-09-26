@@ -621,4 +621,4 @@ the Apache License 2.0 with additional conditions.
   devices, paid deployment services, and use by companies.
 
 v0.27.0 and earlier releases remain under the MIT License. For commercial
-licensing, please contact us via [issues](https://github.com/movieclaw/movieclaw/issues).
+licensing, please email [service@movieclaw.io](mailto:service@movieclaw.io).
