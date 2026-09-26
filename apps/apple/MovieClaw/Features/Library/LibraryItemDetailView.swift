@@ -11,7 +11,8 @@ import SwiftUI
 /// - 收藏针对整部作品，已看针对当前单元（电影本身 / 选中的那一集），都走 `POST /playback/marks`；
 /// - 刮削进行中每 2 秒、章节图生成中每 3 秒（最多 20 次）重拉详情；
 /// - ⋯ 菜单：搜索资源 / 加入合集 / 分享 / 洗版 / 修正识别 / 刷新元数据 / 重新生成章节 / 更换图片 /
-///   转移到其他库 / 删除影片 / 清除观看记录——对话框各自是独立的 sheet 组件。
+///   转移到其他库 / 删除影片 / 清除观看记录——对话框各自是独立的 sheet 组件；
+/// - 页面底色取剧照露出部分底边的颜色，剧照底部渐变进去、整页铺满（同 Apple Music 专辑页，见 `HeroEdgeColor`）。
 struct LibraryItemDetailView: View {
     let libraryId: Int
     let itemId: Int
@@ -44,6 +45,10 @@ struct LibraryItemDetailView: View {
     /// 标题区滚出视野后才在导航栏显示片名、恢复顶部的滚动边缘效果（R-6，同发现详情页）：
     /// Hero 全出血到状态栏，返回 / ⋯ 直接浮在剧照上
     @State private var titleVisible = false
+    /// 剧照显示区域的尺寸：底边取色按它算露出的那块
+    @State private var heroSize: CGSize = .zero
+    /// 页面底色（剧照底边的颜色）；取到之前为 nil，页面是黑底
+    @State private var edgeTint: Color?
 
     /// 分集区当前选中的那一集（及其文件）
     struct SelectedEpisode: Equatable {
@@ -88,7 +93,8 @@ struct LibraryItemDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .appBackground() // 氛围页：自带沉浸大图，不铺全站蒙版（Web isHomeRoute）
+        // 氛围页：自带沉浸大图，不铺全站蒙版（Web isHomeRoute）；底色取剧照底边的颜色
+        .heroEdgeBackground(edgeTint)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -227,24 +233,41 @@ struct LibraryItemDetailView: View {
         }
         .ignoresSafeArea(edges: .top)
         .scrollEdgeEffectHidden(heroURL != nil && !titleVisible, for: .top)
+        .task(id: edgeKey(heroURL)) {
+            guard let heroURL, heroSize.height > 0 else { return }
+            if let color = await HeroEdgeColor.color(for: heroURL, containerAspect: heroSize.width / heroSize.height),
+               !Task.isCancelled {
+                edgeTint = color
+            }
+        }
         .refreshable { await reload() }
     }
 
-    /// 手机 Hero：剧照撑满宽度从状态栏底下铺起，顶部一抹暗托住返回键，底部压暗到与下方黑底接上
+    /// 底边取色的任务标识：剧照地址或显示比例变了才重算
+    private func edgeKey(_ url: URL?) -> String {
+        guard let url, heroSize.height > 0 else { return "" }
+        return "\(url.absoluteString)#\(Int((heroSize.width / heroSize.height * 100).rounded()))"
+    }
+
+    /// 手机 Hero：剧照撑满宽度从状态栏底下铺起，顶部一抹暗托住返回键，底部渐变进页面底色
+    /// （剧照底边的颜色，见 `HeroEdgeColor`），与下方整页无缝接上
     private func hero(_ url: URL) -> some View {
         let height = min(UIScreen.main.bounds.width * 1.15, UIScreen.main.bounds.height * 0.62)
+        let pageTint = edgeTint ?? Theme.background
         return Color.clear
             .frame(maxWidth: .infinity)
             .frame(height: height)
             .overlay { RemoteImage(url: url) }
             .clipped()
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { heroSize = $0 }
             .overlay(alignment: .top) {
                 LinearGradient(colors: [.black.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom).frame(height: 112)
             }
             .overlay(alignment: .bottom) {
-                LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black.opacity(0.55), location: 0.5), .init(color: Theme.background, location: 1)],
+                LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: pageTint.opacity(0.55), location: 0.5), .init(color: pageTint, location: 1)],
                                startPoint: .top, endPoint: .bottom)
                     .frame(height: height * 0.55)
+                    .animation(.easeInOut(duration: 0.5), value: edgeTint?.description)
             }
             .accessibilityHidden(true)
     }

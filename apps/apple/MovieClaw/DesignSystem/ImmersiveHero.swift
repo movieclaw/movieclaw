@@ -218,3 +218,84 @@ enum ImmersiveHeroAmbientColor {
     /// 灰调剧照（黑白片、夜景）：冷银灰，与 App 的银色强调色同一家族
     nonisolated static let fallback = Color(hue: 0.61, saturation: 0.14, brightness: 0.36)
 }
+
+// MARK: - 单部作品详情页：底边铺色（同 Apple Music 专辑页）
+
+/// 详情页的页面底色：取顶部大图**屏幕上露出部分的底边**那一条的平均色，大图底部渐变进这个颜色，
+/// 下面整页铺满（同 Apple Music 专辑页，2026-09-27 用户要求）。单部作品的页面不轮播，整页变色不晃眼；
+/// 首页 / 发现页的轮播 Hero 仍用 `ImmersiveHeroAmbient`（主色、只铺上半截）。
+///
+/// - 按显示方式算露出区域：大图是「等比填满、居中裁切」，横版剧照在竖向大区域里左右被裁，
+///   只有海报时上下被裁——取的是裁切后那块画面的底边，而不是原图的底边，交界处才对得上；
+/// - 色相取原样、饱和度略提，亮度封顶 0.34：详情页一屏全是白字与浅灰小字（音轨、字幕这些标签），
+///   底色再亮小字就读不清（0.42 时底边偏白的剧照铺出来的灰紫已经吃力）；
+///   本来就暗的底边（夜景、黑边）保持原样，页面就是近黑；
+/// - 结果按「地址 + 显示比例」缓存，返回同一部作品不再计算。
+enum HeroEdgeColor {
+    @MainActor private static var cache: [String: Color] = [:]
+
+    /// `containerAspect` 为大图显示区域的宽 / 高
+    @MainActor
+    static func color(for url: URL, containerAspect: CGFloat) async -> Color? {
+        guard containerAspect > 0 else { return nil }
+        let key = "\(url.absoluteString)#\(Int((containerAspect * 100).rounded()))"
+        if let hit = cache[key] { return hit }
+        // 与大图显示同一个地址：命中 Nuke 的内存 / 磁盘缓存，不会重复下载
+        guard let image = try? await ImagePipeline.shared.image(for: url) else { return nil }
+        guard let color = await Task.detached(priority: .utility, operation: { pageColor(of: image, containerAspect: containerAspect) }).value
+        else { return nil }
+        cache[key] = color
+        return color
+    }
+
+    /// 露出区域最底下 6% 那一条的平均色，换算成页面底色
+    nonisolated static func pageColor(of image: UIImage, containerAspect: CGFloat) -> Color? {
+        guard let cgImage = image.cgImage else { return nil }
+        let width = CGFloat(cgImage.width), height = CGFloat(cgImage.height)
+        guard width > 0, height > 0 else { return nil }
+        // 等比填满、居中裁切后露出的那块（像素坐标，原点在左上）
+        let visible: CGRect
+        if width / height > containerAspect {
+            let shown = height * containerAspect
+            visible = CGRect(x: (width - shown) / 2, y: 0, width: shown, height: height)
+        } else {
+            let shown = width / containerAspect
+            visible = CGRect(x: 0, y: (height - shown) / 2, width: width, height: shown)
+        }
+        let bandHeight = max(1, visible.height * 0.06)
+        let band = CGRect(x: visible.minX, y: visible.maxY - bandHeight, width: visible.width, height: bandHeight)
+            .integral
+            .intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        guard !band.isEmpty, let strip = cgImage.cropping(to: band) else { return nil }
+
+        let columns = 24, rows = 4
+        guard let context = CGContext(
+            data: nil, width: columns, height: rows, bitsPerComponent: 8, bytesPerRow: columns * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(strip, in: CGRect(x: 0, y: 0, width: columns, height: rows))
+        guard let data = context.data?.bindMemory(to: UInt8.self, capacity: columns * rows * 4) else { return nil }
+        var r = 0.0, g = 0.0, b = 0.0
+        for index in 0 ..< columns * rows {
+            r += Double(data[index * 4]); g += Double(data[index * 4 + 1]); b += Double(data[index * 4 + 2])
+        }
+        let count = Double(columns * rows) * 255
+        let edge = UIColor(red: r / count, green: g / count, blue: b / count, alpha: 1)
+        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+        edge.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        return Color(hue: hue, saturation: min(1, saturation * 1.1), brightness: min(0.34, brightness))
+    }
+}
+
+extension View {
+    /// 详情页底色：有底边色就整页铺它（取到之前是黑的，取到后 0.5 秒淡入），没有就是黑底
+    func heroEdgeBackground(_ tint: Color?) -> some View {
+        scrollContentBackground(.hidden)
+            .background {
+                (tint ?? Theme.background)
+                    .animation(.easeInOut(duration: 0.5), value: tint?.description)
+                    .ignoresSafeArea()
+            }
+    }
+}

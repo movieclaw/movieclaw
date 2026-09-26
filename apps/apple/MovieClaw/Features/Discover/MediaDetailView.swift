@@ -7,6 +7,7 @@ import SwiftUI
 /// 版式自上而下：沉浸剧照 Hero → 标题与元信息 → 在库条 → 订阅 / 搜索资源 → 简介（4 行折叠）→
 /// 演职员 → 预告片 → 剧照与海报（灯箱看图）→ 系列 → 相似推荐 → 相关链接。
 /// 网页剧照灯箱的「设为背景」App 不做（App 没有背景图设定，用户决定）。
+/// 页面底色取大图露出部分底边的颜色，大图底部渐变进去、整页铺满（同 Apple Music 专辑页，见 `HeroEdgeColor`）。
 ///
 /// 按钮规则同 Web：已在库的电影收起「订阅」与「搜索资源」（已订阅时仍显示订阅状态键）；
 /// 订阅键未订阅时打开订阅弹层，已订阅时显示「已订阅 · 状态」、点它同样打开订阅弹层（由弹层管理态接手）。
@@ -39,6 +40,10 @@ struct MediaDetailView: View {
     @State private var topInset: CGFloat = 0
     /// 页面宽度（逻辑点）：判断沉浸大图是否值得取原图
     @State private var pageWidth: CGFloat = 0
+    /// 大图显示区域的尺寸：底边取色按它算露出的那块
+    @State private var heroSize: CGSize = .zero
+    /// 页面底色（大图底边的颜色）；取到之前为 nil，页面是黑底
+    @State private var edgeTint: Color?
 
     init(titleRef: String) {
         self.titleRef = titleRef
@@ -75,7 +80,8 @@ struct MediaDetailView: View {
                 content(detail)
             }
         }
-        .appBackground() // 氛围页：自带沉浸大图，不铺全站蒙版（Web isHomeRoute）
+        // 氛围页：自带沉浸大图，不铺全站蒙版（Web isHomeRoute）；底色取大图底边的颜色
+        .heroEdgeBackground(edgeTint)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -115,16 +121,20 @@ struct MediaDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 if let heroURL {
+                    let pageTint = edgeTint ?? Theme.background
                     Color.clear
                         .containerRelativeFrame(.vertical) { height, _ in min(height * 0.62, 460) }
                         .overlay { RemoteImage(url: heroURL) }
                         .clipped()
+                        .onGeometryChange(for: CGSize.self) { $0.size } action: { heroSize = $0 }
                         .overlay(alignment: .top) {
                             LinearGradient(colors: [.black.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom).frame(height: 112)
                         }
+                        // 大图底部渐变进页面底色（大图底边的颜色），无缝接上下面整页
                         .overlay(alignment: .bottom) {
-                            LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: Theme.background.opacity(0.55), location: 0.5), .init(color: Theme.background, location: 1)], startPoint: .top, endPoint: .bottom)
+                            LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: pageTint.opacity(0.55), location: 0.5), .init(color: pageTint, location: 1)], startPoint: .top, endPoint: .bottom)
                                 .frame(height: 260)
+                                .animation(.easeInOut(duration: 0.5), value: edgeTint?.description)
                         }
                         .accessibilityHidden(true)
                 }
@@ -165,6 +175,13 @@ struct MediaDetailView: View {
         .scrollEdgeEffectHidden(heroURL != nil && !titleVisible, for: .top)
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { topInset = $0 }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
+        .task(id: edgeKey(heroURL)) {
+            guard let heroURL, heroSize.height > 0 else { return }
+            if let color = await HeroEdgeColor.color(for: heroURL, containerAspect: heroSize.width / heroSize.height),
+               !Task.isCancelled {
+                edgeTint = color
+            }
+        }
         .refreshable { await load() }
         .accessibilityIdentifier("media-detail")
     }
@@ -172,6 +189,12 @@ struct MediaDetailView: View {
     /// 沉浸大图：剧照（w1280），没有剧照时用海报兜底（豆瓣条目没有横版剧照）。
     /// 只有物理宽度超过 1280 像素的屏幕才换后端给的原图（同 Web `useWantsOriginalImage`：
     /// 手机 393pt × 3 = 1179 像素，w1280 已 1:1 覆盖，原图只是白白多下 1–3 MB）。
+    /// 底边取色的任务标识：大图地址或显示比例变了才重算（首屏先用 w1280、宽屏换原图时会变）
+    private func edgeKey(_ url: URL?) -> String {
+        guard let url, heroSize.height > 0 else { return "" }
+        return "\(url.absoluteString)#\(Int((heroSize.width / heroSize.height * 100).rounded()))"
+    }
+
     private func heroImage(_ detail: API.DiscoveredTitleDetailsView) -> URL? {
         let wantsOriginal = pageWidth * displayScale > 1280
         if wantsOriginal, detail.title.provider != "douban", let original = detail.backdropOriginalUrl {
