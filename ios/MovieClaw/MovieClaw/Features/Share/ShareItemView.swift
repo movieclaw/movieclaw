@@ -421,6 +421,7 @@ private struct ShareSeasonEpisodes: View {
                     .lineLimit(1)
             }
             .frame(width: 200)
+            .contentShape(.rect)
             .opacity(episode.owned ? 1 : 0.45)
         }
         .buttonStyle(.plain)

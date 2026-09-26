@@ -173,6 +173,7 @@ struct ManageRootsEditor: View {
                         .lineLimit(1)
                         .truncationMode(.head)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .expandedHitArea(vertical: 10)
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("点击更改：从当前路径开始重新选择目录")

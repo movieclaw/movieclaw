@@ -389,6 +389,8 @@ private struct AgentLibraryItemCard: View {
                         }
                     }
                     .clipShape(.rect(cornerRadius: 16))
+                    // 底是 Color.clear：无图时只剩一行淡字，整张卡都得显式声明可点
+                    .contentShape(.rect(cornerRadius: 16))
                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.08)))
                     .shadow(color: .black.opacity(0.38), radius: 14, y: 10)
             }

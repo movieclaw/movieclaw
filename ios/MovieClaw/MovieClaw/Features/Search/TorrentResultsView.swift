@@ -173,6 +173,7 @@ struct TorrentResultsView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(.black.opacity(0.3), in: .capsule)
+            .expandedHitArea(vertical: 9)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("torrent-sites")
@@ -267,6 +268,7 @@ struct TorrentResultsView: View {
                         .frame(width: 30, height: 26)
                         .background(model.view == view ? Color.white.opacity(0.16) : .clear, in: .capsule)
                         .foregroundStyle(model.view == view ? Theme.text : Theme.textMuted)
+                        .contentShape(.capsule)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(view.label)
@@ -531,6 +533,7 @@ private struct TorrentGroupSection: View {
             }
             .padding(.leading, 16)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(.rect)
     }
 }

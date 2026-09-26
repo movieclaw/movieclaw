@@ -141,6 +141,7 @@ struct AgentConversationView: View {
                         .background(Color(red: 0x23 / 255, green: 0x23 / 255, blue: 0x25 / 255), in: .circle)
                         .overlay(Circle().strokeBorder(Color.white.opacity(0.1)))
                         .shadow(color: .black.opacity(0.4), radius: 8, y: 3)
+                        .contentShape(Circle().inset(by: -4))
                 }
                 .buttonStyle(.plain)
                 .padding(.bottom, 10)

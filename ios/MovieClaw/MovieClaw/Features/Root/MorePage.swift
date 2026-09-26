@@ -175,7 +175,7 @@ struct MorePage: View {
                     .font(.body.weight(.semibold))
                     .foregroundStyle(Theme.textMuted)
                     .frame(width: 32, height: 32)
-                    .contentShape(Rectangle())
+                    .contentShape(Rectangle().inset(by: -6))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("会话操作")

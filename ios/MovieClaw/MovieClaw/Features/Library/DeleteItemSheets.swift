@@ -382,7 +382,8 @@ private struct AcknowledgeToggle: View {
                     .foregroundStyle(.white.opacity(0.8))
                     .multilineTextAlignment(.leading)
             }
-            .contentShape(.rect)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .expandedHitArea(vertical: 10)
         }
         .buttonStyle(.plain)
     }

@@ -173,6 +173,7 @@ struct AgentComposer: View {
                             draft.skills.removeAll { $0 == name }
                         } label: {
                             Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).frame(width: 18, height: 18)
+                                .contentShape(Rectangle().inset(by: -6))
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(Theme.textFaint)
@@ -197,6 +198,7 @@ struct AgentComposer: View {
                             draft.images.removeAll { $0.id == image.id }
                         } label: {
                             Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).frame(width: 20, height: 20)
+                                .contentShape(Rectangle().inset(by: -6))
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(Theme.textFaint)
@@ -723,10 +725,13 @@ struct AgentThinkingSlider: View {
                 Text(AgentThinking.label(value)).font(.system(size: 16, weight: .medium)).foregroundStyle(Theme.text)
                 Spacer()
                 if value != nil {
-                    Button("恢复默认") { onChange(nil) }
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.textFaint)
-                        .buttonStyle(.plain)
+                    Button { onChange(nil) } label: {
+                        Text("恢复默认")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.textFaint)
+                            .expandedHitArea(vertical: 14)
+                    }
+                    .buttonStyle(.plain)
                 } else {
                     Text("由模型自行决定").font(.system(size: 13)).foregroundStyle(Theme.textFaint)
                 }

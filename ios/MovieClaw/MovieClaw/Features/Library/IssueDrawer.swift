@@ -479,6 +479,7 @@ private struct IssueStatusBadge: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(meta.warn ? Theme.warning.opacity(0.16) : Color.white.opacity(0.07), in: .rect(cornerRadius: 6))
+                .expandedHitArea(vertical: 12)
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showsReason) {
@@ -750,10 +751,13 @@ private struct IssueIgnoredGroupRow: View {
                     .foregroundStyle(Theme.textFaint)
                 Spacer(minLength: 0)
                 if group.fileCount > 1 {
-                    Button(expanded ? "收起文件" : "查看文件") { expanded.toggle() }
-                        .font(.caption)
-                        .foregroundStyle(Theme.textMuted)
-                        .buttonStyle(.plain)
+                    Button { expanded.toggle() } label: {
+                        Text(expanded ? "收起文件" : "查看文件")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textMuted)
+                            .expandedHitArea(vertical: 14)
+                    }
+                    .buttonStyle(.plain)
                 }
                 Button("恢复") { Task { await restore() } }
                     .buttonStyle(.glass)

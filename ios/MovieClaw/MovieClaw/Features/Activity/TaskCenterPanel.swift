@@ -82,9 +82,12 @@ struct TaskCenterPanel: View {
         let message = store.downloadsError
             ?? sources.map { "「\($0.name)」\($0.message.flatMap { $0.isEmpty ? nil : $0 } ?? "当前不可用")" }.joined(separator: "；")
         return ActivityWarningBanner(message: message) {
-            Button("检查设置") { router.open(.settingsSection(.downloaders)) }
-                .font(.subheadline.weight(.semibold))
-                .buttonStyle(.plain)
+            Button { router.open(.settingsSection(.downloaders)) } label: {
+                Text("检查设置")
+                    .font(.subheadline.weight(.semibold))
+                    .expandedHitArea(vertical: 12)
+            }
+            .buttonStyle(.plain)
         }
         .padding(.top, 16)
     }
@@ -131,12 +134,15 @@ struct TaskCenterPanel: View {
                 // 故障常常成批（一次扫描几十个字幕任务一起失败），逐条忽略是灾难；
                 // 整体动作压成次要文字按钮，不跟每张卡自己的「重试」抢视觉
                 if canDismissAll {
-                    Button(bulkDismissing ? "正在忽略…" : "全部忽略") { dismissAllFailed() }
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Theme.textFaint)
-                        .buttonStyle(.plain)
-                        .disabled(bulkDismissing)
-                        .accessibilityIdentifier("dismiss-all-failed")
+                    Button { dismissAllFailed() } label: {
+                        Text(bulkDismissing ? "正在忽略…" : "全部忽略")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Theme.textFaint)
+                            .expandedHitArea(vertical: 14)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(bulkDismissing)
+                    .accessibilityIdentifier("dismiss-all-failed")
                 }
             }
             VStack(spacing: 10) {
@@ -371,12 +377,15 @@ struct ActiveJobFeedItem: View {
                 }
                 Spacer(minLength: 0)
                 if job.status != "cancelling" {
-                    Button(cancelling ? "正在取消…" : "取消任务", action: onCancel)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Theme.textFaint)
-                        .buttonStyle(.plain)
-                        .disabled(cancelling)
-                        .accessibilityIdentifier("cancel-job-\(job.id)")
+                    Button(action: onCancel) {
+                        Text(cancelling ? "正在取消…" : "取消任务")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Theme.textFaint)
+                            .expandedHitArea(vertical: 14)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(cancelling)
+                    .accessibilityIdentifier("cancel-job-\(job.id)")
                 }
             }
             if !job.progress.message.isEmpty {
@@ -511,15 +520,23 @@ struct HistoricalJobFeedItem: View {
             }
             Spacer(minLength: 0)
             if dismissed {
-                Button(undismissing ? "撤销中…" : "撤销忽略", action: onUndismiss)
-                    .font(.caption.weight(.medium)).foregroundStyle(Theme.textFaint).buttonStyle(.plain)
-                    .disabled(undismissing)
-                    .accessibilityIdentifier("undismiss-\(job.id)")
+                Button(action: onUndismiss) {
+                    Text(undismissing ? "撤销中…" : "撤销忽略")
+                        .font(.caption.weight(.medium)).foregroundStyle(Theme.textFaint)
+                        .expandedHitArea(vertical: 14)
+                }
+                .buttonStyle(.plain)
+                .disabled(undismissing)
+                .accessibilityIdentifier("undismiss-\(job.id)")
             }
             if job.status == "cancelled", !TaskCenter.isSystemCancelled(job) {
-                Button(retrying ? "重新执行中…" : "重新执行", action: onRetry)
-                    .font(.caption.weight(.medium)).foregroundStyle(Theme.textFaint).buttonStyle(.plain)
-                    .disabled(retrying)
+                Button(action: onRetry) {
+                    Text(retrying ? "重新执行中…" : "重新执行")
+                        .font(.caption.weight(.medium)).foregroundStyle(Theme.textFaint)
+                        .expandedHitArea(vertical: 14)
+                }
+                .buttonStyle(.plain)
+                .disabled(retrying)
             }
         }
         .padding(.vertical, 4)
@@ -548,7 +565,7 @@ struct IngestHistoryFiles: View {
                     .font(.caption)
                     .foregroundStyle(Theme.textFaint)
                     .padding(.vertical, 3)
-                    .contentShape(.rect)
+                    .expandedHitArea(vertical: 11)
                 }
                 .buttonStyle(.plain)
                 if open {

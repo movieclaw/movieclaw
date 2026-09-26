@@ -517,6 +517,7 @@ struct LibraryItemDetailView: View {
             }
         }
         .frame(width: 96)
+        .contentShape(.rect)
     }
 
     @ViewBuilder
@@ -861,6 +862,7 @@ struct ExpandablePlot: View {
                     }
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.white.opacity(0.7))
+                    .expandedHitArea(vertical: 12)
                 }
                 .buttonStyle(.plain)
             }
@@ -1046,6 +1048,7 @@ private struct EpisodeCard: View {
                     .lineLimit(1)
             }
             .frame(width: 200)
+            .contentShape(.rect)
             .opacity(episode.owned ? 1 : 0.45)
             .saturation(episode.owned ? 1 : 0.5)
         }

@@ -167,7 +167,12 @@ struct LibraryDetailView: View {
         // 首载与换排序分开（同收藏页）：`.task` 每次重新出现都会重跑，把 reset 放在里面会让
         // 从条目详情返回时整面墙清空、跳回墙首（Web 这里是快照恢复 + 整窗对账，2026-09-07 用户反馈过）。
         // 返回时的整窗对账由上面的 reload（pager.refresh）负责
-        .task { if pager.items == nil { await reloadWall() } }
+        .task {
+            // 还没有墙：首载（或上次首载失败、重新出现时再试）；正在载的那一轮不重复发起
+            guard pager.items == nil, wallTask == nil || pager.failed != nil else { return }
+            wallTask?.cancel()
+            wallTask = Task { await reloadWall() }
+        }
         .onChange(of: wallKey) {
             // 换排序 / 筛选：图廊窗口也回墙首（同 Web galleryStart = 0）
             galleryStart = 0
@@ -807,8 +812,12 @@ struct LibraryDetailView: View {
                 return []
             }
         })
+        // 被更新的排序 / 筛选打断：这一轮的索引与询问作废（新一轮会自己做）
+        guard !Task.isCancelled else { return }
         if sort == "title" || sort == "release_date" {
-            index = (try? await api.libraryIndexFiltered(libraryId: id, filter: filter, sort: sort, order: order)) ?? []
+            let next = (try? await api.libraryIndexFiltered(libraryId: id, filter: filter, sort: sort, order: order)) ?? []
+            guard !Task.isCancelled else { return }
+            index = next
         }
         checkRecall()
     }

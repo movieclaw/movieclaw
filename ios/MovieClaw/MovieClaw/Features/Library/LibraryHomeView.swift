@@ -556,6 +556,7 @@ private struct LibraryHomeCard: View {
             .padding(.horizontal, 8)
         }
         .frame(width: 230)
+        .contentShape(.rect)
     }
 }
 
@@ -636,6 +637,7 @@ private struct UpNextCard: View {
                 }
                 .padding(.top, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
             }
             .buttonStyle(.plain)
         }

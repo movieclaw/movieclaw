@@ -306,6 +306,7 @@ struct DiscoverPosterCard: View {
                 .padding(.horizontal, 10)
                 .frame(height: 28)
                 .background(subscribed ? AnyShapeStyle(Color.white.opacity(0.18)) : AnyShapeStyle(Theme.accent), in: .capsule)
+                .contentShape(Capsule().inset(by: -8))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(subscribed ? "管理《\(item.title)》的订阅" : "\(meta.label)《\(item.title)》")

@@ -226,8 +226,9 @@ final class PlayerUITests: XCTestCase {
         tapControl(app, "player-字幕")
         XCTAssertTrue(app.buttons["subtitle-off"].waitForExistence(timeout: 5), "字幕菜单没有打开")
         shot(app, "\(shotPrefix)-subtitles")
-        tapControl(app, "player-设置")
-        XCTAssertTrue(app.buttons["engine-\(engine)"].waitForExistence(timeout: 5), "设置菜单没有打开")
+        // 点在「⋯」键的角上而不是图标正中：真机手指落点不准，只有图标笔画可点时这里会点空（真机反馈的根因）
+        tapControl(app, "player-设置", at: CGVector(dx: 0.15, dy: 0.2))
+        XCTAssertTrue(app.buttons["engine-\(engine)"].waitForExistence(timeout: 5), "设置菜单没有打开（点按钮边缘应同样生效）")
         shot(app, "\(shotPrefix)-settings")
         // 点画面空白处收起菜单
         tapEmptyArea(app, dx: 0.95, dy: 0.55)
@@ -272,11 +273,16 @@ final class PlayerUITests: XCTestCase {
 
     /// 点控制层上的按钮：控制条藏起来了就先点画面唤出（控制条 4 秒无操作自动隐藏）
     @MainActor
-    private func tapControl(_ app: XCUIApplication, _ identifier: String) {
+    /// `at`：在按钮框内的归一化落点（默认正中）；用来验证按钮整个框都可点，而不只是图标笔画
+    private func tapControl(_ app: XCUIApplication, _ identifier: String, at offset: CGVector? = nil) {
         let button = app.buttons[identifier]
         for _ in 0 ..< 3 {
             if button.waitForExistence(timeout: 1.5), button.isHittable {
-                button.tap()
+                if let offset {
+                    button.coordinate(withNormalizedOffset: offset).tap()
+                } else {
+                    button.tap()
+                }
                 return
             }
             // 控制条藏起来了：点画面唤出

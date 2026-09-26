@@ -403,6 +403,7 @@ struct MediaDetailView: View {
                                 Text(video.name).font(.subheadline).foregroundStyle(Theme.textMuted).lineLimit(1)
                             }
                             .frame(width: 240)
+                            .contentShape(.rect)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("播放预告片：\(video.name)")
@@ -534,6 +535,7 @@ struct DetailCastRow: View {
             }
         }
         .frame(width: 104)
+        .contentShape(.rect)
         if let id = person.tmdbPersonId {
             Button { router.push(.discoveredPerson(tmdbId: id)) } label: { body }
                 .buttonStyle(.plain)

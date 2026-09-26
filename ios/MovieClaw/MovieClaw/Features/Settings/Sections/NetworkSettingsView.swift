@@ -567,11 +567,15 @@ private struct ExternalAccessSections: View {
                     } else if config.webPortSource == "setting" {
                         HStack(spacing: 8) {
                             Text("应用内设置")
-                            Button("恢复默认（\(config.webPortDefault)）") {
+                            Button {
                                 portTarget = nil
                                 portPhase = .confirming
+                            } label: {
+                                Text("恢复默认（\(config.webPortDefault)）")
+                                    .underline()
+                                    .expandedHitArea(vertical: 12)
                             }
-                            .buttonStyle(.plain).underline()
+                            .buttonStyle(.plain)
                         }
                     } else if config.webPortSource == "env" {
                         Text("来自环境变量 MOVIECLAW_WEB_PORT，在此修改会覆盖它")

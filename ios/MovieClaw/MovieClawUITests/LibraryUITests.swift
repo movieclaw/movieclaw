@@ -86,6 +86,44 @@ final class LibraryUITests: XCTestCase {
         snapshot("海报墙第二页")
     }
 
+    /// 从条目详情返回单库墙：位置不动（只整窗对账），不整面重载跳回墙首（第二轮审计 N-04b-2）。
+    /// 只读：滑几屏 → 点视口中部的一格进详情 → 返回，刚才点的那一格应仍在视口里
+    @MainActor
+    func testWallKeepsPositionAfterReturningFromDetail() throws {
+        let app = launch(route: "/library")
+        let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'library-card-'")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 20))
+        let libraryId = Int(card.identifier.replacingOccurrences(of: "library-card-", with: "")) ?? 0
+        try XCTSkipIf(backend.itemCount(libraryId: libraryId) < 40, "这个库作品太少，滑不出几屏")
+        card.tap()
+        let wall = app.descendants(matching: .any)["poster-wall"]
+        XCTAssertTrue(wall.waitForExistence(timeout: 20))
+        for _ in 0 ..< 4 { app.swipeUp() }
+        sleep(1)
+        let height = app.windows.firstMatch.frame.height
+        let cells = wall.buttons.allElementsBoundByIndex
+        let top: CGFloat = height * 0.3
+        let bottom: CGFloat = height * 0.8
+        var picked: XCUIElement?
+        for cell in cells where cell.isHittable && !cell.label.isEmpty {
+            let frame: CGRect = cell.frame
+            if frame.minY > top, frame.maxY < bottom {
+                picked = cell
+                break
+            }
+        }
+        let target = try XCTUnwrap(picked, "视口中部没有可点的海报")
+        let label = target.label
+        target.tap()
+        XCTAssertTrue(app.staticTexts["item-title"].waitForExistence(timeout: 20), "应进入条目详情")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(wall.waitForExistence(timeout: 10))
+        sleep(2)
+        let again = wall.buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
+        XCTAssertTrue(again.exists && again.isHittable, "返回后刚才那一格「\(label)」不在视口里：墙被重载回了墙首")
+        snapshot("详情返回后的海报墙")
+    }
+
     /// 条目详情：收藏与标已看都落到后端，测完恢复
     @MainActor
     func testFavoriteAndPlayedMarks() {

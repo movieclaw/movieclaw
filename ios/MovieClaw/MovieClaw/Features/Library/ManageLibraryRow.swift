@@ -40,6 +40,7 @@ struct ManageLibraryRow: View {
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
+                                .expandedHitArea(vertical: 10)
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("manage-row-name-\(library.id)")
@@ -132,6 +133,7 @@ struct ManageLibraryRow: View {
                     .padding(.vertical, 3)
                     .background(color.opacity(0.1), in: .capsule)
                     .overlay(Capsule().strokeBorder(color.opacity(0.35)))
+                    .expandedHitArea(vertical: 12)
                 }
                 .buttonStyle(.plain)
                 .disabled(!library.capabilities.scraped)

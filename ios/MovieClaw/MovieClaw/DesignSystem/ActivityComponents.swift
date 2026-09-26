@@ -174,6 +174,7 @@ struct ActivityPillButton: View {
                 .padding(.vertical, 7)
                 .background(Color.white.opacity(0.05), in: .capsule)
                 .overlay(Capsule().strokeBorder(Color.white.opacity(0.12)))
+                .contentShape(Capsule().inset(by: -7))
         }
         .buttonStyle(.plain)
     }

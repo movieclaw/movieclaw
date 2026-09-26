@@ -600,6 +600,7 @@ struct AgentCodeBlock: View {
                     .frame(width: 28, height: 28)
                     .background(Color(red: 28 / 255, green: 28 / 255, blue: 32 / 255).opacity(0.9), in: .rect(cornerRadius: 7))
                     .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.white.opacity(0.08)))
+                    .contentShape(Rectangle().inset(by: -8))
             }
             .buttonStyle(.plain)
             .padding(6)

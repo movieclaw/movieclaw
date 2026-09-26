@@ -737,6 +737,7 @@ private struct ManageDupSeasonBlock: View {
                         router.push(.libraryItem(libraryId: item.library.id, itemId: media.id))
                     } label: {
                         Text(media.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text).lineLimit(1)
+                            .expandedHitArea(vertical: 10)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("dup-item-title-\(blockKey)")
@@ -861,6 +862,7 @@ private struct ManageDupFileRow: View {
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("查看「\(file.fileName)」的原始文件名与路径")

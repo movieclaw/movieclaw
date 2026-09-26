@@ -77,6 +77,7 @@ struct ManageSharesTab: View {
                             openItem(share)
                         } label: {
                             Text(share.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text).lineLimit(1)
+                                .expandedHitArea(vertical: 10)
                         }
                         .buttonStyle(.plain)
                         if share.password != nil {

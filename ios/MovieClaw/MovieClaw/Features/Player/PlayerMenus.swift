@@ -236,6 +236,7 @@ private struct StepButton: View {
                 .frame(width: 32, height: 32)
                 .background(.white.opacity(0.08), in: .rect(cornerRadius: 8))
                 .foregroundStyle(.white.opacity(0.85))
+                .contentShape(Rectangle().inset(by: -6))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)

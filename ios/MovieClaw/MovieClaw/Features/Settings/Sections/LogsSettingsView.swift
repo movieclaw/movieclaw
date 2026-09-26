@@ -292,6 +292,7 @@ private struct LogWindow: View {
                                 .foregroundStyle(filter.id == .error && count > 0 ? Color(red: 1, green: 0.54, blue: 0.54) : (active ? Theme.text : Theme.textMuted))
                                 .padding(.horizontal, 10).padding(.vertical, 4)
                                 .background(active ? Color.white.opacity(0.14) : .clear, in: .capsule)
+                                .contentShape(.capsule)
                             }
                             .buttonStyle(.plain)
                             .accessibilityAddTraits(active ? .isSelected : [])
@@ -308,7 +309,7 @@ private struct LogWindow: View {
                             .autocorrectionDisabled()
                             .accessibilityIdentifier("logs-search")
                         if !model.query.isEmpty {
-                            Button { model.query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textFaint) }
+                            Button { model.query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textFaint).contentShape(Rectangle().inset(by: -12)) }
                                 .buttonStyle(.plain)
                         }
                     }
@@ -318,6 +319,7 @@ private struct LogWindow: View {
                     Button { fullscreen.toggle() } label: {
                         Image(systemName: fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                             .frame(width: 30, height: 30)
+                            .contentShape(Rectangle().inset(by: -7))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Theme.textMuted)

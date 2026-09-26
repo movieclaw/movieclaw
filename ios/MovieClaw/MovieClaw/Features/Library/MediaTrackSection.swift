@@ -838,7 +838,7 @@ private struct TrackListSheet: View {
                         .font(.footnote)
                         .foregroundStyle(Color.white.opacity(0.45))
                         .frame(width: 28, height: 28)
-                        .contentShape(.rect)
+                        .contentShape(Rectangle().inset(by: -8))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("删除字幕文件：\(entry.primary)")

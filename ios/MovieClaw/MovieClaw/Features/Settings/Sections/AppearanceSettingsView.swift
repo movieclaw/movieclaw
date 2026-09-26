@@ -270,6 +270,7 @@ struct AppearanceSettingsView: View {
                                     .overlay(Image(systemName: "plus").foregroundStyle(Theme.textMuted))
                                 Text("上传").font(.caption).foregroundStyle(Theme.textMuted)
                             }
+                            .contentShape(.rect)
                         }
                         .buttonStyle(.plain)
                         .disabled(busy)
@@ -590,6 +591,7 @@ private struct BackdropTile: View {
                             .foregroundStyle(.white.opacity(0.9))
                             .frame(width: 20, height: 20)
                             .background(.black.opacity(0.6), in: .circle)
+                            .contentShape(Circle().inset(by: -8))
                     }
                     .buttonStyle(.plain)
                     .padding(4)

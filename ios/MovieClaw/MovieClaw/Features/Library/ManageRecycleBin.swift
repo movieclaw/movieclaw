@@ -466,6 +466,7 @@ private struct ManageRecycleItemCard: View {
                             .foregroundStyle(Theme.text)
                         Text(expanded ? "收起" : "展开").font(.caption).foregroundStyle(Theme.textFaint)
                     }
+                    .expandedHitArea(vertical: 12)
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 2)
@@ -578,6 +579,7 @@ private struct ManageRecycleIdentity: View {
                             router.push(.libraryItem(libraryId: item.library.id, itemId: media.id))
                         } label: {
                             Text(media.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text).lineLimit(1)
+                                .expandedHitArea(vertical: 10)
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("recycle-item-title-\(item.key)")
@@ -616,6 +618,7 @@ private struct ManageRecycleFileName: View {
                 .lineLimit(clamp ? 2 : 1)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("查看「\(file.fileName)」的存放路径")
@@ -935,6 +938,7 @@ struct ManageBinSearchField: View {
             if !text.isEmpty {
                 Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textFaint)
+                        .contentShape(Rectangle().inset(by: -12))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("清除搜索")
@@ -1047,7 +1051,7 @@ struct ManageBinCheckbox: View {
                 .font(.body)
                 .foregroundStyle(state == .none ? Theme.textMuted : Theme.accentStrong)
                 .frame(width: 24, height: 24)
-                .contentShape(.rect)
+                .contentShape(Rectangle().inset(by: -10))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
@@ -1078,6 +1082,7 @@ struct ManageBinPager: View {
                                 .foregroundStyle(p == page ? Theme.text : Theme.textMuted)
                                 .frame(minWidth: 28, minHeight: 28)
                                 .background(p == page ? Color.white.opacity(0.12) : .clear, in: .rect(cornerRadius: 8))
+                                .expandedHitArea(vertical: 8)
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("\(idPrefix)-\(p + 1)")
@@ -1117,7 +1122,7 @@ struct ManageBinPager: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Theme.textMuted)
                 .frame(width: 28, height: 28)
-                .contentShape(.rect)
+                .expandedHitArea(vertical: 8)
         }
         .buttonStyle(.plain)
         .disabled(disabled)

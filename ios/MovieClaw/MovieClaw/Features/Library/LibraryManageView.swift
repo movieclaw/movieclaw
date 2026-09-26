@@ -685,6 +685,7 @@ struct ManageSearchField: View {
                     text = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textFaint)
+                        .contentShape(Rectangle().inset(by: -12))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("清除搜索")

@@ -131,12 +131,15 @@ private struct NoticeCard: View {
             Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
             HStack(spacing: 8) {
                 Spacer(minLength: 0)
-                Button("忽略", action: onDismiss)
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.textFaint)
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 6)
-                    .accessibilityIdentifier("notice-dismiss-\(notice.id)")
+                Button(action: onDismiss) {
+                    Text("忽略")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.textFaint)
+                        .expandedHitArea(vertical: 12)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 6)
+                .accessibilityIdentifier("notice-dismiss-\(notice.id)")
                 ActivityHandoffButton(kind: "notice", refId: String(notice.id))
                 Button(action: onGoto) {
                     HStack(spacing: 3) {

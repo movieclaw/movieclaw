@@ -66,6 +66,7 @@ struct TrackSubtitleGenButton: View {
                         .padding(.vertical, 3)
                         .background(Theme.warning.opacity(0.1), in: .rect(cornerRadius: 6))
                         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.warning.opacity(0.3)))
+                        .expandedHitArea(vertical: 10)
                 }
                 .buttonStyle(.plain)
             case .configured, .unavailable:
@@ -99,6 +100,7 @@ struct TrackSubtitleGenButton: View {
             .frame(height: 32)
             .background(style.background, in: .rect(cornerRadius: 7))
             .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(style.border))
+            .expandedHitArea(vertical: 6)
         }
         .buttonStyle(.plain)
         .disabled(model.previewing)
