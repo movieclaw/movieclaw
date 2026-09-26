@@ -61,14 +61,14 @@ final class ShellParityUITests: XCTestCase {
 
     // MARK: 外壳
 
-    /// 「更多」页（标签栏最右的头像页签）：「新会话」入口、会话行长按菜单（三项）、切换账号弹层文案
+    /// 「我的」页（标签栏最右的头像页签）：「新会话」入口、会话行长按菜单（三项）、切换账号弹层文案
     @MainActor
     func testMoreTabAndAccountSwitcher() throws {
         let app = try launch(route: "/library")
         let avatarTab = app.tabBars.buttons["open-more"]
         XCTAssertTrue(avatarTab.waitForExistence(timeout: 15), "标签栏最右应有头像页签")
         avatarTab.tap()
-        XCTAssertTrue(avatarTab.isSelected, "点头像应切到「更多」页签")
+        XCTAssertTrue(avatarTab.isSelected, "点头像应切到「我的」页签")
         let row = app.buttons.matching(identifier: "more-session-row").firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 15), "应列出最近会话")
         XCTAssertFalse(app.buttons["会话操作"].exists, "会话行不再挂「⋯」（按 iOS 惯例左滑 / 长按出操作）")
@@ -91,6 +91,20 @@ final class ShellParityUITests: XCTestCase {
         XCTAssertTrue(again.staticTexts["当前"].waitForExistence(timeout: 5), "当前账号应标「✓ 当前」")
         snapshot("切换账号")
         tapSafely(again, again.buttons["关闭"], "关闭")
+    }
+
+    /// 「我的」页头像卡：点进个人信息，返回直接回「我的」（不垫设置列表）
+    @MainActor
+    func testProfileCardOpensProfile() throws {
+        let app = try launch(route: "/library")
+        let avatarTab = app.tabBars.buttons["open-more"]
+        XCTAssertTrue(avatarTab.waitForExistence(timeout: 15), "标签栏最右应有头像页签")
+        avatarTab.tap()
+        XCTAssertTrue(app.navigationBars["我的"].waitForExistence(timeout: 10), "头像页签标题应为「我的」")
+        tapSafely(app, app.buttons["more-profile-card"], "头像卡")
+        XCTAssertTrue(app.navigationBars["个人信息"].waitForExistence(timeout: 10), "点头像卡应进入个人信息")
+        app.navigationBars["个人信息"].buttons.firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["我的"].waitForExistence(timeout: 10), "从个人信息返回应直接回到「我的」")
     }
 
     /// 登录页：「记住我」默认不勾、副标题同 Web（只打开页面，不提交任何登录）。App 登录页是纯黑底，不铺背景图
@@ -119,7 +133,7 @@ final class ShellParityUITests: XCTestCase {
     func testMyRouteHasSingleExit() throws {
         let app = try launch(route: "/my")
         XCTAssertTrue(app.staticTexts["最近会话"].waitForExistence(timeout: 20))
-        XCTAssertFalse(app.buttons["完成"].exists, "压栈打开的「更多」不应再叠「完成」")
+        XCTAssertFalse(app.buttons["完成"].exists, "压栈打开的「我的」不应再叠「完成」")
         snapshot("我的-压栈")
     }
 

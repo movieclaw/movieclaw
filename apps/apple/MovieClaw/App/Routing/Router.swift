@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 底部标签页。前四个与 Web 银玻璃主题手机底栏同序；最右是当前用户的头像（「更多」页，
+/// 底部标签页。前四个与 Web 银玻璃主题手机底栏同序；最右是当前用户的头像（「我的」页，
 /// Instagram 式的个人页签）。搜索不占标签，在各标签根页右上角（见 MainTabView 的 AppTopBar）。
 /// 标签栏只显示图标，`title` 给读屏与 UI 测试用。
 enum MainTab: String, Hashable, CaseIterable {
@@ -12,11 +12,11 @@ enum MainTab: String, Hashable, CaseIterable {
         case .library: "媒体库"
         case .subscriptions: "订阅"
         case .activity: "活动"
-        case .more: "更多"
+        case .more: "我的"
         }
     }
 
-    /// 页签图标；「更多」平时显示头像，这个图标只在头像位图还没画好时顶一下
+    /// 页签图标；「我的」平时显示头像，这个图标只在头像位图还没画好时顶一下
     var systemImage: String {
         switch self {
         case .discover: "house"

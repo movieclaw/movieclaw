@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// 「更多」页：标签栏最右的头像页签（Web `/my` 与 components/more-page.tsx）。
+/// 「我的」页：标签栏最右的头像页签（Web `/my` 与 components/more-page.tsx）。
 ///
-/// iOS 设置式分组列表（与 Web 同序同文案）：
-/// - 用户头：头像 + 昵称 + `@用户名 · 角色`；
-/// - 常用：个人信息 / 待处理（管理员且有事项时，30 秒轮询）/ 设置 / 应用更新（管理员且有待更新时，
-///   文案「新版本 vX」或「新识别模型 X」）；
+/// iOS 设置式分组列表：
+/// - 用户头：头像 + 昵称 + `@用户名 · 角色`，整张卡可点进「个人信息」（同 iOS 设置 App 顶部的账户卡），
+///   返回直接回到本页，不再像 Web 那样垫一层设置列表；因此常用组里不再单列「个人信息」行；
+/// - 常用：待处理（管理员且有事项时，30 秒轮询）/ 设置（仅管理员——成员的设置里只有个人信息，
+///   已由头像卡覆盖）/ 应用更新（管理员且有待更新时，文案「新版本 vX」或「新识别模型 X」）；
 /// - 账号：切换账号 / 退出登录；
 /// - 最近会话（管理员）：首行「新会话」（顶栏的「+」已去掉，这里是发起新会话的入口），下面是 AI 会话，
 ///   每页 20 条、滑到末尾自动加载下一页（用户决定不要「显示全部 / 收起」，与 Web 的差异）；
@@ -33,24 +34,33 @@ struct MorePage: View {
         List {
             if let session = model.session {
                 Section {
-                    HStack(spacing: 14) {
-                        AvatarBadge(session: session, size: 56)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(session.nickname).font(.title3.weight(.semibold))
-                            Text("@\(session.username) · \(session.roleLabel)")
-                                .font(.subheadline)
-                                .foregroundStyle(Theme.textMuted)
+                    // 用 push 而不是 open：open 会先垫一层设置列表，这里要的是返回直接回「我的」
+                    Button {
+                        router.push(.settingsSection(.profile))
+                    } label: {
+                        HStack(spacing: 14) {
+                            AvatarBadge(session: session, size: 56)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(session.nickname).font(.title3.weight(.semibold))
+                                Text("@\(session.username) · \(session.roleLabel)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(Theme.textMuted)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(Theme.textFaint)
                         }
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                     }
-                    .padding(.vertical, 4)
+                    .foregroundStyle(Theme.text)
+                    .accessibilityIdentifier("more-profile-card")
+                    .accessibilityHint("查看和修改个人信息")
                 }
             }
 
             Section("常用") {
-                // Web 的返回链是 /settings/profile → /settings，这里同样先压「设置」再压「个人信息」
-                MoreRouteRow(routes: [.settings, .settingsSection(.profile)]) {
-                    Label("个人信息", systemImage: "person.crop.circle")
-                }
                 if permissions.isAdmin, !notices.isEmpty {
                     NavigationLink {
                         NoticeCenterView()
@@ -73,10 +83,12 @@ struct MorePage: View {
                     }
                     .accessibilityIdentifier("more-notices")
                 }
-                MoreRouteRow(routes: [.settings]) {
-                    Label("设置", systemImage: "gearshape")
+                if permissions.isAdmin {
+                    MoreRouteRow(routes: [.settings]) {
+                        Label("设置", systemImage: "gearshape")
+                    }
+                    .accessibilityIdentifier("more-settings")
                 }
-                .accessibilityIdentifier("more-settings")
                 if permissions.isAdmin, let label = badges.updateLabel {
                     MoreRouteRow(routes: [.settingsSection(.app)], tint: Theme.info) {
                         Label(label, systemImage: "arrow.down.app")
@@ -124,7 +136,7 @@ struct MorePage: View {
             }
         }
         .appBackground()
-        .navigationTitle("更多")
+        .navigationTitle("我的")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadSessions() }
         // 待处理事项与 Web NoticeCenter 同频 30 秒轮询（首轮立即拉）
@@ -257,8 +269,8 @@ private struct MoreRunningDot: View {
     }
 }
 
-/// 更多页的跳转行：经 Router 在主导航里打开目标页（设置、会话这类不归属任何标签的页面，
-/// 就压在「更多」标签自己的栈里）。
+/// 「我的」页的跳转行：经 Router 在主导航里打开目标页（设置、会话这类不归属任何标签的页面，
+/// 就压在「我的」标签自己的栈里）。
 /// `routes` 依次压栈（第一个走 `open` 定标签，其余 `push`），用于还原 Web 的返回链。
 private struct MoreRouteRow<Content: View>: View {
     let routes: [AppRoute]
