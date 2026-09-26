@@ -70,18 +70,20 @@ struct SubscriptionsView: View {
         }
         .scrollIndicators(.hidden)
         .appBackground()
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Picker("订阅类型", selection: $filter) {
-                    Text("全部").tag("all")
-                    Text("剧集").tag("tv")
-                    Text("电影").tag("movie")
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-                .accessibilityIdentifier("subscription-filter")
+        // 标题同媒体库：左上角大字页面名（iOS 标签根页规范）；类型切换固定在标题下方
+        .navigationTitle("我的订阅")
+        .toolbarTitleDisplayMode(.inlineLarge)
+        .safeAreaBar(edge: .top, alignment: .leading) {
+            Picker("订阅类型", selection: $filter) {
+                Text("全部").tag("all")
+                Text("剧集").tag("tv")
+                Text("电影").tag("movie")
             }
+            .pickerStyle(.segmented)
+            .frame(width: 180)
+            .accessibilityIdentifier("subscription-filter")
+            .padding(.horizontal, Theme.pagePadding)
+            .padding(.bottom, 6)
         }
         .refreshable { await reload() }
         .task { await reload() }
@@ -150,9 +152,6 @@ struct SubscriptionsView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("我的订阅")
-                .font(.system(size: 26, weight: .bold))
-                .foregroundStyle(Theme.text)
             Text(countLine + " · movieclaw 会持续追踪并在新资源放出后自动入库")
                 .font(.subheadline)
                 .foregroundStyle(Theme.textMuted)

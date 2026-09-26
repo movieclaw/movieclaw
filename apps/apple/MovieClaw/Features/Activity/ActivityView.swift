@@ -57,15 +57,17 @@ struct ActivityView: View {
             .padding(.top, 8)
             .padding(.bottom, 48)
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                ActivityScopeSwitcher(
-                    scope: $scope,
-                    liveCount: badges.media.liveCount,
-                    taskBadge: TaskCenter.badge(badges.tasks.activity)
-                )
-            }
+        // 标题同媒体库：左上角大字页面名（iOS 标签根页规范）；观看 / 任务切换固定在标题下方
+        .navigationTitle("活动")
+        .toolbarTitleDisplayMode(.inlineLarge)
+        .safeAreaBar(edge: .top, alignment: .leading) {
+            ActivityScopeSwitcher(
+                scope: $scope,
+                liveCount: badges.media.liveCount,
+                taskBadge: TaskCenter.badge(badges.tasks.activity)
+            )
+            .padding(.horizontal, Theme.pagePadding)
+            .padding(.bottom, 6)
         }
         .appBackground()
         .onChange(of: router.rootParameter, initial: true) { _, parameter in
@@ -77,10 +79,6 @@ struct ActivityView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Image(systemName: "waveform.path.ecg").font(.title2).foregroundStyle(Theme.info)
-                Text("活动").font(.system(size: 24, weight: .bold)).foregroundStyle(Theme.text)
-            }
             Text(scope == .media
                 ? "谁在看什么、用哪台设备、速率如何，媒体库的实时动静都在这里。"
                 : "观察下载、入库和后台作业的完整过程，需要处理的任务会优先出现。")

@@ -57,8 +57,27 @@ struct DiscoverView: View {
             filters = viewpoint.filters
             router.rootParameter = nil
         }
+        // 标题同媒体库：左上角大字页面名（iOS 标签根页规范）；电影 / 剧集切换固定在标题下方。
+        // 沉浸 Hero 仍顶到屏幕物理顶边（topInset 量的是含这一条在内的安全区）
+        .navigationTitle("发现")
+        .toolbarTitleDisplayMode(.inlineLarge)
         .toolbar { toolbarContent }
-        .navigationBarTitleDisplayMode(.inline)
+        .safeAreaBar(edge: .top, alignment: .leading) {
+            Picker("内容类型", selection: Binding(get: { currentType }, set: { next in
+                // 切类型保留数据源、清空筛选（同 Web `switchMediaType`）
+                guard next != currentType else { return }
+                mediaType = next
+                filters = .empty
+            })) {
+                Text("电影").tag("movie")
+                Text("剧集").tag("tv")
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 124)
+            .accessibilityIdentifier("discover-type")
+            .padding(.horizontal, Theme.pagePadding)
+            .padding(.bottom, 6)
+        }
         .task(id: feedKey) {
             await feed.loadIfNeeded(api: api)
         }
@@ -127,20 +146,6 @@ struct DiscoverView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Picker("内容类型", selection: Binding(get: { currentType }, set: { next in
-                // 切类型保留数据源、清空筛选（同 Web `switchMediaType`）
-                guard next != currentType else { return }
-                mediaType = next
-                filters = .empty
-            })) {
-                Text("电影").tag("movie")
-                Text("剧集").tag("tv")
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 124)
-            .accessibilityIdentifier("discover-type")
-        }
         // 顺序：组合发现筛选在前、TMDB/豆瓣数据源切换在这一组的最右（用户要求，常规设计把全局切换放最外侧）；
         // 整条顶栏的最右是外壳注入的搜索圆钮（MainTabView 的 AppTopBar），与这一组分开
         ToolbarItemGroup(placement: .topBarTrailing) {
