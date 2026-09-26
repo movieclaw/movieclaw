@@ -293,6 +293,38 @@ def test_today_arrivals_lists_today_episode_without_poster_or_progress(
     assert "progress" not in rows[0]
 
 
+def test_today_arrivals_week_window_and_recent_arrivals_contract(client: TestClient) -> None:
+    """App 订阅首页的两处数据：整周日程（window=week）与「刚刚入库」。
+
+    刚订阅、还什么都没入库时「刚刚入库」是空数组；参数越界按校验错误拒绝。
+    条目摘要带上剧照与 Logo 字段（没有时为 null，客户端回落海报/文字片名）。
+    """
+    created = client.post(
+        "/api/v1/subscriptions",
+        json={"title_ref": "tmdb:tv:201", "selected_seasons": [1]},
+    )
+    assert created.status_code == 200, created.text
+
+    week = client.get("/api/v1/subscriptions/today-arrivals", params={"window": "week"})
+    assert week.status_code == 200, week.text
+    assert [row["media_title"] for row in week.json()["data"]] == ["今日更新剧集"]
+    assert client.get(
+        "/api/v1/subscriptions/today-arrivals", params={"window": "month"}
+    ).status_code == 422
+
+    recent = client.get("/api/v1/subscriptions/recent-arrivals")
+    assert recent.status_code == 200, recent.text
+    assert recent.json()["data"] == []
+    assert client.get(
+        "/api/v1/subscriptions/recent-arrivals", params={"days": 0}
+    ).status_code == 422
+
+    listed = client.get("/api/v1/subscriptions")
+    assert listed.status_code == 200, listed.text
+    media = listed.json()["data"][0]["media"]
+    assert "backdrop_url" in media and "logo_url" in media
+
+
 def test_set_follow_future_rejects_movie_subscription(client: TestClient) -> None:
     created = client.post(
         "/api/v1/subscriptions",

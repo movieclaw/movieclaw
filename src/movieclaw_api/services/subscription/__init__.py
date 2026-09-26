@@ -12,6 +12,7 @@ wanted_search / wanted_fulfillment / subscription_health）互相成环、靠函
 - ``health``             订阅链路体检（投递 → 转移 → 入库逐段预演）
 - ``release_forecast``   从种子索引推导追新发布时间，并提供站点临时探测点
 - ``replacement``        无进度种子的跨站搜索、试用晋升与安全清理
+- ``recent_arrivals``    订阅首页「刚刚入库」：最近入库、当前账号还没看完的内容
 
 **包外只允许从本 ``__init__`` 导入**（下方显式导出的公共接口）；包内模块
 之间用完整子模块路径互相引用。守护测试（tests/api/test_subscription_package.py）
@@ -39,6 +40,7 @@ from movieclaw_api.services.subscription.matching import (
     units_text,
     upgrade_ready,
 )
+from movieclaw_api.services.subscription.recent_arrivals import RecentArrival, recent_arrivals
 from movieclaw_api.services.subscription.release_forecast import (
     FORECAST_MIN_INTERVAL,
     FORECAST_VERSION,
@@ -77,6 +79,7 @@ __all__ = [
     "MATCH_BATCH_SIZE",
     "MOVIE_RELEASE_GRACE",
     "REFRESH_PER_TICK",
+    "RecentArrival",
     "SubscriptionService",
     "close_fulfilled_wanted",
     "reopen_unfulfilled_wanted",
@@ -94,6 +97,7 @@ __all__ = [
     "pipeline_health",
     "preview_dispatch_route",
     "promote_trial",
+    "recent_arrivals",
     "quality_not_lower",
     "reconcile_pending_cleanup",
     "run_upgrade_round",

@@ -139,6 +139,12 @@ class MediaItem(TimestampMixin, table=True):
     # -- 展示（仅海报路径，前端经 image-proxy 拼接）-------------------------
     poster_path: str | None = Field(default=None, description="TMDB 海报相对路径")
     backdrop_path: str | None = Field(default=None, description="TMDB 宽幅剧照相对路径")
+    # 片名 Logo（透明底 PNG 的片名字标）：订阅首页 Hero 等沉浸场景用它代替纯文字
+    # 片名。三态：NULL=还没从 TMDB 取过（老条目等下一轮元数据刷新补齐）；
+    # 空串=取过但该片没有可用 Logo（前端回落文字片名，不必再等）
+    logo_path: str | None = Field(
+        default=None, description="TMDB 片名 Logo 相对路径；NULL=未取过，空串=该片没有"
+    )
 
     # -- 刮削归属库（docs/design/scrape-customization.md §14）----------------
     # "这条条目按哪套刮削配置"的答案。元数据与图片的产物挂**全局条目**
