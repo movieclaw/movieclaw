@@ -489,7 +489,7 @@ def test_infuse_ts_never_goes_to_outdated_remote_worker(
         info = client.post(f"/Items/{guid}/PlaybackInfo", params=auth, json=body).json()
     ms = info["MediaSources"][0]
     assert ms["SupportsDirectPlay"] is True and "TranscodingUrl" not in ms
-    assert any("MovieClaw Transcoder" in r.message for r in caplog.records)
+    assert any("MovieClaw 转码器" in r.message for r in caplog.records)
 
     _enable_software_transcode(client)
     ms = client.post(f"/Items/{guid}/PlaybackInfo", params=auth, json=body).json()

@@ -170,7 +170,7 @@ struct WorkerConfiguration: Sendable {
     }
 }
 
-enum WorkerConnectionState: String, Sendable {
+enum WorkerConnectionState: String, Sendable, Codable {
     case unconfigured
     case starting
     case connecting
@@ -239,26 +239,120 @@ enum FFmpegMenuState: Sendable, Equatable {
     }
 }
 
-struct JobProgress: Sendable {
+struct JobProgress: Sendable, Equatable, Codable {
+    /// ffmpeg 的输出进度（**毫秒**），**从这一轮起转的位置算起**，不是片内时间：
+    /// 拖进度条后 NAS 用 `-ss` 从新位置重启 ffmpeg，它就从 0 重新数。要换成片内
+    /// 位置得加上起点，见 ``RunningJob/startOffsetMS``。
     let outTimeMS: Int64?
     let speed: String?
     let phase: String?
+
+    /// 从 ffmpeg `-progress` 的一组键值里取输出位置，换算成毫秒。
+    ///
+    /// **`out_time_ms` 名不副实，单位其实是微秒**（ffmpeg 的历史遗留，为兼容一直没改，
+    /// 所以又加了一个 `out_time_us`）。早先直接当毫秒用，片内位置与「转出多长的片子」
+    /// 全都大了 1000 倍——面板上出现过「转了 20.4 小时」，实际只转了 73 秒。
+    /// 依次认 `out_time_us`、`out_time_ms`（都是微秒），都没有再解析 `out_time`（时:分:秒）。
+    static func outTimeMilliseconds(_ values: [String: String]) -> Int64? {
+        for key in ["out_time_us", "out_time_ms"] {
+            if let micro = values[key].flatMap({ Int64($0) }), micro >= 0 {
+                return micro / 1_000
+            }
+        }
+        guard let text = values["out_time"] else { return nil }
+        let parts = text.split(separator: ":")
+        guard parts.count == 3, let h = Double(parts[0]), let m = Double(parts[1]), let s = Double(parts[2]),
+              h >= 0, m >= 0, s >= 0
+        else { return nil }
+        return Int64(((h * 60 + m) * 60 + s) * 1_000)
+    }
 }
 
-struct WorkerStatus: Sendable {
+/// NAS 推来的观众播放位置（`job.playback`，毫秒，片内时间）。拿不到的字段为 nil：
+/// 非 VOD 会话没有总长与准备位置，播放器没上报过进度时没有观众位置。
+struct JobPlayback: Sendable, Equatable, Codable {
+    let positionMS: Int64?
+    let viewerPaused: Bool
+    let durationMS: Int64?
+    let preparedMS: Int64?
+}
+
+/// 一个正在跑的任务，给状态面板和菜单栏图标用。
+struct RunningJob: Sendable, Equatable, Codable {
+    let id: String
+    /// 源文件名，服务端下发；旧版服务端为 nil，此时回退显示 job id。
+    let name: String?
+    let progress: JobProgress?
+    /// 这一轮 ffmpeg 起转的时间（seek 重启会刷新）。
+    let startedAt: Date
+    /// ffmpeg 参数里的视频编码器（`-c:v` 的值，如 h264_videotoolbox）。
+    let videoEncoder: String?
+    /// 这一轮从片子的哪个位置起转（毫秒，取自 ffmpeg 参数里输入前的 `-ss`）。
+    /// 片内位置 = 起点 + ``JobProgress/outTimeMS``。
+    var startOffsetMS: Int64 = 0
+    /// NAS 让它歇着（转码头领先播放足够远、或磁盘吃紧），之后会自动续上。
+    let paused: Bool
+    /// 观众看到哪儿了。旧版服务端不推，为 nil。
+    var playback: JobPlayback? = nil
+}
+
+/// 需要让用户知道、面板要专门说明的故障（普通的断线重连不算）。
+///
+/// 每一种都对应一个明确的下一步：要么 App 自己在恢复（告诉用户别慌），要么只有
+/// 用户能处理（告诉他点哪里）。见 docs/design/remote-transcode.md「Worker 容错」。
+enum WorkerProblem: Sendable, Equatable, Codable {
+    /// NAS 拒绝了这台 Mac 的凭证（被吊销或失效）：多半要重新配对，放慢到每 5 分钟重试一次。
+    case authRejected
+    /// 服务端没打开远程转码：放慢重试（每分钟一次），等管理员打开。
+    case remoteDisabled
+    /// 连续几个任务刚开始就失败：暂停接单自检，`until` 之后自动恢复。
+    case cooldown(until: Date, failures: Int)
+    /// 转码内核刚异常退出，正在自动恢复（第 `attempt` 次）。
+    case coreRecovering(attempt: Int)
+    /// 转码内核短时间内反复崩溃，已停止自动重启，等用户点「重试」。
+    case coreCrashLoop
+    /// ffmpeg 用不了（找不到、自检失败）。
+    case ffmpegUnusable
+}
+
+struct WorkerStatus: Sendable, Codable {
     let state: WorkerConnectionState
     let message: String
     let workerID: String
-    let activeJobs: Int
     let maxJobs: Int
-    let currentJobID: String?
-    /// 源文件名，服务端下发；旧版服务端为 nil，此时回退显示 job id。
-    let currentJobName: String?
-    let currentProgress: JobProgress?
+    /// 正在跑的任务，按 job id 排序，顺序稳定、面板上的卡片不会跳来跳去。
+    let jobs: [RunningJob]
     let ffmpegVersion: String
     let encoders: [String]
     let lastError: String?
     let updatedAt: Date
+    var problem: WorkerProblem? = nil
+
+    var activeJobs: Int { jobs.count }
+
+    /// Worker 没在跑时（启动前、停止后、启动失败）由 AppMain 自己拼的状态。
+    static func offline(
+        _ state: WorkerConnectionState,
+        message: String,
+        workerID: String,
+        maxJobs: Int,
+        ffmpegVersion: String = "-",
+        error: String? = nil,
+        problem: WorkerProblem? = nil
+    ) -> WorkerStatus {
+        WorkerStatus(
+            state: state,
+            message: message,
+            workerID: workerID,
+            maxJobs: maxJobs,
+            jobs: [],
+            ffmpegVersion: ffmpegVersion,
+            encoders: [],
+            lastError: error,
+            updatedAt: Date(),
+            problem: problem
+        )
+    }
 }
 
 /// 配置与运行期的可读错误。

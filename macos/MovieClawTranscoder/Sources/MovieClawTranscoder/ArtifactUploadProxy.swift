@@ -426,7 +426,7 @@ final class ArtifactUploadProxy: @unchecked Sendable {
     fileprivate func rejectArtifact(_ filename: String) {
         let message =
             "产物文件名不在 Worker 白名单内，已拒收：name=\(filename)" +
-            "（NAS 可能比本 Worker 新，请把 MovieClaw Transcoder 更新到与服务端相同的版本）"
+            "（NAS 可能比本 Worker 新，请把 MovieClaw 转码器更新到与服务端相同的版本）"
         lock.lock()
         let first = !rejectionReported
         rejectionReported = true

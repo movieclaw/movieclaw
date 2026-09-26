@@ -74,6 +74,9 @@ class WorkerCapabilities:
     #: 代理白名单只放行 ``.m4s``，TS 分片在它本机就被拒收，而 ffmpeg 不看上传
     #: 响应码、照样退出码 0 转完整部片——播放器等满 30 秒只拿到 404（issue #444）。
     segment_types: tuple[str, ...] = ("fmp4",)
+    #: 能接收 ``job.playback``（观众播放位置）。旧版 Worker 不认识这条消息，每收到
+    #: 一条就记一行「忽略未知控制消息」，3 秒一条会把它的日志刷满——所以只发给声明了的。
+    playback_progress: bool = False
 
 
 @dataclass
@@ -320,7 +323,7 @@ class RemoteWorkerRegistry:
                 if segment_type != "fmp4" and self._select_worker(backend) is not None:
                     raise RemoteWorkerUnavailable(
                         f"在线的 Worker 版本过旧，不支持 {segment_type} 分片，"
-                        "请把 MovieClaw Transcoder 更新到与服务端相同的版本"
+                        "请把 MovieClaw 转码器更新到与服务端相同的版本"
                     )
                 raise RemoteWorkerUnavailable("没有在线且空闲的 Apple VideoToolbox Worker")
             self._job_workers[job_id] = connection.worker_id
@@ -394,6 +397,22 @@ class RemoteWorkerRegistry:
             )
             return False
         return True
+
+    async def report_playback(self, job_id: str, playback: dict[str, Any]) -> None:
+        """把观众的播放位置推给任务所在的 Worker（它的面板显示「看到 25:10 / 1:52:10」）。
+
+        纯展示信息：没声明 ``playback_progress`` 的 Worker 不发，发送失败也不当回事——
+        断线自有心跳与任务状态去判定。
+        """
+        with self._lock:
+            worker_id = self._job_workers.get(job_id)
+            connection = self._workers.get(worker_id) if worker_id else None
+        if connection is None or not connection.capabilities.playback_progress:
+            return
+        try:
+            await connection.send({"type": "job.playback", "job_id": job_id, **playback})
+        except Exception:  # noqa: BLE001
+            logger.debug("播放位置推送失败（仅影响 Worker 面板显示）：job=%s", job_id)
 
     def publish_job_event(self, job_id: str, message: dict[str, Any]) -> None:
         """把 Worker 的状态消息交给正在启动/重启的会话。"""
@@ -558,6 +577,7 @@ class RemoteWorkerRegistry:
             else None,
             platform=str(raw.get("platform")) if raw.get("platform") else None,
             max_jobs=max_jobs,
+            playback_progress=raw.get("playback_progress") is True,
             # 没声明（旧版 Worker）按只会 fMP4 处理，见字段注释
             segment_types=segment_types or ("fmp4",),
         )

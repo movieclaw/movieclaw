@@ -61,6 +61,7 @@ from movieclaw_api.services.playback.remote_worker import (
     effective_remote_transcode_config,
     get_remote_worker_registry,
 )
+from movieclaw_db.models.base import utcnow
 from movieclaw_events import new_ulid
 from movieclaw_playback import activity
 from movieclaw_playback.decide import PlaybackPlan, PlaybackTier
@@ -114,6 +115,11 @@ RESUME_FREE_BYTES = 2 * MIN_FREE_BYTES
 #: 客户端开始缺粮之前把料续上。远程 Worker 的恢复要一个 RTT，同样的数够用。
 LEAD_HIGH_S = 120.0
 LEAD_LOW_S = 60.0
+#: 给远程 Worker 推观众播放位置的间隔（只用于它的面板显示）。播放器的进度上报
+#: 本身约 10 秒一次，3 秒推一次、中间按实时外推，面板上的时间就是连续走的。
+PLAYBACK_REPORT_INTERVAL_S = 3.0
+#: 两次进度上报之间最多外推这么久：播放器不再上报（卡住、断网）时别让时间一直往前走。
+PLAYBACK_EXTRAPOLATE_MAX_S = 30.0
 #: 节流巡检间隔。领先量随转码头推进而涨，播放头不动时只有这个循环能发现
 #: 该暂停了；0.5 秒对应最多半秒的超出量，硬件档 10 倍速也就是 5 秒内容。
 THROTTLE_INTERVAL_S = 0.5
@@ -247,6 +253,8 @@ class TranscodeSession:
     #: 远程 seek 重启的控制面切换窗口。此时旧 job 已取消、新 Worker 尚未写回，
     #: 分片等待不能把临时的 ``worker_id=None`` 当成 Worker 断线。
     remote_restarting: bool = False
+    #: 上次给 Worker 推播放位置的时间（monotonic），见 PLAYBACK_REPORT_INTERVAL_S
+    remote_playback_reported_at: float = 0.0
     remote_source_url: str = ""
     remote_artifact_base_url: str = ""
     remote_artifact_suffix: str = ""
@@ -621,6 +629,56 @@ class TranscodeSessionManager:
         """对全部会话跑一遍领先量节流。巡检循环与分片请求入口都会调它。"""
         for session in list(self._sessions.values()):
             await self._throttle_session(session)
+            await self._report_remote_playback(session)
+
+    def playback_snapshot(self, session: TranscodeSession) -> dict[str, int | bool]:
+        """观众看到哪儿、转码准备到哪儿、片子多长（毫秒，片内时间）。
+
+        - 观众位置取播放器自己的进度上报（活动页「正在播放」同一份数据），不用
+          「最近请求的分片」——那是播放器的下载位置，会比画面快几十秒；上报间隔
+          约 10 秒，没暂停时按实时外推（最多 PLAYBACK_EXTRAPOLATE_MAX_S）。
+        - 准备到哪儿、总长只有 VOD 会话（有预生成分片计划）才知道。
+        拿不到的字段就不给，Worker 按有什么显示什么。
+        """
+        snapshot: dict[str, int | bool] = {}
+        viewer = activity.current(session.device_id)
+        if viewer is not None and viewer.position_ms is not None:
+            position = viewer.position_ms
+            if not viewer.paused:
+                elapsed = (utcnow() - viewer.last_report_at).total_seconds()
+                position += int(min(max(0.0, elapsed), PLAYBACK_EXTRAPOLATE_MAX_S) * 1000)
+            snapshot["position_ms"] = position
+            snapshot["viewer_paused"] = viewer.paused
+        plan = session.segment_plan
+        if plan is not None:
+            snapshot["duration_ms"] = int(plan.duration_s * 1000)
+            produced = self._highest_produced(session)
+            if produced >= session.head_segment:
+                end = (
+                    plan.boundaries[produced + 1] if produced + 1 < plan.count else plan.duration_s
+                )
+                snapshot["prepared_ms"] = int(end * 1000)
+        if "position_ms" in snapshot and "duration_ms" in snapshot:
+            snapshot["position_ms"] = min(
+                int(snapshot["position_ms"]), int(snapshot["duration_ms"])
+            )
+        return snapshot
+
+    async def _report_remote_playback(self, session: TranscodeSession) -> None:
+        """每 3 秒把 :meth:`playback_snapshot` 推给远程 Worker（它的面板显示真实播放进度）。"""
+        if (
+            not session.remote
+            or not session.remote_job_id
+            or session.state not in ("spawning", "ready")
+        ):
+            return
+        now = time.monotonic()
+        if now - session.remote_playback_reported_at < PLAYBACK_REPORT_INTERVAL_S:
+            return
+        session.remote_playback_reported_at = now
+        snapshot = self.playback_snapshot(session)
+        if snapshot:
+            await get_remote_worker_registry().report_playback(session.remote_job_id, snapshot)
 
     async def _pause(self, session: TranscodeSession, reason: str) -> bool:
         """以某个原因挂起会话。已因别的原因挂起时只记原因，不重复发信号。"""

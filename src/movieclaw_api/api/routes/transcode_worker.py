@@ -79,6 +79,19 @@ def _client_host(websocket: WebSocket) -> str:
     return websocket.client.host if websocket.client else "未知地址"
 
 
+async def _reject_before_hello(websocket: WebSocket, reason: str) -> None:
+    """握手阶段拒绝 Worker：先 accept 再用 1008 关闭，理由才送得到 Worker。
+
+    在 accept 之前 close，uvicorn 按 ASGI 规范只回一个空包体的 HTTP 403，关闭理由
+    整句丢掉——Worker 只能看到「There was a bad response from the server」，凭证
+    失效和开关没开分不出来，下面分开写的两个理由等于白写。Starlette 的 TestClient
+    不模拟这一点（照样抛带理由的 WebSocketDisconnect），测试里看不出差别。
+    先 accept 再关，理由随关闭帧送到 Worker，面板上照原文显示。
+    """
+    await websocket.accept()
+    await websocket.close(code=1008, reason=reason)
+
+
 def _artifact_write_failure(
     exc: OSError,
     *,
@@ -230,14 +243,14 @@ async def transcode_worker_websocket(websocket: WebSocket) -> None:
         _warn_throttled(
             ("ws-auth", client), "拒绝远程转码 Worker 连接（来自 %s）：%s", client, reason
         )
-        await websocket.close(code=1008, reason=reason)
+        await _reject_before_hello(websocket, reason)
         return
     if not remote_worker_enabled():
         reason = "服务端尚未启用远程转码，请在网页「应用 → 远程转码」打开开关并确认地址"
         _warn_throttled(
             ("ws-disabled", client), "拒绝远程转码 Worker 连接（来自 %s）：%s", client, reason
         )
-        await websocket.close(code=1008, reason=reason)
+        await _reject_before_hello(websocket, reason)
         return
 
     await websocket.accept()

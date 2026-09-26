@@ -25,9 +25,6 @@ enum Glass {
 
     /// 自绘圆角分组的圆角（设置窗的列表分组）。
     static var groupCornerRadius: CGFloat { isAvailable ? 12 : 9 }
-
-    /// 菜单内卡片的圆角：菜单外框约 14pt，内缩 5pt 后同心。
-    static let menuCardCornerRadius: CGFloat = 9
 }
 
 /// Worker 连接状态的统一呈现：菜单与设置窗说同一套话、用同一套颜色。
@@ -58,7 +55,8 @@ struct WorkerStatePresentation: Equatable {
         case .busy:
             return WorkerStatePresentation(title: "转码中", color: .systemBlue)
         case .paused:
-            return WorkerStatePresentation(title: "转码暂停", color: .systemTeal)
+            // NAS 让任务歇着是因为转码已经领先播放足够多，对用户来说仍是「在转码」
+            return WorkerStatePresentation(title: "转码中", color: .systemBlue)
         case .draining:
             return WorkerStatePresentation(title: "暂停接单", color: .systemYellow)
         case .stopped:
@@ -105,13 +103,13 @@ enum DisplayText {
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
-    /// ffmpeg 进度里的 speed（「5.21x」「N/A」）→「5.2×」；读不出来返回 nil。
-    static func speed(_ raw: String?) -> String? {
+    /// ffmpeg 进度里的 speed（「5.21x」「N/A」）→ 5.21；读不出来返回 nil。
+    static func speedValue(_ raw: String?) -> Double? {
         guard let raw,
               let value = Double(raw.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "x", with: "")),
               value > 0
         else { return nil }
-        return String(format: "%.1f×", value)
+        return value
     }
 
     /// 去掉 scheme 与末尾斜杠，只留主机和端口——用户认得的就是这一段。
@@ -186,14 +184,14 @@ final class StatusPill: NSView {
     }
 }
 
-/// 圆角方块徽章：白色图形压在强调色底上。
+/// 圆角方块徽章：白色 SF Symbol 压在强调色底上（`.app` 例外，画品牌方块）。
 ///
 /// macOS 26 起底是一块着了强调色的液态玻璃（`NSGlassEffectView`）；旧系统退回
 /// 从上到下略微变深的强调色渐变，形状与尺寸完全一致。`glass: false` 时一律用
-/// 渐变——放进菜单时就这么用，菜单本身已经是玻璃了。
+/// 渐变——放进面板时就这么用，面板本身已经是玻璃了。
 final class GlyphTile: NSView {
     enum Glyph {
-        /// App 的光圈图形（与菜单栏图标同一张图）。
+        /// App 自己的品牌方块（``BrandMark``），不套强调色与玻璃。
         case app
         case symbol(String)
     }
@@ -211,6 +209,14 @@ final class GlyphTile: NSView {
             widthAnchor.constraint(equalToConstant: side),
             heightAnchor.constraint(equalToConstant: side),
         ])
+        if case .app = glyph {
+            // App 自己的标志是品牌方块（深蓝底 + 银蓝转子），和 Dock 里的 App 图标、网页 logo
+            // 一模一样；不套强调色、也不叠玻璃——品牌色不该跟着系统强调色变
+            let brand = BrandTileView(frame: bounds)
+            brand.autoresizingMask = [.width, .height]
+            addSubview(brand)
+            return
+        }
         imageView.contentTintColor = .white
         imageView.imageScaling = .scaleProportionallyUpOrDown
         set(glyph)
@@ -246,7 +252,8 @@ final class GlyphTile: NSView {
     func set(_ glyph: Glyph) {
         switch glyph {
         case .app:
-            imageView.image = MenuBarIcon.statusItemImage()
+            // 品牌方块在 init 里就画好了，不走图形层
+            break
         case let .symbol(name):
             imageView.image = Symbols.image(name, pointSize: side * 0.42, weight: .semibold)
         }
@@ -284,48 +291,10 @@ final class GlyphTile: NSView {
     }
 }
 
-/// 窗口页眉：徽章 + 标题 + 副标题。配合透明标题栏，放在红绿灯下方。
-final class WindowHeaderView: NSView {
-    let tile: GlyphTile
-    let titleLabel: NSTextField
-    let subtitleLabel: NSTextField
-
-    init(title: String, subtitle: String, glyph: GlyphTile.Glyph = .app, subtitleWidth: CGFloat) {
-        tile = GlyphTile(side: 44, glyph: glyph)
-        titleLabel = NSTextField(labelWithString: title)
-        subtitleLabel = NSTextField(wrappingLabelWithString: subtitle)
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-
-        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-        titleLabel.lineBreakMode = .byTruncatingTail
-        subtitleLabel.font = .systemFont(ofSize: 12)
-        subtitleLabel.textColor = .secondaryLabelColor
-        subtitleLabel.maximumNumberOfLines = 3
-        subtitleLabel.cell?.truncatesLastVisibleLine = true
-        subtitleLabel.preferredMaxLayoutWidth = subtitleWidth
-
-        let text = NSStackView(views: [titleLabel, subtitleLabel])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 2
-
-        let row = NSStackView(views: [tile, text])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 12
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor),
-            row.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-            row.topAnchor.constraint(equalTo: topAnchor),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+/// 品牌方块视图：见 ``BrandMark/drawTile(in:cornerRatio:)``。
+final class BrandTileView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        BrandMark.drawTile(in: bounds)
     }
 }
 

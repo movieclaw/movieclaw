@@ -201,9 +201,8 @@ private final class ProgressParser: @unchecked Sendable {
         let value = String(line[line.index(after: separator)...])
         values[key] = value
         guard key == "progress" else { return }
-        let milliseconds = Int64(values["out_time_ms"] ?? "")
         let progress = JobProgress(
-            outTimeMS: milliseconds,
+            outTimeMS: JobProgress.outTimeMilliseconds(values),
             speed: values["speed"],
             phase: value
         )

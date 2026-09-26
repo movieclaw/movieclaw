@@ -197,6 +197,17 @@ def report_progress(
     session.last_activity_mono = time.monotonic()
 
 
+def current(device_id: str) -> PlaySession | None:
+    """设备当前的实时播放会话；没有或已过期（超过 TTL 没上报）返回 None。
+
+    给远程转码 Worker 的面板取「观众看到哪儿了」用——只读，不续期。
+    """
+    session = _sessions.get(device_id) if device_id else None
+    if session is None or time.monotonic() - session.last_activity_mono > SESSION_TTL_SECONDS:
+        return None
+    return session
+
+
 def has_session(device_id: str) -> bool:
     """设备当前是否有实时会话（取流路由据此决定要不要查库重建）。"""
     return device_id in _sessions

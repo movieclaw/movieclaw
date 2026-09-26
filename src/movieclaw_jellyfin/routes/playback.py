@@ -284,7 +284,7 @@ async def _load_policy_for(segment_container: str) -> PlaybackPolicy:
     if remote_worker_available("videotoolbox"):
         logger.warning(
             "在线的远程转码 Worker 版本过旧，传不回 Infuse 等播放器要的 TS 分片，本次按无硬件"
-            "处理。请把 Mac 上的 MovieClaw Transcoder 更新到与服务端相同的版本"
+            "处理。请把 Mac 上的 MovieClaw 转码器更新到与服务端相同的版本"
         )
     return replace(policy, hardware_available=False)
 

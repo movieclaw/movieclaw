@@ -24,11 +24,32 @@ import Security
 ///
 /// 剩下的部分不在代码里：**发行版必须用 Developer ID 正式签名**，否则用户每次
 /// 装新版本都会被问一次密码（点「始终允许」只在同一份二进制没变时有效）。
+///
+/// ## 让那个系统弹窗说人话
+///
+/// 弹窗的文字是系统写死的，只有一处由我们决定：**条目的名字**。系统会说「想要使用
+/// 你存储在钥匙串中『<名字>』里的机密信息」。早先没设名字，系统用服务名顶上，弹出来
+/// 就是一句「com.movieclaw.transcoder」，用户根本看不出存的是什么。现在名字是
+/// 「MovieClaw 转码器连接密钥」，种类、注释写明它不是你的密码。
+///
+/// 另外，读之前可以先**静默探测**一次（`interactive: false`，禁止交互）：要弹窗的话
+/// 系统直接返回失败而不弹，AppMain 就能先用自己的话解释清楚，再让系统弹窗。
 enum KeychainStore {
     private static let service = "com.movieclaw.transcoder"
     private static let account = "worker-token"
+    /// 条目名：系统授权弹窗里显示的就是它。
+    /// 界面上统一叫「连接密钥」，和 App 的说明窗对得上。
+    static let label = "MovieClaw 转码器连接密钥"
+    /// 「钥匙串访问」里的「种类」一栏。
+    private static let kind = "连接密钥"
+    private static let comment = "配对时生成，用来连接 movieclaw。不是你的密码；"
+        + "要停用，在 movieclaw 网页「设置 → 设备」里吊销。"
 
-    static func readToken() throws -> String? {
+    /// 读取需要用户在系统弹窗里授权（静默探测时抛出，由调用方先解释再真读）。
+    struct ApprovalRequired: Error {}
+
+    /// - Parameter interactive: false 时禁止系统弹窗——需要授权就抛 ``ApprovalRequired``。
+    static func readToken(interactive: Bool = true) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -37,12 +58,21 @@ enum KeychainStore {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status = interactive
+            ? SecItemCopyMatching(query as CFDictionary, &result)
+            : withoutUserInteraction { SecItemCopyMatching(query as CFDictionary, &result) }
         if status == errSecItemNotFound {
             return nil
         }
+        // 禁止交互时，「要弹窗授权」表现为这两个状态码（本机实测是 errSecAuthFailed）
+        if !interactive, status == errSecAuthFailed || status == errSecInteractionNotAllowed {
+            throw ApprovalRequired()
+        }
         guard status == errSecSuccess else {
             throw KeychainError(status: status)
+        }
+        if interactive {
+            renameLegacyItemIfPossible()
         }
         guard let data = result as? Data,
               let token = String(data: data, encoding: .utf8)
@@ -67,10 +97,11 @@ enum KeychainStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        let attributes: [String: Any] = [
+        var attributes: [String: Any] = [
             kSecValueData as String: Data(token.utf8),
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
+        attributes.merge(descriptiveAttributes) { _, new in new }
 
         // 丢弃返回值是有意的：条目不存在（首次配对）同样走下面的新建
         _ = SecItemDelete(query as CFDictionary)
@@ -88,6 +119,56 @@ enum KeychainStore {
         guard updateStatus == errSecSuccess else {
             throw KeychainError(status: updateStatus)
         }
+    }
+
+    /// 名字、种类、注释：系统弹窗和「钥匙串访问」里看到的都是这几项。
+    private static var descriptiveAttributes: [String: Any] {
+        [
+            kSecAttrLabel as String: label,
+            kSecAttrDescription as String: kind,
+            kSecAttrComment as String: comment,
+        ]
+    }
+
+    /// 旧版本存的条目没有名字（弹窗里只显示服务名）。刚刚读成功说明当前这份程序已被
+    /// 授权，顺手补上名字，下次再弹窗就说人话了。**禁止交互**：万一补名字还要再授权
+    /// 一次（用户只点了「允许」而不是「始终允许」），宁可不补，也不能再弹一个窗。
+    private static func renameLegacyItemIfPossible() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let attributes = result as? [String: Any],
+              attributes[kSecAttrLabel as String] as? String != label
+        else { return }
+        let target: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let status = withoutUserInteraction {
+            SecItemUpdate(target as CFDictionary, descriptiveAttributes as CFDictionary)
+        }
+        if status == errSecSuccess {
+            AppLogger.shared.info("已给钥匙串里的设备令牌补上说明性的名字")
+        }
+    }
+
+    /// 在禁止钥匙串交互的状态下执行一次操作：需要弹窗的操作直接失败而不弹。
+    ///
+    /// `SecKeychainSetUserInteractionAllowed` 已标废弃，但对传统（文件型）钥匙串的
+    /// ACL 授权弹窗，它是唯一确实管用的开关（本机实测：禁止后读取直接返回
+    /// errSecAuthFailed，不弹窗）。进程级开关，用完立刻恢复。编译时这两行会有「已废弃」
+    /// 告警，是有意保留的。
+    private static func withoutUserInteraction(_ body: () -> OSStatus) -> OSStatus {
+        SecKeychainSetUserInteractionAllowed(false)
+        defer { SecKeychainSetUserInteractionAllowed(true) }
+        return body()
     }
 
     static func deleteToken() throws {

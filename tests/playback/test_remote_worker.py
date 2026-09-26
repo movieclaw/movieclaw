@@ -594,6 +594,40 @@ def test_observed_base_url_is_empty_without_host_header():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("principal", "enabled", "hint"),
+    [(None, True, "重新配对"), (object(), False, "打开开关")],
+    ids=["凭证无效", "开关没开"],
+)
+async def test_handshake_rejection_reason_reaches_the_worker(monkeypatch, principal, enabled, hint):
+    """拒绝必须先 accept 再 1008 关闭。accept 之前 close，uvicorn 回的是空包体
+    HTTP 403，理由到不了 Worker；TestClient 不模拟这一点，只能直接看 ASGI 消息。"""
+    from starlette.websockets import WebSocket
+
+    from movieclaw_api.api.routes import transcode_worker as route
+
+    async def _principal(_authorization):
+        return principal
+
+    monkeypatch.setattr(route, "resolve_worker_principal", _principal)
+    monkeypatch.setattr(route, "remote_worker_enabled", lambda: enabled)
+    sent: list[dict] = []
+
+    async def _receive():
+        return {"type": "websocket.connect"}
+
+    async def _send(message):
+        sent.append(message)
+
+    await route.transcode_worker_websocket(
+        WebSocket(_ws_scope().scope, receive=_receive, send=_send)
+    )
+    assert [message["type"] for message in sent] == ["websocket.accept", "websocket.close"]
+    assert sent[1]["code"] == 1008
+    assert hint in sent[1]["reason"]
+
+
+@pytest.mark.asyncio
 async def test_registry_keeps_each_workers_own_connect_address():
     """两台 Worker 从不同入口连进来时，各自的取源地址不能被对方覆盖。"""
     registry = RemoteWorkerRegistry()
@@ -610,3 +644,33 @@ async def test_registry_keeps_each_workers_own_connect_address():
 
     assert lan.observed_base_url == "http://192.168.1.10:8000"
     assert wan.observed_base_url == "https://nas.example.com"
+
+
+@pytest.mark.asyncio
+async def test_playback_position_is_pushed_only_to_workers_declaring_it():
+    """``job.playback`` 只发给在 hello 里声明了 playback_progress 的 Worker：旧版不认识
+    这条消息，3 秒一条会把它的日志刷满「忽略未知控制消息」。"""
+    videotoolbox = {"backends": ["videotoolbox"], "encoders": ["h264_videotoolbox"]}
+    snapshot = {"position_ms": 1_510_000, "viewer_paused": False, "duration_ms": 6_730_000}
+
+    old_registry, old_socket = RemoteWorkerRegistry(), FakeWebSocket()
+    old = await old_registry.register(
+        old_socket, {"worker_id": "mac-old", "capabilities": videotoolbox}
+    )
+    assert old.capabilities.playback_progress is False
+    old_registry.reserve("job-old", backend="videotoolbox")
+    await old_registry.report_playback("job-old", snapshot)
+    assert old_socket.messages == []
+
+    new_registry, new_socket = RemoteWorkerRegistry(), FakeWebSocket()
+    new = await new_registry.register(
+        new_socket,
+        {"worker_id": "mac-new", "capabilities": {**videotoolbox, "playback_progress": True}},
+    )
+    assert new.capabilities.playback_progress is True
+    new_registry.reserve("job-new", backend="videotoolbox")
+    await new_registry.report_playback("job-new", snapshot)
+    assert new_socket.messages[-1] == {"type": "job.playback", "job_id": "job-new", **snapshot}
+    # 不属于任何 Worker 的任务：安静地什么都不发
+    await new_registry.report_playback("job-unknown", snapshot)
+    assert len(new_socket.messages) == 1
