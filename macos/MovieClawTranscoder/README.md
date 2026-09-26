@@ -7,6 +7,10 @@ MovieClaw Transcoder 是 MovieClaw 远程转码协议的当前 macOS Apple Silic
 远程转码协议本身不绑定 macOS，未来可以实现 Linux、Windows 或其他硬件平台的 Worker。
 当前 App 最低支持 macOS 12，目标运行环境是 Apple Silicon Mac。
 
+界面在 macOS 26 起是液态玻璃（Liquid Glass）风格：菜单、按钮、窗口由系统绘制成新外观，
+页眉徽标用玻璃材质。macOS 12–15 上功能完全一致，只是没有玻璃质感。从源码构建时要用
+Xcode 26 或更新版本才会带上液态玻璃；旧版 Xcode 也能编译，但产物是旧样式。
+
 Worker 不挂载 NAS 文件系统，也不把源视频和 HLS 产物保存到 Mac 硬盘。ffmpeg 通过
 HTTP(S) 读取源文件；上传代理只在本机回环地址监听，并将单个产物暂存在内存后上传。
 App Support 仍会保存 ffmpeg 包、版本信息和普通配置，日志也会写入用户日志目录，

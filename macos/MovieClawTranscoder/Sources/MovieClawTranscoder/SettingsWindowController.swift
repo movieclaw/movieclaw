@@ -93,6 +93,8 @@ final class SettingsWindowController: NSWindowController {
     private var liveStatus: WorkerStatus?
 
     private var stage: Stage = .idle
+    /// 标题栏高度。内容铺到了标题栏下面，排版要从这个高度往下。
+    private let titlebarInset: CGFloat
     private var pollTask: Task<Void, Never>?
     private var countdownTask: Task<Void, Never>?
     /// 本机是否已经持有令牌。
@@ -111,6 +113,8 @@ final class SettingsWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         // 记住用户挪过的位置：每次打开都跳回屏幕正中是很烦的
         window.setFrameAutosaveName(settingsFrameAutosaveName)
+        // 透明标题栏，内容从红绿灯下方的页眉开始（液态玻璃时代的窗口形态）
+        titlebarInset = window.adoptGlassTitlebar()
         isAuthorized = snapshot.tokenConfigured
         super.init(window: window)
 
@@ -192,11 +196,19 @@ final class SettingsWindowController: NSWindowController {
         root.spacing = SettingsStyle.sectionSpacing
         root.translatesAutoresizingMaskIntoConstraints = false
         root.edgeInsets = NSEdgeInsets(
-            top: 20,
+            top: titlebarInset + 6,
             left: SettingsStyle.windowPadding,
             bottom: SettingsStyle.windowPadding,
             right: SettingsStyle.windowPadding
         )
+
+        let header = WindowHeaderView(
+            title: "MovieClaw Transcoder",
+            subtitle: "用这台 Mac 的硬件为 movieclaw 转码 · 版本 \(BuildInfo.version)",
+            subtitleWidth: SettingsStyle.contentWidth - 56
+        )
+        root.addArrangedSubview(header)
+        SettingsStyle.stretch(header, in: root)
 
         let connect = makeConnectSection()
         connectSection = connect
@@ -300,7 +312,8 @@ final class SettingsWindowController: NSWindowController {
         advancedToggle.isBordered = false
         advancedToggle.font = .systemFont(ofSize: 12)
         advancedToggle.contentTintColor = .secondaryLabelColor
-        advancedToggle.title = "▶ 高级设置"
+        advancedToggle.imagePosition = .imageLeading
+        setAdvancedExpanded(false)
 
         let column = NSStackView(views: [advancedToggle, section])
         column.orientation = .vertical
@@ -341,6 +354,13 @@ final class SettingsWindowController: NSWindowController {
         cancelButton.target = self
         cancelButton.action = #selector(cancelPairing)
         cancelButton.bezelStyle = .rounded
+
+        if Glass.isAvailable {
+            // macOS 26 的按钮是液态玻璃胶囊，大尺寸更贴近系统设置里的比例
+            for button in [primaryButton, discoverButton, resetButton, cancelButton] {
+                button.controlSize = .large
+            }
+        }
 
         let bar = NSStackView(views: [
             barStatusLabel,
@@ -449,8 +469,9 @@ final class SettingsWindowController: NSWindowController {
             credentialRow.isHidden = false
             resetButton.isHidden = false
             primaryButton.isHidden = true
-            statusDot.color = Self.dotColor(for: liveStatus?.state)
-            statusValue.stringValue = liveStatus?.state.displayName ?? "已授权，未启动"
+            let presentation = WorkerStatePresentation.make(liveStatus?.state, configured: true)
+            statusDot.color = presentation.color
+            statusValue.stringValue = liveStatus == nil ? "已授权，未启动" : presentation.title
             connectSection?.note = ""
             authSection?.note = "配置完成，之后开机自动连接。"
                 + "要停用这台机器，在网页的设备列表里吊销即可。"
@@ -463,8 +484,10 @@ final class SettingsWindowController: NSWindowController {
             statusRow.isHidden = false
             discoverButton.isHidden = false
             statusDot.color = .systemRed
-            statusValue.stringValue = message
-            connectSection?.note = "确认地址填写正确且 movieclaw 正在运行，然后重试。"
+            // 失败原因常常很长（带上系统的英文报错），塞在右对齐的一行里只剩中间一截；
+            // 状态行只说结论，原因放进下面会折行的脚注
+            statusValue.stringValue = "连接失败"
+            connectSection?.note = "\(message)\n确认地址填写正确且 movieclaw 正在运行，然后重试。"
             authSection?.note = ""
             barStatusLabel.stringValue = ""
             primaryButton.title = "重试"
@@ -478,26 +501,12 @@ final class SettingsWindowController: NSWindowController {
         advancedToggle.isHidden = pairingNow
         if pairingNow {
             advancedSection?.isHidden = true
-            advancedToggle.title = "▶ 高级设置"
+            setAdvancedExpanded(false)
         }
         barStatusLabel.isHidden = barStatusLabel.stringValue.isEmpty
         connectSection?.refresh()
         authSection?.refresh()
         resizeToFit()
-    }
-
-    /// 连接状态到圆点颜色。绿=在干活或随时能干活，橙=还在路上，红=坏了。
-    private static func dotColor(for state: WorkerConnectionState?) -> NSColor {
-        switch state {
-        case .ready, .busy, .draining, .paused:
-            return .systemGreen
-        case .starting, .connecting, .reconnecting:
-            return .systemOrange
-        case .error, .stopped:
-            return .systemRed
-        case .unconfigured, .none:
-            return .tertiaryLabelColor
-        }
     }
 
     private func transition(to next: Stage) {
@@ -590,8 +599,16 @@ final class SettingsWindowController: NSWindowController {
     @objc private func toggleAdvanced() {
         guard let advancedSection else { return }
         advancedSection.isHidden.toggle()
-        advancedToggle.title = advancedSection.isHidden ? "▶ 高级设置" : "▼ 高级设置"
+        setAdvancedExpanded(!advancedSection.isHidden)
         resizeToFit()
+    }
+
+    /// 折叠箭头：系统的 chevron 符号，展开朝下、收起朝右。
+    private func setAdvancedExpanded(_ expanded: Bool) {
+        advancedToggle.title = " 高级设置"
+        advancedToggle.image = Symbols.image(
+            expanded ? "chevron.down" : "chevron.right", pointSize: 10, weight: .semibold
+        )
     }
 
     @objc private func primaryAction() {

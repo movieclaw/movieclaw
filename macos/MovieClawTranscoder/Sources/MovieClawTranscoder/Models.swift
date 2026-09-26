@@ -227,6 +227,16 @@ enum FFmpegMenuState: Sendable, Equatable {
         if case .processing = self { return false }
         return true
     }
+
+    /// 菜单项图标（SF Symbols）。
+    var symbolName: String {
+        switch self {
+        case .download: return "arrow.down.circle"
+        case .update: return "arrow.triangle.2.circlepath"
+        case .processing: return "hourglass"
+        case .retry: return "arrow.clockwise.circle"
+        }
+    }
 }
 
 struct JobProgress: Sendable {
