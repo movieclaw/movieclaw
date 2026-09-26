@@ -378,6 +378,8 @@ private struct FilterSheet: View {
         }
         .presentationDetents([.fraction(0.7), .large])
         .presentationDragIndicator(.visible)
+        // 不透明深色底（同 Web 筛选面板）：透明液态玻璃会让底下的海报透上来，筛选项文字看不清（R-5）
+        .presentationBackground(Color(red: 0x17 / 255, green: 0x1A / 255, blue: 0x23 / 255))
         // 背景不压暗、可交互：压暗就等于全屏，看不见墙在变——恰好废掉这个面板存在的理由
         .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.7)))
     }
