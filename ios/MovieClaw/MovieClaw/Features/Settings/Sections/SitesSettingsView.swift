@@ -19,6 +19,9 @@ struct SitesSettingsView: View {
     @State private var store = SettingsBSiteStore()
     @State private var presets = SettingsBSitePresetStore()
     @State private var tab: SettingsBSiteTab = .sites
+    /// 深链 `?tab=search` 直达搜索分类（Web useTabParam），只在首次出现时读一次
+    @Environment(\.routeQuery) private var routeQuery
+    @State private var routeQueryConsumed = false
     /// 当前展开详情的站点（单开手风琴）
     @State private var expanded: String?
     @State private var sheet: SettingsBSiteSheet?
@@ -50,6 +53,11 @@ struct SitesSettingsView: View {
         .settingsBFormStyle()
         .environment(\.editMode, $editMode)
         .onChange(of: tab) { editMode = .inactive }
+        .onAppear {
+            guard !routeQueryConsumed else { return }
+            routeQueryConsumed = true
+            if routeQuery["tab"] == "search" { tab = .search }
+        }
         .task { await store.load(api) }
         .task { await presets.load(api) }
         // 有站点处于待验证/验证中时 2.5 秒刷新已接入列表，直到全部落定
@@ -183,7 +191,8 @@ struct SitesSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(Theme.warning)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button("去调整") { router.push(.settingsSection(.downloaders)) }
+                    // 同 Web：带 ?limits=<下载器 id>，落地即打开那台的「限速与队列」
+                    Button("去调整") { router.push(.settingsSection(.downloaders, query: ["limits": String(worst.key)])) }
                         .font(.footnote.weight(.medium))
                         .buttonStyle(.glass)
                         .tint(Theme.warning)

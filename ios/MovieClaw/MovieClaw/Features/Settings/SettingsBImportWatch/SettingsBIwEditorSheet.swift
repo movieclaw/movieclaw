@@ -32,7 +32,8 @@ struct SettingsBIwEditorSheet: View {
     @State private var busy = false
     @State private var error: String?
 
-    init(rule: API.ImportWatchView?, libraries: [API.LibraryView], downloaderDirs: [SettingsBIwDirOption], onSaved: @escaping () -> Void) {
+    init(rule: API.ImportWatchView?, libraries: [API.LibraryView], downloaderDirs: [SettingsBIwDirOption],
+         initialTarget: SettingsBIwTarget? = nil, onSaved: @escaping () -> Void) {
         self.rule = rule
         self.libraries = libraries
         self.downloaderDirs = downloaderDirs
@@ -47,6 +48,8 @@ struct SettingsBIwEditorSheet: View {
             initial = .path(path, kind: rule?.kind ?? "movie")
         } else if let kind = rule?.kind {
             initial = .auto(kind: kind)
+        } else if rule == nil, let initialTarget {
+            initial = initialTarget
         } else {
             initial = libraries.first.map { .library($0.id) }
         }

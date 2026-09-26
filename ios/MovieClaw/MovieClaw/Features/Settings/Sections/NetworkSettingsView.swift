@@ -33,7 +33,22 @@ struct NetworkSettingsView: View {
     private static let proxyPattern = #"^(http|https|socks5|socks5h)://"#
 
     var body: some View {
-        AsyncContent(view, retry: reload) { current in
+        // 加载 / 失败文案同 Web（「正在加载网络配置…」「网络配置加载失败」+ 重试）
+        switch view {
+        case .loading:
+            SettingsLoadingRow(text: "正在加载网络配置…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .appBackground()
+                .task { await reload() }
+        case let .failed(message):
+            ErrorState(title: "网络配置加载失败", message: message, retry: reload)
+                .appBackground()
+        case let .loaded(current):
+            loaded(current)
+        }
+    }
+
+    private func loaded(_ current: API.NetworkConfigView) -> some View {
             List {
                 proxySection(current)
                 servicesSection(title: "走代理的服务", services: current.services.filter { !$0.id.hasPrefix("site:") }, current: current,
@@ -47,9 +62,7 @@ struct NetworkSettingsView: View {
                 mirrorSection(current)
             }
             .scrollDismissesKeyboard(.interactively)
-        }
         .appBackground()
-        .task { await reload() }
         .onChange(of: focus) { old, _ in
             // 失焦即存（Web onBlur）
             switch old {
@@ -212,7 +225,8 @@ struct NetworkSettingsView: View {
                         .focused($focus, equals: .proxyURL)
                         .onSubmit { focus = nil }
                         .accessibilityIdentifier("network-proxy-url")
-                    if proxyURLError != nil || proxyURLDraft.trimmingCharacters(in: .whitespaces).isEmpty {
+                    // 「填写地址后自动保存生效」按已写入的值判断（Web form.proxy_url，失焦才提交），打字时不闪
+                    if proxyURLError != nil || (form.proxyUrl ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
                         Text(proxyURLError ?? "填写地址后自动保存生效")
                             .font(.caption).foregroundStyle(proxyURLError == nil ? Theme.textFaint : Theme.danger)
                     }

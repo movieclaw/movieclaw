@@ -14,7 +14,10 @@ struct PlaybackSettingsView: View {
     @AppStorage(SettingsPlaybackEngine.storageKey) private var engine = SettingsPlaybackEngine.auto.rawValue
 
     @State private var policy: API.PlaybackPolicyView?
+    /// 策略错误及其归属：加载失败两张卡都显示；保存失败只显示在出错的那张卡（Web 两张卡各管各的错误）
     @State private var policyError: String?
+    @State private var policyErrorScope: PolicyErrorScope = .load
+    enum PolicyErrorScope { case load, trickplay, cache }
     @State private var policyBusy = false
 
     @State private var config: Loadable<API.RemoteTranscodeConfigView> = .loading
@@ -25,7 +28,6 @@ struct PlaybackSettingsView: View {
     @State private var saveError: String?
     @State private var saved = false
     @State private var status: SettingsTranscodeWorkerStatus?
-    @State private var statusLoaded = false
     @State private var pendingWorkers: [API.DeviceRequestView] = []
     @State private var authorizedWorkers: [API.ApiTokenView] = []
 
@@ -70,7 +72,7 @@ struct PlaybackSettingsView: View {
     @ViewBuilder
     private var policySection: some View {
         Section("进度条预览") {
-            if let policyError { SettingsNotice(text: policyError) }
+            if let policyError, policyErrorScope != .cache { SettingsNotice(text: policyError) }
             if let policy {
                 Toggle(isOn: Binding(get: { policy.trickplayEnabled }, set: { value in Task { await savePolicy(trickplay: value) } })) {
                     SettingsRowText(
@@ -87,6 +89,7 @@ struct PlaybackSettingsView: View {
             }
         }
         Section("转码缓存") {
+            if let policyError, policyErrorScope != .trickplay { SettingsNotice(text: policyError) }
             if let policy {
                 Toggle(isOn: Binding(get: { policy.transcodeCacheEnabled }, set: { value in Task { await savePolicy(cache: value) } })) {
                     SettingsRowText(
@@ -110,6 +113,7 @@ struct PlaybackSettingsView: View {
             policyError = nil
         } catch {
             policyError = error.localizedDescription
+            policyErrorScope = .load
         }
     }
 
@@ -128,6 +132,7 @@ struct PlaybackSettingsView: View {
         } catch {
             policy = previous
             policyError = error.localizedDescription
+            policyErrorScope = trickplay != nil ? .trickplay : .cache
         }
     }
 
@@ -162,8 +167,18 @@ struct PlaybackSettingsView: View {
             : "配置已就绪，但还没有 Worker 连上来"
         let statusColor: Color = !config.enabled ? Theme.textMuted : (config.ready && !online.isEmpty ? Theme.success : Theme.warning)
 
+        // 远程转码介绍放在最上面（Web 的段首说明），下面才是「状态」组
         Section {
             if let saveError { SettingsNotice(text: saveError) }
+            Text("只把需要远程硬件能力的转码任务交给兼容 Worker。NAS 仍负责鉴权、播放会话和 HLS 缓存；修改后立即生效，不需要重启应用。当前可用的 Worker 实现为 macOS Apple Silicon 版本。")
+                .font(.subheadline).foregroundStyle(Theme.textMuted)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
+        } header: {
+            Text("远程转码")
+        }
+
+        Section {
             Toggle(isOn: $enabled) {
                 SettingsRowText(
                     title: "启用远程硬件转码",
@@ -179,9 +194,7 @@ struct PlaybackSettingsView: View {
                 Text("· \(issue)").font(.caption).foregroundStyle(Theme.warning)
             }
         } header: {
-            Text("远程转码 · 状态")
-        } footer: {
-            Text("只把需要远程硬件能力的转码任务交给兼容 Worker。NAS 仍负责鉴权、播放会话和 HLS 缓存；修改后立即生效，不需要重启应用。当前可用的 Worker 实现为 macOS Apple Silicon 版本。")
+            Text("状态")
         }
 
         Section("Worker") {
@@ -202,7 +215,8 @@ struct PlaybackSettingsView: View {
                     tone: .warn
                 )
             }
-            if !statusLoaded {
+            // 状态接口拿不到（含失败）时停在这句（Web status == null），不去猜引导或离线列表
+            if status == nil {
                 Text("正在获取 Worker 状态…").font(.caption).foregroundStyle(Theme.textFaint)
             } else if hasAnyWorker {
                 ForEach(workers, id: \.workerId) { worker in
@@ -297,7 +311,6 @@ struct PlaybackSettingsView: View {
     /// 在线状态与授权清单：附属指示器，失败不弹错，不盖掉用户正在填的表单
     private func pollStatus() async {
         status = try? await api.send("GET", "/transcode-worker/status", as: SettingsTranscodeWorkerStatus.self)
-        statusLoaded = true
         do {
             async let requests = api.authDevicesRequests()
             async let devices = api.authTokensList()
@@ -359,11 +372,13 @@ nonisolated struct SettingsTranscodeWorkerStatus: Decodable, Sendable {
 
         /// 「macOS · arm64 · ffmpeg 7.1 · videotoolbox · 任务 0/2 · 3 秒前活跃」
         var summary: String {
-            [
-                platform, arch, ffmpegVersion.map { "ffmpeg \($0)" },
+            // 空串与 nil 一样滤掉（Web filter(Boolean)），不会出现「ffmpeg 」这种半截字段
+            let ffmpeg = ffmpegVersion.flatMap { $0.isEmpty ? nil : "ffmpeg \($0)" }
+            return [
+                platform, arch, ffmpeg,
                 backends.isEmpty ? nil : backends.joined(separator: "/"),
                 "任务 \(activeJobs)/\(maxJobs)", "\(Int(lastSeenSeconds.rounded())) 秒前活跃",
-            ].compactMap { $0 }.joined(separator: " · ")
+            ].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
         }
     }
 

@@ -213,7 +213,7 @@ private struct MemberRow: View {
                     }
                 }
                 Text(libraryScope).font(.subheadline).foregroundStyle(Theme.textMuted).lineLimit(2)
-                Text(member.lastLoginAt.map { "最近活动 \(Formatters.relative($0))" } ?? "从未登录")
+                Text(member.lastLoginAt.map { Formatters.relative($0) } ?? "从未登录")
                     .font(.caption).foregroundStyle(Theme.textFaint)
             }
             Spacer(minLength: 4)
@@ -542,8 +542,11 @@ private struct EditMemberSheet: View {
             allowSearch: allowSearch,
             allowDirectDownload: allowSearch && allowDirectDownload,
             allLibraries: allLibraries,
-            // 「全部库」时只保留「指定成员」库的显式授权，不能当白名单一起清掉
-            libraryIds: allLibraries ? libraryIds.filter { selectedModeIds.contains($0) } : libraryIds,
+            // 「全部库」时只保留「指定成员」库的显式授权，不能当白名单一起清掉。
+            // 保险：库清单里没有的 id（库列表没拉到 / 刚建的库）一律原样保留，宁可多留不误删授权
+            libraryIds: allLibraries
+                ? libraryIds.filter { id in selectedModeIds.contains(id) || !libraries.contains { $0.id == id } }
+                : libraryIds,
             allSites: allSites,
             siteIds: allSites ? [] : siteIds,
             // -1 = 取消上限；不传是「不改动」，两者在协议上必须分开

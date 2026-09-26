@@ -11,6 +11,8 @@ enum SettingsBDlAction: Equatable {
 struct SettingsBDlEditorTarget: Identifiable {
     let id = UUID()
     var downloader: API.DownloaderView?
+    /// 体检修复卡带来的映射建议（本机侧路径），编辑器据此预填一行映射
+    var suggestMapping: String?
 }
 
 /// 限速与队列弹层打开参数（生成的模型没有 Identifiable，包一层）

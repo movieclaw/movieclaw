@@ -19,7 +19,10 @@ struct AppearanceSettingsView: View {
     @Environment(\.permissions) private var permissions
     @Environment(Feedback.self) private var feedback
 
-    enum Tab: Hashable { case backdrop, texture, nav }
+    enum Tab: String, Hashable { case backdrop, texture, nav }
+    /// 深链 `?tab=` 直达页签（Web useTabParam），只在首次出现时读一次
+    @Environment(\.routeQuery) private var routeQuery
+    @State private var routeQueryConsumed = false
 
     @State private var prefs: Loadable<API.UiPreferencesSetting> = .loading
     @State private var appearance: API.AppearanceView?
@@ -66,6 +69,11 @@ struct AppearanceSettingsView: View {
         }
         .appBackground()
         .task { await load() }
+        .onAppear {
+            guard !routeQueryConsumed else { return }
+            routeQueryConsumed = true
+            if let raw = routeQuery["tab"], let value = Tab(rawValue: raw) { tab = value }
+        }
         // 离开外观页 / 离开质感页签：撤销未保存的预览，草稿回到已保存值（Web 质感组卸载即 setPreview(null)）
         .onDisappear { AppBackdropStore.shared.previewScrim = nil }
         .onChange(of: tab) { old, _ in

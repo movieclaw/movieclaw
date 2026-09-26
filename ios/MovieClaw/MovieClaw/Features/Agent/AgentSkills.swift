@@ -85,6 +85,12 @@ enum AgentCatalog {
         return list
     }
 
+    /// 作废模型清单缓存：设置里增删改模型供应商、保存 AI 设定后调用，
+    /// 对话框下次打开立即拿到新清单（Web invalidateModelOptionsCache）
+    static func invalidateModels() {
+        models = nil
+    }
+
     /// 已知技能名（小写）；nil = 还没拿到（调用方视为「暂不过滤」）
     static func knownSkills(api: APIClient) async -> Set<String>? {
         if let skillNames { return skillNames }

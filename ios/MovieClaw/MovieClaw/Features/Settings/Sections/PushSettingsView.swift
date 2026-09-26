@@ -8,6 +8,9 @@ import SwiftUI
 /// 切换标签时另一侧卸载，回来重新拉取（同 Web）。
 struct PushSettingsView: View {
     @State private var tab: SettingsBPushTab = .channels
+    /// 深链 `?tab=content` 直达推送内容（Web useTabParam），只在首次出现时读一次
+    @Environment(\.routeQuery) private var routeQuery
+    @State private var routeQueryConsumed = false
 
     var body: some View {
         Form {
@@ -28,6 +31,11 @@ struct PushSettingsView: View {
             }
         }
         .settingsBFormStyle()
+        .onAppear {
+            guard !routeQueryConsumed else { return }
+            routeQueryConsumed = true
+            if let raw = routeQuery["tab"], let value = SettingsBPushTab(rawValue: raw) { tab = value }
+        }
     }
 }
 
