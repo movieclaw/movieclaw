@@ -429,10 +429,11 @@ export function DiagnosticsPanel({
             {[
               stats?.engine ?? "—",
               formatMbps(stats?.bitrate) && `实时 ${formatMbps(stats?.bitrate)}`,
-              // 取流速度与实时码率并排：速度贴着码率跑说明线路吃得下、卡的是
-              // 服务端转码；速度远低于码率说明就是带宽不够。单看任一个都会误诊。
+              // 带宽与实时码率并排：带宽贴着码率跑说明线路吃得下、卡的是
+              // 服务端转码；带宽远低于码率说明就是线路不够。单看任一个都会误诊。
+              // 「带宽」是线路能跑多快（缓冲满了也保持实测值），顶栏「↓」是此刻在下多快，两者不是一个量
               formatBandwidth(stats?.downlinkBps ?? null) &&
-                `取流 ${formatBandwidth(stats?.downlinkBps ?? null)}`,
+                `带宽 ${formatBandwidth(stats?.downlinkBps ?? null)}`,
               stats ? `缓冲 ${stats.bufferedSeconds.toFixed(1)} 秒` : null,
               stats ? `播放头 ${stats.currentTimeSeconds.toFixed(1)} 秒` : null,
             ]
