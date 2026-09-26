@@ -224,10 +224,13 @@ App 本身的崩溃由登录项兜：App 在 `~/Library/LaunchAgents` 放一份 
   不再自启；重新注册要等系统后台处理完新版本（实测半分钟以上）才生效。传统 LaunchAgent
   没有这层约束（macOS 27 实测）。有了 Developer ID 签名后可以换回来。
 - **手动打开时交班**：只有 launchd 拉起的进程受 KeepAlive 保护。手动打开的实例（更新后
-  重新打开之类）先请 launchd 按配置另起一个（`launchctl kickstart`），等它出现就退出；
-  launchd 那个遇到正在交班的手动实例，会等它退出再接班，而不是按防多开直接退出。靠
-  `XPC_SERVICE_NAME` 区分两者：launchd 设成配置的 Label，手动打开的是
-  `application.<bundle id>.…`。5 秒内没等到就自己接着跑。
+  重新打开之类）在读到连接密钥之后、启动内核之前，请 launchd 按配置另起一个
+  （`launchctl kickstart`），等它出现就退出；launchd 那个遇到正在交班的手动实例，会等它
+  退出再接班，而不是按防多开直接退出。靠 `XPC_SERVICE_NAME` 区分两者：launchd 设成配置
+  的 Label，手动打开的是 `application.<bundle id>.…`。5 秒内没等到就自己接着跑。
+  交班放在读到密钥之后，是因为 ad-hoc 签名每次更新都要在钥匙串里重新授权：授权弹窗得留在
+  用户亲手打开、正在最前面的实例里，launchd 在后台拉起的实例不一定能把模态弹窗摆到眼前
+  （macOS 14 起激活要「协商」）；选了「始终允许」后接班的实例不会再问。
 - 配置里写的是可执行文件的绝对路径，App 挪了位置下次打开时改写并重新装载。
 
 **任务层（内核内）。**

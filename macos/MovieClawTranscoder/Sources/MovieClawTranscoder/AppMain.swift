@@ -103,28 +103,19 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
     private var activateManagedOnInstall = false
     /// 钥匙串说明上点了「暂不连接」：面板停在「没有连接」，等他自己点「连接」。
     private var awaitingKeychainApproval = false
+    /// 这个进程已经试过交班给登录项（只在第一次连接前试一次）。
+    private var handOverChecked = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 防多开：已经有一个在跑（开机自启动的那个、或另一个位置的副本），这个直接退出。
         // 退出码 0：就算这个实例是登录项拉起的，系统也不会当成崩溃再拉一遍。
-        // 例外是登录项拉起的实例碰上正在交班的手动实例（见下面）：等它退出后接班
+        // 例外是登录项拉起的实例碰上正在交班的手动实例（见 handOverToLoginItem）：等它退出后接班
         if let other = Self.otherInstances().first,
            !(LoginItem.isLaunchdInstance && Self.wait(upTo: 5, until: { Self.otherInstances().isEmpty })) {
             AppLogger.shared.info("已经有一个 MovieClaw 转码器在运行（pid=\(other.processIdentifier)），本次启动直接退出")
             exit(0)
         }
         LoginItem.applyOnLaunch()
-        // 手动打开（访达、聚焦、更新后重新打开）的实例不归 launchd 管，意外退出后不会被拉起。
-        // 开着开机自启动时请 launchd 按登录项另起一个，等它出现就退出、由它接班；5 秒没等到
-        // （登录项被系统拦住之类）就自己接着跑——保护少一层，但 App 总归是开着的
-        if !LoginItem.isLaunchdInstance, LoginItem.state == .enabled {
-            LoginItem.kickstart()
-            if Self.wait(upTo: 5, until: { !Self.otherInstances().isEmpty }) {
-                AppLogger.shared.info("已交给登录项接管（App 意外退出后系统会重新拉起它），本次打开的实例退出")
-                exit(0)
-            }
-            AppLogger.shared.warning("登录项 5 秒内没有接班，本实例继续运行（App 意外退出后不会被自动拉起）")
-        }
 
         menuBar = MenuBarController(history: jobHistory)
         ffmpegManager = FFmpegDownloadManager()
@@ -473,6 +464,10 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if !handOverChecked {
+            handOverChecked = true
+            handOverToLoginItem()
+        }
         supervisor.start(configuration)
         latestStatus = WorkerStatus.offline(
             .starting,
@@ -482,6 +477,25 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
             ffmpegVersion: "检查中"        )
         menuBar.update(status: latestStatus, configured: true)
         AppLogger.shared.info("准备连接 NAS：\(configuration.nasURL.host ?? "未知主机")")
+    }
+
+    /// 手动打开（访达、聚焦、更新后重新打开）的实例不归 launchd 管，意外退出后不会被拉起。
+    /// 开着开机自启动时请 launchd 按登录项另起一个，等它出现就退出、由它接班。
+    ///
+    /// 放在读到连接密钥之后、启动内核之前：更新后第一次打开要在钥匙串里重新授权，这一步
+    /// 得留在用户亲手打开、正在最前面的这个实例里——launchd 在后台拉起的实例不一定能把
+    /// 弹窗摆到用户眼前（macOS 14 起激活要「协商」），模态弹窗被挡住，App 就像卡死了。
+    /// 授权时选了「始终允许」，接班的实例读钥匙串就不会再问。设置窗开着（用户正在填）
+    /// 时不交班。5 秒没等到（登录项被系统拦住之类）就自己接着跑——保护少一层，但 App
+    /// 总归是开着的。
+    private func handOverToLoginItem() {
+        guard !LoginItem.isLaunchdInstance, LoginItem.state == .enabled, settingsWindow == nil else { return }
+        LoginItem.kickstart()
+        if Self.wait(upTo: 5, until: { !Self.otherInstances().isEmpty }) {
+            AppLogger.shared.info("已交给登录项接管（App 意外退出后系统会重新拉起它），本次打开的实例退出")
+            exit(0)
+        }
+        AppLogger.shared.warning("登录项 5 秒内没有接班，本实例继续运行（App 意外退出后不会被自动拉起）")
     }
 
     private func stopWorker() {
