@@ -1,0 +1,6 @@
+// 签名配置入口（提交进仓库）。
+//
+// 开发者团队是个人信息，不入库：在同目录建 Signing.local.xcconfig（已被 .gitignore 忽略），写一行
+//     DEVELOPMENT_TEAM = 你的团队 ID
+// 真机安装时自动签名就会用它；没有这个文件时只能编译模拟器版本（模拟器不需要签名）。
+#include? "Signing.local.xcconfig"

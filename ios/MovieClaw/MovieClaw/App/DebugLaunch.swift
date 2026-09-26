@@ -3,7 +3,7 @@ import Foundation
 #if DEBUG
 /// 开发期启动参数（仅 Debug 构建生效，Release 里整段不存在）：
 ///
-///     xcrun simctl launch <设备> com.movieclaw.app \
+///     xcrun simctl launch <设备> io.movieclaw.app \
 ///         -mcServer http://localhost:3000 -mcUser admin -mcPass xxx -mcRoute /library/1
 ///
 /// - `-mcServer/-mcUser/-mcPass`：跳过连接页与登录页，直接以该账号进入；

@@ -10,8 +10,8 @@ SIM="${MC_SIM:-iPhone 17}"
 APP="${MC_DERIVED:-build}/Build/Products/Debug-iphonesimulator/MovieClaw.app"
 xcrun simctl boot "$SIM" 2>/dev/null; xcrun simctl bootstatus "$SIM" -b >/dev/null
 xcrun simctl install "$SIM" "$APP"
-xcrun simctl terminate "$SIM" com.movieclaw.app 2>/dev/null
-xcrun simctl launch "$SIM" com.movieclaw.app \
+xcrun simctl terminate "$SIM" io.movieclaw.app 2>/dev/null
+xcrun simctl launch "$SIM" io.movieclaw.app \
   -mcServer "${MC_SERVER:-http://localhost:3000}" -mcUser "${MC_USER:-admin}" -mcPass "${MC_PASS:-mclaw-dev-2026}" \
   -mcRoute "$ROUTE" >/dev/null
 sleep "$WAIT"

@@ -6,7 +6,7 @@
 # 生成：cd ios/MovieClaw && xcodegen generate（产物 MovieClaw.xcodeproj 已在 .gitignore）
 name: MovieClaw
 options:
-  bundleIdPrefix: com.movieclaw
+  bundleIdPrefix: io.movieclaw
   deploymentTarget:
     iOS: "26.0"
   createIntermediateGroups: true
@@ -20,6 +20,10 @@ packages:
   MPVKit:
     url: https://github.com/mpvkit/MPVKit
     from: "1.0.0"
+configFiles:
+  # 开发者团队从本机 Signing.local.xcconfig 读（不入库），见 XcodeConfig/Signing.xcconfig
+  Debug: XcodeConfig/Signing.xcconfig
+  Release: XcodeConfig/Signing.xcconfig
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -28,7 +32,6 @@ settings:
     SWIFT_APPROACHABLE_CONCURRENCY: YES
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
-    DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
 targets:
   MovieClaw:
@@ -73,7 +76,7 @@ targets:
           - audio
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.movieclaw.app
+        PRODUCT_BUNDLE_IDENTIFIER: io.movieclaw.app
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
@@ -92,7 +95,7 @@ targets:
         product: MPVKit
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.movieclaw.mpvcore
+        PRODUCT_BUNDLE_IDENTIFIER: io.movieclaw.mpvcore
         GENERATE_INFOPLIST_FILE: YES
         SKIP_INSTALL: YES
         # OpenGL ES / GLKit 在 iOS 上已标记废弃，但仍是模拟器上唯一可用的 mpv 渲染路径

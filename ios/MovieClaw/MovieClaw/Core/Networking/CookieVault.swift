@@ -8,7 +8,7 @@ import Security
 /// 这里在每次服务器下发 `Set-Cookie` 后，把该服务器的全部 Cookie 同步写进钥匙串；
 /// 冷启动时再灌回 `HTTPCookieStorage`。会话令牌属于凭证，放钥匙串而不是 UserDefaults。
 nonisolated enum CookieVault {
-    private static let service = "com.movieclaw.app.cookies"
+    private static let service = "io.movieclaw.app.cookies"
 
     /// 把某服务器当前的全部 Cookie 写入钥匙串（覆盖旧值）
     static func save(for server: ServerAddress) {

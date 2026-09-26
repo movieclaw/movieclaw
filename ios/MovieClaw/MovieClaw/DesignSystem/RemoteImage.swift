@@ -81,7 +81,7 @@ struct RemoteImage: View {
 /// App 启动时配置 Nuke：300MB 磁盘缓存 + 与 APIClient 同一套 Cookie
 enum ImagePipelineSetup {
     static func configure() {
-        var configuration = ImagePipeline.Configuration.withDataCache(name: "com.movieclaw.images", sizeLimit: 300 * 1024 * 1024)
+        var configuration = ImagePipeline.Configuration.withDataCache(name: "io.movieclaw.images", sizeLimit: 300 * 1024 * 1024)
         let urlConfig = DataLoader.defaultConfiguration
         urlConfig.httpCookieStorage = .shared
         urlConfig.httpShouldSetCookies = true
