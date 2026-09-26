@@ -7,6 +7,7 @@ import SwiftUI
 ///
 /// 交互要点：
 /// - 进入时拉轨迹回放；会话仍在运行则自动接上事件流（离开再回来不重拉，继续跟随）；
+/// - 每次进入会话都停在最底部（最新一轮），见 `pinnedToBottom`；
 /// - 生成中可继续打字，发送键变停止键；
 /// - 自动滚动只在用户本就贴近底部时跟随新内容（上滚查看历史时不打断），离开底部给「回到最新消息」按钮；
 /// - 「改写这条提问」只进入本地编辑态，发送时二次确认「替换并重新提问」才调用 retry；
@@ -33,6 +34,10 @@ struct AgentConversationView: View {
     @State private var retrying = false
     @State private var position = ScrollPosition(edge: .bottom)
     @State private var nearBottom = true
+    /// 进入会话后的贴底期。懒加载列表的内容高度是边渲染边算的：首帧只估出一小段
+    /// （真机实测大会话首帧 8645pt，几十毫秒内涨到 35749pt），只在首次布局定位到底部会停在对话中间。
+    /// 贴底期内内容再怎么长高都锚在底部；用户一开始拖动或 1.5 秒后结束，之后回到「贴近底部才跟随」的规则
+    @State private var pinnedToBottom = true
 
     init(sessionId: String) {
         self.sessionId = sessionId
@@ -124,6 +129,17 @@ struct AgentConversationView: View {
         }
         .scrollPosition($position)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .defaultScrollAnchor(pinnedToBottom ? .bottom : nil, for: .sizeChanges)
+        .onScrollPhaseChange { _, phase in
+            if phase == .interacting { pinnedToBottom = false }
+        }
+        .task {
+            // 从会话里推进的页面返回时不再跳到底部：只有刚进入会话的贴底期才定位
+            guard pinnedToBottom else { return }
+            position.scrollTo(edge: .bottom)
+            try? await Task.sleep(for: .seconds(1.5))
+            pinnedToBottom = false
+        }
         .scrollDismissesKeyboard(.interactively)
         .scrollEdgeEffectStyle(.hard, for: .bottom)
         .onScrollGeometryChange(for: Bool.self) { geometry in

@@ -76,7 +76,8 @@ struct AgentTurnView: View, Equatable {
 /// 用户提问气泡 + 浮现的行内操作（复制 / 改写重问）。
 ///
 /// 点一下气泡浮现操作键（同 Web 触屏的 tap-reveal），长按也有同样的系统菜单；
-/// 操作键落在气泡左侧：右对齐气泡天然空出来的地方，不占额外高度、也不推动内容。
+/// 操作键落在气泡下方、右对齐，样式与回答底部的「复制」一致——两种消息的操作都在消息下方
+/// （原先放在气泡左侧，与回答的复制一左一下，2026-09-27 用户要求统一）。
 /// `/skill:名字` 渲染成技能 chip，正文只留用户自己的话（复制与改写仍用完整 token 原文）。
 struct AgentUserBubble: View {
     let text: String
@@ -92,39 +93,41 @@ struct AgentUserBubble: View {
 
     var body: some View {
         let parsed = AgentSkillText.parseTokens(text, allow: knownSkills)
-        HStack(alignment: .bottom, spacing: 4) {
-            Spacer(minLength: 40)
+        VStack(alignment: .trailing, spacing: 6) {
+            HStack(spacing: 0) {
+                Spacer(minLength: 40)
+                bubble(parsed)
+                    .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { revealed.toggle() } }
+                    .contextMenu {
+                        Button("复制", systemImage: "doc.on.doc", action: copy)
+                        if let onEdit {
+                            Button("改写这条提问", systemImage: "pencil", action: onEdit)
+                        }
+                    }
+            }
             if revealed {
-                if let onEdit {
-                    Button {
-                        revealed = false
-                        onEdit()
-                    } label: {
-                        Image(systemName: "pencil").font(.system(size: 13)).frame(width: 32, height: 32)
-                            .expandedHitArea(vertical: 6)
+                HStack(spacing: 8) {
+                    if let onEdit {
+                        Button {
+                            revealed = false
+                            onEdit()
+                        } label: {
+                            actionLabel("改写", systemImage: "pencil")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("改写这条提问")
+                        .accessibilityIdentifier("agent-edit-message")
+                    }
+                    Button(action: copy) {
+                        actionLabel(copied ? "已复制" : "复制", systemImage: copied ? "checkmark" : "doc.on.doc")
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(Theme.textFaint)
-                    .accessibilityLabel("改写这条提问")
-                    .accessibilityIdentifier("agent-edit-message")
+                    .accessibilityIdentifier("agent-copy-message")
                 }
-                Button(action: copy) {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 13)).frame(width: 32, height: 32)
-                        .expandedHitArea(vertical: 6)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(copied ? Theme.success : Theme.textFaint)
-                .accessibilityLabel(copied ? "已复制" : "复制")
-                .accessibilityIdentifier("agent-copy-message")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.textFaint)
+                .transition(.opacity)
             }
-            bubble(parsed)
-                .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { revealed.toggle() } }
-                .contextMenu {
-                    Button("复制", systemImage: "doc.on.doc", action: copy)
-                    if let onEdit {
-                        Button("改写这条提问", systemImage: "pencil", action: onEdit)
-                    }
-                }
         }
         .fullScreenCover(item: $lightbox) { content in
             DiscoverLightbox(content: content).sheetFeedback()
@@ -181,6 +184,16 @@ struct AgentUserBubble: View {
         UIPasteboard.general.string = text
         copied = true
         Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
+    }
+
+    /// 与回答底部「复制」（AgentTurnFooter）同一个样子：小图标 + 文字
+    private func actionLabel(_ title: String, systemImage: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: systemImage).font(.system(size: 11))
+            Text(title)
+        }
+        .padding(.horizontal, 4).padding(.vertical, 2)
+        .expandedHitArea(vertical: 10)
     }
 }
 
