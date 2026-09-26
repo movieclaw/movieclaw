@@ -189,24 +189,28 @@ struct SettingsBSitePresetEditorSheet: View {
     @State private var error: String?
 
     var body: some View {
-        SubsSheetScaffold(title: draft.editingId == nil ? "新建自定义分类" : "编辑自定义分类") {
+        SubsSheetScaffold(
+            title: draft.editingId == nil ? "新建自定义分类" : "编辑自定义分类",
+            confirm: SubsSheetConfirm(
+                title: "保存",
+                enabled: !draft.name.trimmingCharacters(in: .whitespaces).isEmpty,
+                busy: store.busy,
+                identifier: "preset-save"
+            ) { Task { await save() } },
+            ready: siteOptions != nil
+        ) {
             if let error {
-                SubsNotice(text: error, tone: .error)
+                Section { SubsNoticeRow(text: error, tone: .error) }
             }
-            VStack(alignment: .leading, spacing: 6) {
-                Text("名称（1~16 字）").font(.subheadline).foregroundStyle(Theme.textMuted)
+            Section {
                 TextField("如：4K 影剧、MT 专搜", text: $draft.name)
                     .onChange(of: draft.name) { _, v in if v.count > 16 { draft.name = String(v.prefix(16)) } }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color.white.opacity(0.05), in: .rect(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.08)))
                     .accessibilityIdentifier("preset-name")
+            } header: {
+                Text("名称（1~16 字）")
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("资源分类 \(Text("（不勾选 = 不限分类）").foregroundStyle(Theme.textFaint))")
-                    .font(.subheadline).foregroundStyle(Theme.textMuted)
+            Section {
                 SettingsBFlow {
                     ForEach(SettingsBSitePresetCategory.options, id: \.value) { opt in
                         SettingsBSelectChip(title: opt.label, selected: draft.categories.contains(opt.value),
@@ -215,15 +219,18 @@ struct SettingsBSitePresetEditorSheet: View {
                         }
                     }
                 }
+                .padding(.vertical, 4)
+            } header: {
+                Text("资源分类")
+            } footer: {
+                Text("不勾选 = 不限分类")
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("搜索站点 \(Text("（不勾选 = 全部可用站点）").foregroundStyle(Theme.textFaint))")
-                    .font(.subheadline).foregroundStyle(Theme.textMuted)
+            Section {
                 if let siteOptions {
                     if siteOptions.isEmpty {
                         Text("还没有接入任何站点；先切到「站点接入」标签页添加，或直接保存（默认搜全部可用站点）。")
-                            .font(.subheadline).foregroundStyle(Theme.textFaint)
+                            .font(.subheadline).foregroundStyle(Theme.textMuted)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
                         SettingsBFlow {
@@ -236,36 +243,30 @@ struct SettingsBSitePresetEditorSheet: View {
                                 .opacity(site.usable ? 1 : 0.55)
                             }
                         }
+                        .padding(.vertical, 4)
                     }
                 } else {
-                    Text("正在加载站点列表…").font(.subheadline).foregroundStyle(Theme.textFaint)
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在加载站点列表…").foregroundStyle(Theme.textMuted)
+                    }
                 }
+            } header: {
+                Text("搜索站点")
+            } footer: {
+                Text("不勾选 = 全部可用站点")
             }
 
-            switchRow(title: "图览模式",
-                      hint: "用该分类搜索时，带海报的结果默认以图墙展示（仅部分站点返回海报，如 M-Team）；结果页右上角可随时临时切换。",
-                      isOn: $draft.posterMode, identifier: "preset-poster-mode")
-            switchRow(title: "无痕搜索",
-                      hint: "用该分类搜索时不写入搜索历史，搜索面板的「最近搜索」不会出现相关记录，适合隐私敏感的分类。",
-                      isOn: $draft.skipHistory, identifier: "preset-skip-history")
-        } footer: {
-            SubsPrimaryButton(title: store.busy ? "保存中…" : "保存", busy: store.busy,
-                              enabled: !draft.name.trimmingCharacters(in: .whitespaces).isEmpty,
-                              identifier: "preset-save") {
-                Task { await save() }
+            Section {
+                SubsToggleRow(title: "图览模式",
+                              hint: "用该分类搜索时，带海报的结果默认以图墙展示（仅部分站点返回海报，如 M-Team）；结果页右上角可随时临时切换。",
+                              isOn: $draft.posterMode, identifier: "preset-poster-mode")
+                SubsToggleRow(title: "无痕搜索",
+                              hint: "用该分类搜索时不写入搜索历史，搜索面板的「最近搜索」不会出现相关记录，适合隐私敏感的分类。",
+                              isOn: $draft.skipHistory, identifier: "preset-skip-history")
             }
         }
         .task { await loadSites() }
-    }
-
-    private func switchRow(title: String, hint: String, isOn: Binding<Bool>, identifier: String) -> some View {
-        Toggle(isOn: isOn) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.subheadline.weight(.medium)).foregroundStyle(Theme.text)
-                Text(hint).font(.caption).foregroundStyle(Theme.textFaint).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .accessibilityIdentifier(identifier)
     }
 
     private func toggle(_ list: inout [String], _ value: String) {
