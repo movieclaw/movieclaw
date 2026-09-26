@@ -21,10 +21,15 @@ final class MPVMetalView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        let scale = window?.screen.nativeScale ?? traitCollection.displayScale
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         metalLayer.frame = bounds
-        metalLayer.contentsScale = window?.screen.nativeScale ?? traitCollection.displayScale
+        metalLayer.contentsScale = scale
+        // CAMetalLayer 不会随 frame 自动改像素尺寸：必须显式同步 drawableSize，
+        // 否则转横屏后 mpv（MoltenVK 交换链按 drawableSize 建）仍按竖屏尺寸出图，
+        // 画面被压扁/偏到一角（真机横竖屏切换实测）。尺寸变化后交换链失效，mpv 会自行重建。
+        metalLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
         CATransaction.commit()
     }
 }
