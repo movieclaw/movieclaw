@@ -1,6 +1,9 @@
 #!/bin/zsh
 # 构建打了 MovieClaw 补丁的 libmpv（Libmpv.xcframework，LGPL），放进 Vendor/MPVKit。
 #
+# 构建产物（约 9MB，含真机 arm64 与模拟器 arm64/x86_64）直接入库，拉下代码即可编译 App，平时不用跑本脚本。
+# 只有改了 patches/ 下的补丁、或升级 mpv / MPVKit 版本时才重跑，跑完把新的 Libmpv.xcframework 一并提交。
+#
 # 为什么要自己构建：上游 MPVKit 的 moltenvk 渲染上下文只在视频参数变化时读取 Metal 渲染面尺寸，
 # 旋转屏幕后 mpv 仍按旧尺寸排布画面，只能由 App 销毁重建视频输出（真机约 0.6~1.2 秒黑屏）。
 # Vendor/MPVKit/patches/ 下的两个补丁：

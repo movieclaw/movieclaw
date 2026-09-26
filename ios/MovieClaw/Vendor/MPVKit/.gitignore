@@ -1,4 +1,2 @@
-# 补丁版 libmpv 构建产物（scripts/build-libmpv.sh 生成）
-Libmpv.xcframework/
 # Xcode 打开本地包时生成
 .swiftpm/

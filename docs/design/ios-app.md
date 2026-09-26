@@ -86,7 +86,8 @@ PlayerScreen（控制层 UI、手势、字幕叠加、选轨、诊断）
 - LGPL 合规：MPVKit 动态库形式链接；关于页列出 libmpv/FFmpeg 许可与源码地址。
 - MPV 真机渲染走 Metal（MoltenVK + gpu-next）：黑底容器铺满播放区，渲染面按视频比例居中摆放，
   横竖屏切换时渲染面随系统旋转动画等比缩放，全程不变形、不黑屏，不重建视频输出。依赖 libmpv 的两个补丁
-  （`Vendor/MPVKit/patches/`：渲染面尺寸一变就重排、每帧以交换链实际尺寸为准），构建见 `scripts/build-libmpv.sh`，
+  （`Vendor/MPVKit/patches/`：渲染面尺寸一变就重排、每帧以交换链实际尺寸为准）。构建产物 `Libmpv.xcframework`
+  直接入库，平时无需构建；改补丁或升级 mpv 时用 `scripts/build-libmpv.sh` 重建并提交，
   设计细节见 `MPVCore/MPVRenderViews.swift` 的注释。
 
 ## 5. 验收方法
