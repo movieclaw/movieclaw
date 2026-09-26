@@ -650,8 +650,8 @@ class JellyfinCompatSetting(SettingSchema):
     published_server_url: str = Field(
         default="",
         description=(
-            "对外发布地址（如 http://192.168.1.10:3000）；"
-            "Docker 桥接部署下自动发现的唯一可靠答案，空=自动探测"
+            "对外发布地址（如 http://192.168.1.10:3000），高级项、无界面入口；"
+            "空=自动探测，探测到 Docker 内网时回落到「外部访问地址」"
         ),
     )
     server_name: str = Field(default="MovieClaw", description="对播放器展示的服务器名")

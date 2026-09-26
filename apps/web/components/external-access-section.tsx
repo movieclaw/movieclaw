@@ -220,6 +220,7 @@ export function ExternalAccessSection() {
                   </p>
                   <p className="mt-1.5 text-[var(--text-muted)]">
                     用于生成通知里的跳转链接、对外回调地址等需要绝对 URL 的场景。
+                    Docker 桥接网络部署时，播放器局域网自动发现也会返回这个地址。
                   </p>
                 </>
               }
