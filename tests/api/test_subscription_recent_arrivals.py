@@ -51,7 +51,9 @@ async def _library(session, kind: str = "tv") -> int:
     return library.id
 
 
-async def _subscribe(session, *, kind: str, tmdb_id: int, title: str) -> tuple[Subscription, MediaItem]:
+async def _subscribe(
+    session, *, kind: str, tmdb_id: int, title: str
+) -> tuple[Subscription, MediaItem]:
     rule = RuleSet(name=f"规则 {tmdb_id}")
     item = MediaItem(
         kind=kind,
@@ -81,7 +83,9 @@ def _imported(sub: Subscription, season: int, episode: int, *, at: datetime) -> 
     )
 
 
-def _file(library_id: int, item_id: int, season: int, episode: int, *, missing: bool = False) -> LibraryFile:
+def _file(
+    library_id: int, item_id: int, season: int, episode: int, *, missing: bool = False
+) -> LibraryFile:
     return LibraryFile(
         library_id=library_id,
         media_item_id=item_id,
@@ -96,7 +100,9 @@ def _file(library_id: int, item_id: int, season: int, episode: int, *, missing: 
     )
 
 
-def _watched(item_id: int, season: int, episode: int, *, played: bool = True, position_ms: int = 0) -> PlaybackState:
+def _watched(
+    item_id: int, season: int, episode: int, *, played: bool = True, position_ms: int = 0
+) -> PlaybackState:
     return PlaybackState(
         member_id=MEMBER,
         media_item_id=item_id,
@@ -202,7 +208,9 @@ async def test_half_watched_movie_keeps_its_progress_and_cards_sort_by_latest_im
     """电影是哨兵单元 (0,0)，看了一半照样在（只认 played）；卡片按最近入库倒序。"""
     async with db.session() as session:
         library = await _library(session)
-        movie, movie_item = await _subscribe(session, kind="movie", tmdb_id=15, title="看一半的电影")
+        movie, movie_item = await _subscribe(
+            session, kind="movie", tmdb_id=15, title="看一半的电影"
+        )
         fresh, fresh_item = await _subscribe(session, kind="tv", tmdb_id=16, title="刚到的剧")
         assert movie_item.id is not None and fresh_item.id is not None
         session.add_all(
